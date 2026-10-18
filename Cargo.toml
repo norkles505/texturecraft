@@ -1,0 +1,19 @@
+[package]
+name = "texturecraft"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+egui = { version = "0.37", features = ["default_fonts"] }
+egui-wgpu = "0.37"
+egui-winit = "0.37"
+# Solo el cargador de SVG: los iconos de la barra de herramientas viven en assets/icons/*.svg
+egui_extras = { version = "0.37", default-features = false, features = ["svg"] }
+env_logger = "0.11.11"
+glam = "0.34.1"
+log = "0.4.34"
+png = "0.17"
+pollster = "1.0.1"
+wgpu = "30.0.1"
+winit = "0.30.13"
