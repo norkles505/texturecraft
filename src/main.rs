@@ -5,7 +5,7 @@
 //! Capas (pruebas, hasta tener panel): N = capa nueva, [ ] = bajar/subir de capa, B / Mayus+B = modo de mezcla
 //! siguiente/anterior, + - = opacidad, V = ojo, C = recorte, L = bloqueo, A = bloqueo alfa, K = cambiar color.
 //! Herramientas (boton derecho): P = pincel, G = borrador (goma), F = relleno (balde), I = cuentagotas (toma el color
-//! de lo que ves).
+//! de lo que ves), D = difuminar, U = borrosidad (estas dos por ahora solo el boton).
 //! Exportar PNG a la carpeta actual: E = textura con fondo, Mayus+E = transparente, X = solo la capa elegida.
 
 mod blend;
@@ -61,6 +61,8 @@ enum Tool {
     Eraser,
     Fill,
     Eyedropper,
+    Smudge,
+    Blur,
 }
 
 impl Tool {
@@ -70,6 +72,8 @@ impl Tool {
             Tool::Eraser => "borrador",
             Tool::Fill => "relleno",
             Tool::Eyedropper => "cuentagotas",
+            Tool::Smudge => "difuminar",
+            Tool::Blur => "borrosidad",
         }
     }
 }
@@ -107,6 +111,8 @@ struct Gpu {
     /// que se rellena y se tiran al cambiar de modelo).
     uvs: Vec<f32>,
     uv_maps: Option<UvMaps>,
+    /// Cuantas mallas (partes `o`/`g` del OBJ) tiene el modelo; 1 si no trae partes. Es el numero del boton del cubo.
+    mesh_count: usize,
     /// Interfaz egui (barra de herramientas...), dibujada encima del modelo.
     ui: UiLayer,
 }
@@ -348,6 +354,7 @@ impl Gpu {
             bvh: TriBvh::new(mesh),
             uvs: mesh.uvs.clone(),
             uv_maps: None,
+            mesh_count: mesh.parts.len().max(1),
             ui,
         }
     }
@@ -373,6 +380,7 @@ impl Gpu {
         self.bvh = TriBvh::new(mesh);
         self.uvs = mesh.uvs.clone();
         self.uv_maps = None;
+        self.mesh_count = mesh.parts.len().max(1);
     }
 
     /// Rayo de pantalla -> BVH -> UV del punto tocado (`None` si el cursor no esta sobre el modelo).
@@ -501,6 +509,10 @@ impl Gpu {
             self.pick_color(camera, px, py);
             return false;
         }
+        // Difuminar y borrosidad: todavia solo estan los botones, no hacen nada al pintar (para no pintar color por error).
+        if self.tool == Tool::Smudge || self.tool == Tool::Blur {
+            return false;
+        }
         if self.tool == Tool::Fill {
             return self.fill_at(camera, px, py);
         }
@@ -561,8 +573,8 @@ impl Gpu {
             self.pick_color(camera, to.0, to.1);
             return false;
         }
-        // El relleno es de un solo toque por apoyo: arrastrar no vuelve a rellenar.
-        if self.tool == Tool::Fill {
+        // El relleno es de un solo toque por apoyo: arrastrar no vuelve a rellenar. Difuminar y borrosidad aun no pintan.
+        if self.tool == Tool::Fill || self.tool == Tool::Smudge || self.tool == Tool::Blur {
             return false;
         }
         let spacing = (BRUSH_RADIUS * BRUSH_SPACING).max(0.5);
@@ -656,8 +668,16 @@ impl Gpu {
             pass.draw(0..self.vertex_count, 0..1);
         }
         // Interfaz (egui) encima del modelo.
-        let (full_output, ui_changed) =
-            self.ui.run(&self.window, &mut self.tool, &mut self.brush_color, &mut self.brush_opacity);
+        let layer_count = self.layers.layers.len();
+        let mesh_count = self.mesh_count;
+        let (full_output, ui_changed) = self.ui.run(
+            &self.window,
+            &mut self.tool,
+            &mut self.brush_color,
+            &mut self.brush_opacity,
+            layer_count,
+            mesh_count,
+        );
         if ui_changed {
             self.window.set_title(&self.status());
         }
@@ -886,6 +906,14 @@ impl ApplicationHandler for App {
                             }
                             "i" => {
                                 gpu.tool = Tool::Eyedropper;
+                                retitle = true;
+                            }
+                            "d" => {
+                                gpu.tool = Tool::Smudge;
+                                retitle = true;
+                            }
+                            "u" => {
+                                gpu.tool = Tool::Blur;
                                 retitle = true;
                             }
                             "e" => {

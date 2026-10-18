@@ -15,8 +15,12 @@ use crate::color_panel::ColorPanel;
 
 /// Azul del boton activo (como el "Brush" de la referencia).
 const ACCENT: Color32 = Color32::from_rgb(33, 150, 243);
-/// Fondo de la barra.
-const BAR_FILL: Color32 = Color32::from_rgb(58, 58, 60);
+/// Opacidad del fondo de las barras (0 = invisible, 255 = solido).
+const BAR_ALPHA: u8 = 150;
+/// Fondo de las barras: gris oscuro semitransparente.
+fn bar_fill() -> Color32 {
+    Color32::from_rgba_unmultiplied(58, 58, 60, BAR_ALPHA)
+}
 /// Distancia de la barra al borde superior de la ventana (por la izquierda va pegada al borde).
 const BAR_TOP: f32 = 12.0;
 /// Radio de las esquinas del lado derecho de la barra.
@@ -30,6 +34,12 @@ const LABEL_SIZE: f32 = 9.0;
 /// Tamano del cuadrito de color al pie de la barra.
 const SWATCH_W: f32 = 30.0;
 const SWATCH_H: f32 = 30.0;
+/// Alto de la barra inferior.
+const BOTTOM_BAR_H: f32 = 40.0;
+/// Boton de capas de la barra inferior: tamano del boton y del icono.
+const LAYERS_BTN_W: f32 = 48.0;
+const LAYERS_BTN_H: f32 = 36.0;
+const LAYERS_ICON: f32 = 31.0;
 /// Radio del circulo del boton del panel de pinceles.
 const BRUSH_BTN_R: f32 = 14.0;
 
@@ -42,7 +52,7 @@ struct ToolButton {
 }
 
 /// Botones de la barra, de arriba abajo. Para agregar uno: un `Tool` nuevo, su SVG y una linea aqui.
-fn tool_buttons() -> [ToolButton; 4] {
+fn tool_buttons() -> [ToolButton; 6] {
     [
         ToolButton {
             tool: Tool::Brush,
@@ -67,6 +77,18 @@ fn tool_buttons() -> [ToolButton; 4] {
             label: "Cuentagotas",
             key: "I",
             icon: egui::include_image!("../assets/icons/eyedropper.svg"),
+        },
+        ToolButton {
+            tool: Tool::Smudge,
+            label: "Difuminar",
+            key: "D",
+            icon: egui::include_image!("../assets/icons/smudge.svg"),
+        },
+        ToolButton {
+            tool: Tool::Blur,
+            label: "Borrosidad",
+            key: "U",
+            icon: egui::include_image!("../assets/icons/blur.svg"),
         },
     ]
 }
@@ -152,6 +174,88 @@ fn color_swatch(ui: &mut egui::Ui, color: [u8; 3], panel: &mut ColorPanel) {
     }
 }
 
+/// Boton de capas de la barra inferior: el icono de hojas apiladas con el numero de capas sobre la hoja de enfrente.
+/// Por ahora no abre nada: el panel de capas viene despues.
+fn layers_button(ui: &mut egui::Ui, count: usize) {
+    let (rect, response) = ui.allocate_exact_size(vec2(LAYERS_BTN_W, LAYERS_BTN_H), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered();
+        if hovered {
+            ui.painter().rect_filled(rect, CornerRadius::same(6), Color32::from_white_alpha(14));
+        }
+        let color = if hovered { Color32::WHITE } else { Color32::from_gray(205) };
+        let icon_rect = Rect::from_center_size(rect.center(), vec2(LAYERS_ICON, LAYERS_ICON));
+        egui::Image::new(egui::include_image!("../assets/icons/layers.svg")).tint(color).paint_at(ui, icon_rect);
+        // La hoja de enfrente del icono es el cuadrado de arriba a la izquierda; su centro esta al 41 % del icono.
+        let label_pos = icon_rect.min + icon_rect.size() * 0.41;
+        let size = if count >= 10 { 10.0 } else { 13.0 };
+        ui.painter().text(
+            label_pos,
+            Align2::CENTER_CENTER,
+            count.to_string(),
+            FontId::proportional(size),
+            Color32::from_gray(30),
+        );
+    }
+    response.on_hover_text("Capas");
+}
+
+/// Boton del cubo de la barra inferior (a la izquierda del de capas): muestra cuantas mallas (partes) tiene el modelo.
+/// Por ahora no abre nada: el panel viene despues.
+fn cube_button(ui: &mut egui::Ui, count: usize) {
+    let (rect, response) = ui.allocate_exact_size(vec2(LAYERS_BTN_W, LAYERS_BTN_H), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered();
+        if hovered {
+            ui.painter().rect_filled(rect, CornerRadius::same(6), Color32::from_white_alpha(14));
+        }
+        let color = if hovered { Color32::WHITE } else { Color32::from_gray(205) };
+        let icon_rect = Rect::from_center_size(rect.center(), vec2(LAYERS_ICON, LAYERS_ICON));
+        egui::Image::new(egui::include_image!("../assets/icons/cube.svg")).tint(color).paint_at(ui, icon_rect);
+        // Numero en el centro del cubo, negro con contorno blanco para que se lea sobre las caras y sobre los huecos.
+        let pos = icon_rect.min + icon_rect.size() * vec2(0.5, 0.56);
+        let font = FontId::proportional(if count >= 10 { 9.0 } else { 11.0 });
+        let label = count.to_string();
+        let p = ui.painter();
+        for off in [
+            vec2(-1.0, 0.0),
+            vec2(1.0, 0.0),
+            vec2(0.0, -1.0),
+            vec2(0.0, 1.0),
+            vec2(-1.0, -1.0),
+            vec2(1.0, -1.0),
+            vec2(-1.0, 1.0),
+            vec2(1.0, 1.0),
+        ] {
+            p.text(pos + off, Align2::CENTER_CENTER, &label, font.clone(), Color32::WHITE);
+        }
+        p.text(pos, Align2::CENTER_CENTER, &label, font, Color32::BLACK);
+    }
+}
+
+/// Barra inferior: ocupa todo el ancho de la ventana, pegada abajo, con el mismo estilo que la barra de herramientas.
+/// Su contenido va dentro del `with_layout` de abajo (a la derecha: capas y, a su izquierda, el cubo).
+fn bottom_bar(ui: &mut egui::Ui, layer_count: usize, mesh_count: usize) {
+    let width = ui.ctx().content_rect().width();
+    egui::Area::new(egui::Id::new("bottombar"))
+        .anchor(Align2::LEFT_BOTTOM, vec2(0.0, 0.0))
+        .show(ui.ctx(), |ui| {
+            Frame::new()
+                .fill(bar_fill())
+                .stroke(Stroke::new(1.0, Color32::from_white_alpha(16)))
+                .inner_margin(Margin::symmetric(8, 0))
+                .show(ui, |ui| {
+                    // El borde suma 1 px a cada lado y el margen 8, por eso se restan 18 para ocupar justo el ancho.
+                    ui.set_min_size(vec2(width - 18.0, BOTTOM_BAR_H));
+                    // De derecha a izquierda: el primer elemento queda pegado al borde derecho.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        layers_button(ui, layer_count);
+                        cube_button(ui, mesh_count);
+                    });
+                });
+        });
+}
+
 /// La barra completa. Devuelve true si el usuario cambio de herramienta con el raton.
 fn toolbar(ui: &mut egui::Ui, tool: &mut Tool, color: [u8; 3], panel: &mut ColorPanel) -> bool {
     let mut changed = false;
@@ -159,7 +263,7 @@ fn toolbar(ui: &mut egui::Ui, tool: &mut Tool, color: [u8; 3], panel: &mut Color
         .anchor(Align2::LEFT_TOP, vec2(0.0, BAR_TOP))
         .show(ui.ctx(), |ui| {
             Frame::new()
-                .fill(BAR_FILL)
+                .fill(bar_fill())
                 .stroke(Stroke::new(1.0, Color32::from_white_alpha(16)))
                 // Pegada al borde izquierdo: solo se redondean las esquinas de la derecha.
                 .corner_radius(CornerRadius { nw: 0, ne: BAR_RADIUS, sw: 0, se: BAR_RADIUS })
@@ -218,12 +322,15 @@ impl UiLayer {
         tool: &mut Tool,
         color: &mut [u8; 3],
         opacity: &mut f32,
+        layer_count: usize,
+        mesh_count: usize,
     ) -> (egui::FullOutput, bool) {
         let raw_input = self.state.take_egui_input(window);
         let mut changed = false;
         let panel = &mut self.panel;
         let mut full_output = self.ctx.run_ui(raw_input, |ui| {
             changed |= toolbar(ui, tool, *color, panel);
+            bottom_bar(ui, layer_count, mesh_count);
             changed |= panel.show(ui.ctx(), color, opacity);
         });
         // Cursor, portapapeles, enlaces...
