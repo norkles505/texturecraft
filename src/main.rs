@@ -1,11 +1,13 @@
 //! texturecraft: ventana con un modelo, camara orbital y pintura por capas (ESPECIFICACION.md).
-//! Controles: arrastrar con el boton izquierdo = girar, boton central (o Mayus + izquierdo) = mover, rueda = zoom,
-//! 1 = vista ortografica frontal, 2 = perspectiva. Boton derecho = pintar. Ctrl+Z = deshacer, Ctrl+Mayus+Z o
+//! Controles: boton izquierdo = pintar, boton central = girar (con Mayus = mover), boton derecho = libre por ahora,
+//! rueda = zoom,
+//! 1 = vista ortografica frontal, 2 = perspectiva. Gizmo de ejes (arriba a la derecha): clic en un eje = girar
+//! (animado) a esa vista ortografica; clic otra vez en el mismo = la vista opuesta. Ctrl+Z = deshacer, Ctrl+Mayus+Z o
 //! Ctrl+Y = rehacer (por ahora solo trazos).
 //! Capas (pruebas, hasta tener panel): N = capa nueva, [ ] = bajar/subir de capa, B / Mayus+B = modo de mezcla
 //! siguiente/anterior, + - = opacidad, V = ojo, C = recorte, L = bloqueo, A = bloqueo alfa, K = cambiar color.
-//! Herramientas (boton derecho): P = pincel, G = borrador (goma), F = relleno (balde), I = cuentagotas (toma el color
-//! de lo que ves), D = difuminar, U = borrosidad (estas dos por ahora solo el boton).
+//! Herramientas (boton izquierdo): P = pincel, G = borrador (goma), F = relleno (balde), I = cuentagotas (toma el color
+//! de lo que ves), D = difuminar, U = borrosidad (estas dos por ahora solo el boton), H = mano (el boton izquierdo mueve la vista en vez de pintar).
 //! Exportar PNG a la carpeta actual: E = textura con fondo, Mayus+E = transparente, X = solo la capa elegida.
 
 mod blend;
@@ -37,7 +39,7 @@ use winit::{
 
 use blend::BlendMode;
 use bvh::TriBvh;
-use camera::Camera;
+use camera::{Camera, ViewAxis};
 use layers::LayerStack;
 use obj::{ObjMesh, load_obj};
 use paint::{DabOptions, Rect, StrokeState, TEX_SIZE, dab_box};
@@ -54,7 +56,7 @@ const BRUSH_SPACING: f32 = 0.25;
 const PALETTE: [[u8; 3]; 6] = [[225, 70, 60], [60, 120, 230], [70, 190, 90], [240, 200, 50], [20, 20, 20], [255, 255, 255]];
 const CLEAR: wgpu::Color = wgpu::Color { r: 0.16, g: 0.16, b: 0.18, a: 1.0 };
 
-/// Herramienta activa con el boton derecho (seccion 8).
+/// Herramienta activa con el boton izquierdo (seccion 8).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Brush,
@@ -63,6 +65,8 @@ enum Tool {
     Eyedropper,
     Smudge,
     Blur,
+    /// Mano: con el boton izquierdo mueve la vista en vez de girarla (el derecho no pinta con ella).
+    Hand,
 }
 
 impl Tool {
@@ -74,6 +78,7 @@ impl Tool {
             Tool::Eyedropper => "cuentagotas",
             Tool::Smudge => "difuminar",
             Tool::Blur => "borrosidad",
+            Tool::Hand => "mano",
         }
     }
 }
@@ -105,6 +110,8 @@ struct Gpu {
     /// Opacidad del pincel (0..1), la barra de opacidad del panel de color.
     brush_opacity: f32,
     tool: Tool,
+    /// Candado de la barra: con la vista bloqueada la camara no gira, no se mueve y no hace zoom.
+    view_locked: bool,
     palette_index: usize,
     bvh: TriBvh,
     /// UVs del modelo (u,v por vertice) y los mapas de islas/cobertura que salen de ellas (se arman la primera vez
@@ -123,6 +130,8 @@ struct App {
     mouse: (f32, f32),
     left_down: bool,
     middle_down: bool,
+    /// Boton derecho apretado (reservado: por ahora no hace nada).
+    #[allow(dead_code)]
     right_down: bool,
     /// Ultima posicion de pantalla del trazo en curso.
     last_paint: Option<(f32, f32)>,
@@ -196,6 +205,12 @@ impl Gpu {
         let caps = surface.get_capabilities(&adapter);
         if let Some(f) = caps.formats.iter().copied().find(|f| f.is_srgb()) {
             config.format = f;
+        }
+        // La interfaz (egui) se dibuja con una vista NO sRGB de esta misma superficie: egui mezcla los bordes
+        // suavizados en espacio gamma, y sobre un destino sRGB quedan duros (se ven "pixeleados"). El modelo sigue
+        // usando la vista sRGB. Para poder crear esa segunda vista hay que declararla aqui.
+        if config.format.is_srgb() {
+            config.view_formats = vec![config.format.remove_srgb_suffix()];
         }
         surface.configure(&device, &config);
 
@@ -329,7 +344,7 @@ impl Gpu {
         });
         let depth_view = create_depth_view(&device, config.width, config.height);
 
-        let ui = UiLayer::new(&window, &device, config.format);
+        let ui = UiLayer::new(&window, &device, config.format.remove_srgb_suffix());
 
         Gpu {
             window,
@@ -350,6 +365,7 @@ impl Gpu {
             brush_color: PALETTE[0],
             brush_opacity: 1.0,
             tool: Tool::Brush,
+            view_locked: false,
             palette_index: 0,
             bvh: TriBvh::new(mesh),
             uvs: mesh.uvs.clone(),
@@ -510,7 +526,7 @@ impl Gpu {
             return false;
         }
         // Difuminar y borrosidad: todavia solo estan los botones, no hacen nada al pintar (para no pintar color por error).
-        if self.tool == Tool::Smudge || self.tool == Tool::Blur {
+        if self.tool == Tool::Smudge || self.tool == Tool::Blur || self.tool == Tool::Hand {
             return false;
         }
         if self.tool == Tool::Fill {
@@ -574,7 +590,7 @@ impl Gpu {
             return false;
         }
         // El relleno es de un solo toque por apoyo: arrastrar no vuelve a rellenar. Difuminar y borrosidad aun no pintan.
-        if self.tool == Tool::Fill || self.tool == Tool::Smudge || self.tool == Tool::Blur {
+        if self.tool == Tool::Fill || self.tool == Tool::Smudge || self.tool == Tool::Blur || self.tool == Tool::Hand {
             return false;
         }
         let spacing = (BRUSH_RADIUS * BRUSH_SPACING).max(0.5);
@@ -620,8 +636,9 @@ impl Gpu {
     }
 
     /// Dibuja un cuadro (modelo + interfaz). Devuelve cuanto falta para el proximo cuadro que pide egui
-    /// (`ZERO` = ya mismo, `Duration::MAX` = ninguno).
-    fn render(&mut self, camera: &Camera) -> Duration {
+    /// (`ZERO` = ya mismo, `Duration::MAX` = ninguno) y el eje del gizmo al que se hizo clic, si hubo (la camara
+    /// vive en `App`, asi que es quien la gira).
+    fn render(&mut self, camera: &Camera) -> (Duration, Option<ViewAxis>) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
@@ -631,10 +648,10 @@ impl Gpu {
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
-                return Duration::MAX;
+                return (Duration::MAX, None);
             }
             // Ventana minimizada, tiempo agotado o error de validacion: se salta el cuadro.
-            _ => return Duration::MAX,
+            _ => return (Duration::MAX, None),
         };
 
         let aspect = self.config.width as f32 / self.config.height as f32;
@@ -643,6 +660,11 @@ impl Gpu {
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Misma textura vista sin sRGB, solo para la interfaz (ver el comentario en `Gpu::new`).
+        let ui_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.config.format.remove_srgb_suffix()),
+            ..Default::default()
+        });
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("cuadro") });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -670,24 +692,26 @@ impl Gpu {
         // Interfaz (egui) encima del modelo.
         let layer_count = self.layers.layers.len();
         let mesh_count = self.mesh_count;
-        let (full_output, ui_changed) = self.ui.run(
+        let (full_output, ui_changed, view_axis) = self.ui.run(
             &self.window,
             &mut self.tool,
             &mut self.brush_color,
             &mut self.brush_opacity,
             layer_count,
             mesh_count,
+            camera,
+            &mut self.view_locked,
         );
         if ui_changed {
             self.window.set_title(&self.status());
         }
         let size = [self.config.width, self.config.height];
         let (extra, repaint_delay) =
-            self.ui.paint(&self.device, &self.queue, &mut encoder, &view, size, full_output);
+            self.ui.paint(&self.device, &self.queue, &mut encoder, &ui_view, size, full_output);
         self.queue.submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
         self.window.pre_present_notify();
         self.queue.present(frame);
-        repaint_delay
+        (repaint_delay, view_axis)
     }
 }
 
@@ -767,11 +791,9 @@ impl ApplicationHandler for App {
                     return;
                 }
                 match button {
-                    MouseButton::Left => self.left_down = down,
-                    MouseButton::Middle => self.middle_down = down,
-                    MouseButton::Right => {
-                        let was_down = self.right_down;
-                        self.right_down = down;
+                    MouseButton::Left => {
+                        let was_down = self.left_down;
+                        self.left_down = down;
                         if down {
                             self.last_paint = Some(self.mouse);
                             if gpu.stroke_begin(&self.camera, self.mouse.0, self.mouse.1) {
@@ -782,6 +804,9 @@ impl ApplicationHandler for App {
                             gpu.stroke_end();
                         }
                     }
+                    MouseButton::Middle => self.middle_down = down,
+                    // Boton derecho: libre por ahora (sin funcion).
+                    MouseButton::Right => self.right_down = down,
                     _ => {}
                 }
             }
@@ -789,22 +814,30 @@ impl ApplicationHandler for App {
                 let (x, y) = (position.x as f32, position.y as f32);
                 let (dx, dy) = (x - self.mouse.0, y - self.mouse.1);
                 self.mouse = (x, y);
-                if self.right_down {
+                if self.left_down && gpu.tool == Tool::Hand {
+                    // Mano: el boton izquierdo mueve la vista en vez de pintar (si la vista esta bloqueada, nada).
+                    if !gpu.view_locked {
+                        self.camera.pan_by(dx, dy);
+                        gpu.window.request_redraw();
+                    }
+                } else if self.left_down {
                     let from = self.last_paint.unwrap_or((x, y));
                     self.last_paint = Some((x, y));
                     if gpu.stroke_move(&self.camera, from, (x, y)) {
                         gpu.window.request_redraw();
                     }
-                } else if self.middle_down || (self.left_down && self.modifiers.shift_key()) {
-                    self.camera.pan_by(dx, dy);
-                    gpu.window.request_redraw();
-                } else if self.left_down {
-                    self.camera.rotate_by(dx, dy);
+                } else if self.middle_down && !gpu.view_locked {
+                    // Boton central = girar; con Mayus = mover.
+                    if self.modifiers.shift_key() {
+                        self.camera.pan_by(dx, dy);
+                    } else {
+                        self.camera.rotate_by(dx, dy);
+                    }
                     gpu.window.request_redraw();
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if ui_has_it {
+                if ui_has_it || gpu.view_locked {
                     return;
                 }
                 let steps = match delta {
@@ -817,14 +850,15 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !ui_has_it => {
                 match event.logical_key {
                     Key::Named(NamedKey::Escape) => event_loop.exit(),
-                    Key::Character(ref c) if c == "1" => {
+                    Key::Character(ref c) if c == "1" && !gpu.view_locked => {
                         // Vista frontal ortografica (como el boton de vistas de la app).
+                        self.camera.stop_animation();
                         self.camera.angle_x = 0.0;
                         self.camera.angle_y = 0.0;
                         self.camera.orthographic = true;
                         gpu.window.request_redraw();
                     }
-                    Key::Character(ref c) if c == "2" => {
+                    Key::Character(ref c) if c == "2" && !gpu.view_locked => {
                         self.camera.orthographic = false;
                         gpu.window.request_redraw();
                     }
@@ -916,6 +950,10 @@ impl ApplicationHandler for App {
                                 gpu.tool = Tool::Blur;
                                 retitle = true;
                             }
+                            "h" => {
+                                gpu.tool = Tool::Hand;
+                                retitle = true;
+                            }
                             "e" => {
                                 let msg = gpu.export_png(if shift { 1 } else { 0 });
                                 gpu.window.set_title(&msg);
@@ -939,8 +977,16 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 // Redibujo continuo solo mientras egui anima algo; en reposo la app duerme.
-                let delay = gpu.render(&self.camera);
-                if delay.is_zero() {
+                // Si hay un giro animado de la vista (clic en el gizmo), se avanza antes de dibujar y se sigue
+                // redibujando hasta que termine.
+                let animating = self.camera.update_animation();
+                let (delay, view_axis) = gpu.render(&self.camera);
+                if let Some(axis) = view_axis {
+                    if !gpu.view_locked {
+                        self.camera.snap_to(axis);
+                    }
+                }
+                if animating || view_axis.is_some() || delay.is_zero() {
                     gpu.window.request_redraw();
                 } else if delay < Duration::from_secs(3600) {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + delay));

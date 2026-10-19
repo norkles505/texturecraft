@@ -12,8 +12,11 @@ egui-winit = "0.37"
 egui_extras = { version = "0.37", default-features = false, features = ["svg"] }
 env_logger = "0.11.11"
 glam = "0.34.1"
+# Leer la imagen de referencia (PNG, JPG, WebP, BMP) y dialogo nativo para elegir el archivo.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
 log = "0.4.34"
 png = "0.17"
 pollster = "1.0.1"
+rfd = "0.15"
 wgpu = "30.0.1"
 winit = "0.30.13"
