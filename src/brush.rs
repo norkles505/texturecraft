@@ -3,7 +3,7 @@
 //! `falloff(t)` recibe `t = 1 - d/radio` (1 en el centro del toque, 0 en el borde) y devuelve cuanta opacidad queda
 //! ahi (0..1). El espaciado es una fraccion del radio. El tamano es el RADIO en texeles (el slider va de 1 a 100).
 
-use crate::chalk::{DryKind, PASTEL_SCATTER};
+use crate::pinceles::{DryKind, FOLIAGE_REACH, PASTEL_SCATTER, STIPPLE_REACH};
 
 /// Radio minimo y maximo del pincel en texeles.
 pub const MIN_RADIUS: f32 = 1.0;
@@ -20,14 +20,20 @@ pub enum BrushType {
     PencilSoft,
     MarkerSoft,
     MarkerHard,
-    /// Tiza (portada del Chalk de photocraft): punta de bitmap con grano, que gira en cada toque, y papel (`chalk.rs`).
+    /// Tiza (portada del Chalk de photocraft): punta de bitmap con grano, que gira en cada toque, y papel (`pinceles/tiza.rs`).
     Chalk,
     /// Carboncillo (portado de photocraft): punta elipse con vetas que sigue la direccion del trazo y papel que resta
-    /// cobertura (`chalk.rs`).
+    /// cobertura (`pinceles/carboncillo.rs`).
     Charcoal,
     /// Pastel (portado de photocraft): punta de grano que gira y se dispersa en cada toque, con trama de lienzo que
-    /// resta cobertura (`chalk.rs`).
+    /// resta cobertura (`pinceles/pastel.rs`).
     Pastel,
+    /// Punteado (Stipple de photocraft): punta de gotas sueltas que gira y se voltea en cada toque y se dispersa en los
+    /// dos ejes, sin papel (`pinceles/punteado.rs`).
+    Stipple,
+    /// Follaje (Foliage de photocraft): una o dos hojas por toque, cada una con su tamano, giro y color al azar, que se
+    /// dispersan en los dos ejes, sin papel (`pinceles/follaje.rs`).
+    Foliage,
 }
 
 /// Categorias del panel de pinceles (la columna de la izquierda).
@@ -65,7 +71,7 @@ impl BrushGroup {
 
 impl BrushType {
     /// En el orden en que salen en el panel.
-    pub const ALL: [BrushType; 10] = [
+    pub const ALL: [BrushType; 12] = [
         BrushType::Soft,
         BrushType::Hard,
         BrushType::Airbrush,
@@ -76,6 +82,8 @@ impl BrushType {
         BrushType::Chalk,
         BrushType::Charcoal,
         BrushType::Pastel,
+        BrushType::Stipple,
+        BrushType::Foliage,
     ];
 
     pub fn name(self) -> &'static str {
@@ -90,6 +98,8 @@ impl BrushType {
             BrushType::Chalk => "Tiza",
             BrushType::Charcoal => "Carboncillo",
             BrushType::Pastel => "Pastel",
+            BrushType::Stipple => "Punteado",
+            BrushType::Foliage => "Follaje",
         }
     }
 
@@ -100,7 +110,7 @@ impl BrushType {
             BrushType::MarkerSoft | BrushType::MarkerHard => BrushGroup::Marker,
             BrushType::Airbrush => BrushGroup::Airbrush,
             BrushType::Chalk => BrushGroup::Chalk,
-            BrushType::Charcoal | BrushType::Pastel => BrushGroup::Dry,
+            BrushType::Charcoal | BrushType::Pastel | BrushType::Stipple | BrushType::Foliage => BrushGroup::Dry,
         }
     }
 
@@ -116,6 +126,10 @@ impl BrushType {
             // Los presets de photocraft miden 45 y 50 de diametro: aqui el radio es la mitad.
             BrushType::Charcoal => 22.0,
             BrushType::Pastel => 25.0,
+            // Stipple de photocraft mide 40 de diametro.
+            BrushType::Stipple => 20.0,
+            // Foliage de photocraft mide 50 de diametro.
+            BrushType::Foliage => 25.0,
         }
     }
 
@@ -131,24 +145,34 @@ impl BrushType {
             // photocraft mide el espaciado en fraccion del diametro (0.12 y 0.15): aqui es del radio, el doble.
             BrushType::Charcoal => 0.24,
             BrushType::Pastel => 0.30,
+            // Stipple: 0.5 del diametro en photocraft = 1.0 del radio (un toque cada radio, para que las gotas no se
+            // amontonen).
+            BrushType::Stipple => 1.0,
+            // Foliage: 0.35 del diametro en photocraft = 0.7 del radio.
+            BrushType::Foliage => 0.7,
         }
     }
 
-    /// El pincel de medio seco que es (carboncillo o pastel), o `None` si no lo es. Estos pinceles no usan el
-    /// `falloff`: su forma sale de la punta de bitmap y su papel o lienzo resta cobertura al trazo (`chalk.rs`).
+    /// El pincel de medio seco que es (carboncillo, pastel o punteado), o `None` si no lo es. Estos pinceles no usan
+    /// el `falloff`: su forma sale de la punta de bitmap y su papel o lienzo (si lo tienen) resta cobertura al trazo
+    /// (`pinceles/medio_seco.rs`).
     pub fn dry_kind(self) -> Option<DryKind> {
         match self {
             BrushType::Charcoal => Some(DryKind::Charcoal),
             BrushType::Pastel => Some(DryKind::Pastel),
+            BrushType::Stipple => Some(DryKind::Stipple),
+            BrushType::Foliage => Some(DryKind::Foliage),
             _ => None,
         }
     }
 
-    /// Cuanto se puede alejar un toque de su centro, como fraccion del radio (la dispersion del pastel). Sirve para
-    /// buscar los triangulos cercanos con un poco de margen.
+    /// Cuanto se puede alejar un toque de su centro, como fraccion del radio (la dispersion del pastel y del
+    /// punteado). Sirve para buscar los triangulos cercanos con un poco de margen.
     pub fn scatter(self) -> f32 {
         match self {
             BrushType::Pastel => PASTEL_SCATTER,
+            BrushType::Stipple => STIPPLE_REACH,
+            BrushType::Foliage => FOLIAGE_REACH,
             _ => 0.0,
         }
     }
@@ -163,12 +187,12 @@ impl BrushType {
             BrushType::PencilSoft => t * t * (3.0 - 2.0 * t),
             BrushType::MarkerSoft => (4.0 * t).min(1.0),
             BrushType::MarkerHard => (20.0 * t).min(1.0),
-            // La tiza no usa el falloff radial: su forma sale de la punta de bitmap (`chalk.rs`). Este valor solo
+            // La tiza no usa el falloff radial: su forma sale de la punta de bitmap (`pinceles/tiza.rs`). Este valor solo
             // existe para que la funcion este definida para todos los pinceles.
             BrushType::Chalk => (6.0 * t).min(1.0),
-            // Carboncillo y pastel tampoco usan el falloff radial (su forma sale de la punta de bitmap): igual que la
-            // tiza, el valor solo existe para que la funcion este definida para todos los pinceles.
-            BrushType::Charcoal | BrushType::Pastel => (6.0 * t).min(1.0),
+            // Carboncillo, pastel y punteado tampoco usan el falloff radial (su forma sale de la punta de bitmap): igual
+            // que la tiza, el valor solo existe para que la funcion este definida para todos los pinceles.
+            BrushType::Charcoal | BrushType::Pastel | BrushType::Stipple | BrushType::Foliage => (6.0 * t).min(1.0),
         }
     }
 }
@@ -252,6 +276,36 @@ mod tests {
         for b in BrushType::ALL {
             assert_eq!(b.build_up(), b == BrushType::Airbrush, "{}", b.name());
         }
+    }
+
+    #[test]
+    fn el_punteado_es_de_medio_seco_con_los_valores_de_photocraft() {
+        let b = BrushType::Stipple;
+        assert_eq!(b.name(), "Punteado");
+        assert_eq!(b.group(), BrushGroup::Dry);
+        assert_eq!(b.dry_kind(), Some(DryKind::Stipple));
+        // 40 de diametro en photocraft = radio 20; espaciado 0.5 del diametro = 1.0 del radio.
+        assert_eq!(b.default_radius(), 20.0);
+        assert_eq!(b.spacing(), 1.0);
+        // Su dispersion cubre el 60 % del radio en cada eje: la esquina esta a 0.6 * raiz de 2.
+        assert!((b.scatter() - 0.6 * 2f32.sqrt()).abs() < 1e-6);
+        assert!(b.scatter() > BrushType::Pastel.scatter());
+        // Solo los cuatro de medio seco tienen punta propia.
+        assert_eq!(BrushType::ALL.iter().filter(|k| k.dry_kind().is_some()).count(), 4);
+    }
+
+    #[test]
+    fn el_follaje_es_de_medio_seco_con_los_valores_de_photocraft() {
+        let b = BrushType::Foliage;
+        assert_eq!(b.name(), "Follaje");
+        assert_eq!(b.group(), BrushGroup::Dry);
+        assert_eq!(b.dry_kind(), Some(DryKind::Foliage));
+        // 50 de diametro en photocraft = radio 25; espaciado 0.35 del diametro = 0.7 del radio.
+        assert_eq!(b.default_radius(), 25.0);
+        assert!((b.spacing() - 0.7).abs() < 1e-6);
+        // Dispersion 1.2 del radio en cada eje: la esquina esta a 1.2 * raiz de 2.
+        assert!((b.scatter() - 1.2 * 2f32.sqrt()).abs() < 1e-6);
+        assert!(b.scatter() > BrushType::Stipple.scatter());
     }
 
     #[test]

@@ -17,12 +17,12 @@ mod blend;
 mod brush;
 mod bvh;
 mod camera;
-mod chalk;
 mod export;
 mod fill;
 mod layers;
 mod obj;
 mod paint;
+mod pinceles;
 mod ui;
 mod undo;
 mod uvmap;
@@ -201,6 +201,10 @@ struct Gpu {
     /// orienta su punta con ella. Se reinician al apoyar el boton.
     stroke_dir: Vec3,
     last_dab_pos: Option<Vec3>,
+    /// Cuanto falta recorrer (en unidades del modelo) hasta el proximo toque del trazo en curso. El resto pasa de un
+    /// tramo del raton al siguiente (como `next_at` de photocraft), asi los toques quedan a un espaciado exacto aunque
+    /// el raton mande muchos eventos pequenos.
+    stroke_to_next: f32,
     brush_color: [u8; 3],
     /// Opacidad del pincel (0..1), la barra de opacidad del panel de color.
     brush_opacity: f32,
@@ -457,6 +461,7 @@ impl Gpu {
             stroke_piece: None,
             stroke_dir: Vec3::ZERO,
             last_dab_pos: None,
+            stroke_to_next: 0.0,
             brush_color: PALETTE[0],
             brush_opacity: 1.0,
             brush: Brush::default(),

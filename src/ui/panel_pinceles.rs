@@ -15,7 +15,7 @@ use egui::pos2;
 
 use super::*;
 use crate::brush::{Brush, BrushGroup, BrushType, MAX_RADIUS, MIN_FLOW, MIN_RADIUS};
-use crate::chalk::{ChalkDab, PREVIEW_UNITS_PER_PX};
+use crate::pinceles::{ChalkDab, DryDab, PREVIEW_UNITS_PER_PX};
 use glam::Vec3;
 
 /// Medidas del panel (en puntos de egui). `PB_LEFT`/`PB_TOP` = donde se ancla (justo a la derecha de la barra de
@@ -120,6 +120,9 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     let w = (size.x * TEX_SCALE).round() as usize;
     let h = (size.y * TEX_SCALE).round() as usize;
     let r = r_pt * TEX_SCALE;
+    // Carboncillo, pastel, punteado y follaje se dibujan con su punta de verdad. Como dispersan sus toques, el radio se
+    // reduce para que el racimo quepa en la franja de la muestra.
+    let r = if kind.dry_kind().is_some() { r / (1.0 + 0.6 * kind.scatter()) } else { r };
     let amp = amp_pt * TEX_SCALE;
     let mut alpha = vec![0.0f32; w * h];
     let spacing = (r * kind.spacing()).max(0.5);
@@ -128,28 +131,36 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     let (x0, x1) = (margin, w as f32 - margin);
     let pos = |t: f32| (x0 + (x1 - x0) * t, h as f32 * 0.5 - amp * (t * std::f32::consts::TAU * 0.95).sin());
     let mut chalk_n = 0u32;
-    let mut dab = |cx: f32, cy: f32| {
+    let mut dab = |cx: f32, cy: f32, dir: (f32, f32)| {
         // La tiza gira y cambia de tamano en cada toque, como la de verdad (chalk.rs).
         let chalk = (kind == BrushType::Chalk).then(|| {
             chalk_n += 1;
             ChalkDab::new(chalk_n, Vec3::Z, r)
         });
-        let xa = (cx - r).floor().max(0.0) as usize;
-        let xb = ((cx + r).ceil() as usize).min(w - 1);
-        let ya = (cy - r).floor().max(0.0) as usize;
-        let yb = ((cy + r).ceil() as usize).min(h - 1);
+        // Medio seco: la punta de verdad de ese pincel, orientada segun el trazo (el carboncillo la sigue).
+        let dry = kind.dry_kind().map(|k| {
+            chalk_n += 1;
+            DryDab::new(k, chalk_n, Vec3::Z, Vec3::new(dir.0, dir.1, 0.0).normalize_or_zero(), r)
+        });
+        // Hasta donde puede llegar el toque: su radio mas lo que se desplaza su centro.
+        let lim = r + dry.as_ref().map_or(0.0, |d| d.reach());
+        let xa = (cx - lim).floor().max(0.0) as usize;
+        let xb = ((cx + lim).ceil() as usize).min(w - 1);
+        let ya = (cy - lim).floor().max(0.0) as usize;
+        let yb = ((cy + lim).ceil() as usize).min(h - 1);
         for y in ya..=yb {
             for x in xa..=xb {
                 let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
-                if d >= r {
+                if d >= lim {
                     continue;
                 }
-                let a = match &chalk {
-                    Some(c) => {
+                let a = match (&chalk, &dry) {
+                    (Some(c), _) => {
                         let (fx, fy) = (x as f32, y as f32);
                         c.alpha(Vec3::new(fx - cx, fy - cy, 0.0), Vec3::new(fx, fy, 0.0) * PREVIEW_UNITS_PER_PX, x as u32, y as u32)
                     }
-                    None => kind.falloff(1.0 - d / r),
+                    (_, Some(dd)) => dd.alpha(Vec3::new(x as f32 - cx, y as f32 - cy, 0.0)),
+                    _ => kind.falloff(1.0 - d / r),
                 } * opacity;
                 let i = y * w + x;
                 if a > alpha[i] {
@@ -159,17 +170,17 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
         }
     };
     let mut last = pos(0.0);
-    dab(last.0, last.1);
+    dab(last.0, last.1, (1.0, 0.0));
     const STEPS: usize = 3000;
     for i in 1..=STEPS {
         let q = pos(i as f32 / STEPS as f32);
         if (q.0 - last.0).hypot(q.1 - last.1) >= spacing {
-            dab(q.0, q.1);
+            dab(q.0, q.1, (q.0 - last.0, q.1 - last.1));
             last = q;
         }
     }
     let end = pos(1.0);
-    dab(end.0, end.1);
+    dab(end.0, end.1, (end.0 - last.0, end.1 - last.1));
     let mut rgba = Vec::with_capacity(w * h * 4);
     for a in alpha {
         rgba.extend_from_slice(&[color[0], color[1], color[2], (a.clamp(0.0, 1.0) * 255.0).round() as u8]);

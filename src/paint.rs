@@ -17,7 +17,7 @@
 use glam::Vec3;
 
 use crate::brush::BrushType;
-use crate::chalk::{ChalkDab, DryDab, DryKind, dry_subtract, paper_mask};
+use crate::pinceles::{ChalkDab, DryDab, DryKind, dry_subtract, paper_mask};
 
 /// Lado de la textura de cada pieza (fijo en la app Android).
 pub const TEX_SIZE: u32 = 1024;
@@ -338,7 +338,7 @@ impl StrokeState {
         let dry: Option<(DryKind, DryDab)> = opts
             .brush
             .dry_kind()
-            .map(|k| (k, DryDab::new(k, self.stroke_dab, opts.normal, opts.dir, radius)));
+            .map(|k| (k, DryDab::new(k, self.stroke_dab, opts.normal, opts.dir, radius).with_color(color)));
         // La dispersion del pastel desplaza el centro de la punta: los texeles se revisan un poco mas lejos.
         let limit = radius + dry.as_ref().map_or(0.0, |(_, d)| d.reach());
         let max = (self.size - 1) as f32;
@@ -406,19 +406,25 @@ impl StrokeState {
                         if d >= limit {
                             continue;
                         }
+                        // Color con que se pinta este texel: el del pincel, salvo el follaje (cada hoja tiene el suyo).
+                        let mut texel_color = color;
                         let (cov, sub, mul) = match (&chalk, &dry) {
                             // Tiza: punta de bitmap girada en el plano de la superficie; el papel (anclado al modelo)
                             // multiplica despues, sobre la cobertura acumulada.
                             (Some(c), _) => (c.tip(pos - center), 0.0, paper_mask(pos, x, y)),
                             // Medio seco: la punta da la cobertura; el papel o lienzo resta despues, al acumular.
-                            (_, Some((kind, dd))) => (dd.alpha(pos - center), dry_subtract(*kind, pos, x, y), 1.0),
+                            (_, Some((kind, dd))) => {
+                                let (a, c) = dd.alpha_color(pos - center, color);
+                                texel_color = c;
+                                (a, dry_subtract(*kind, pos, x, y), 1.0)
+                            }
                             _ => (opts.brush.falloff(1.0 - d / radius), 0.0, 1.0),
                         };
                         let cov = cov * opts.flow;
                         if cov * opacity <= 0.0 {
                             continue;
                         }
-                        if self.apply_texel(pixels, idx, cov, opacity, color, sub, mul, opts) {
+                        if self.apply_texel(pixels, idx, cov, opacity, texel_color, sub, mul, opts) {
                             changed = Some(union(changed, (x, y, x, y)));
                         }
                     }
@@ -719,6 +725,59 @@ mod tests {
             let mut pixels = layer(64, [0, 0, 0, 0]);
             s.begin_stroke();
             s.dab_surface(&mut pixels, &tris, Vec3::new(1.0, 1.0, 0.0), 0.8, [255, 0, 0], 1.0, opts);
+            pixels
+        };
+        assert_eq!(pintar(), pintar());
+    }
+
+    #[test]
+    fn el_punteado_pinta_gotas_sueltas_y_no_pasa_de_su_alcance() {
+        use crate::pinceles::STIPPLE_REACH;
+        let tris = cuadrado();
+        let opts = DabOptions { brush: BrushType::Stipple, normal: Vec3::Z, ..Default::default() };
+        let mut s = StrokeState::new(64);
+        let mut pixels = layer(64, [0, 0, 0, 0]);
+        s.begin_stroke();
+        let (center, radius) = (Vec3::new(1.0, 1.0, 0.0), 0.5);
+        assert!(s.dab_surface(&mut pixels, &tris, center, radius, [255, 255, 255], 1.0, opts).is_some());
+        // Lo mas lejos que puede llegar un toque: su radio mas lo que se desplaza su centro.
+        let alcance = radius * (1.0 + STIPPLE_REACH);
+        let (mut pintados, mut en_zona, mut lejos) = (0, 0, 0);
+        for ty in 0..64u32 {
+            for tx in 0..64u32 {
+                let x = (tx as f32 / 63.0 - 0.25) / 0.25 * 2.0;
+                let y = (ty as f32 / 63.0 - 0.25) / 0.5 * 2.0;
+                if !(0.0..=2.0).contains(&x) || !(0.0..=2.0).contains(&y) {
+                    continue;
+                }
+                let d = ((x - 1.0).powi(2) + (y - 1.0).powi(2)).sqrt();
+                let a = px(&pixels, 64, tx, ty)[3];
+                if d < alcance - 0.06 {
+                    en_zona += 1;
+                }
+                if a > 0 {
+                    pintados += 1;
+                    if d > alcance + 0.06 {
+                        lejos += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(lejos, 0, "pinto mas alla del alcance");
+        assert!(pintados > 5, "pinto pocos texeles: {pintados}");
+        // Son gotas: quedan huecos sin pintar dentro de la zona (un disco sin huecos pintaria todo).
+        assert!(pintados < en_zona, "pintados {pintados} de {en_zona}: sin huecos");
+    }
+
+    #[test]
+    fn el_punteado_con_el_mismo_toque_da_el_mismo_resultado() {
+        let tris = cuadrado();
+        let opts = DabOptions { brush: BrushType::Stipple, normal: Vec3::Z, ..Default::default() };
+        let pintar = || {
+            let mut s = StrokeState::new(64);
+            let mut pixels = layer(64, [0, 0, 0, 0]);
+            s.begin_stroke();
+            s.dab_surface(&mut pixels, &tris, Vec3::new(1.0, 1.0, 0.0), 0.5, [255, 0, 0], 1.0, opts);
             pixels
         };
         assert_eq!(pintar(), pintar());

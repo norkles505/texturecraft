@@ -1,0 +1,154 @@
+//! Lo que tienen en comun los pinceles de medio seco portados de photocraft: el CARBONCILLO (`carboncillo.rs`), el
+//! PASTEL (`pastel.rs`) y el PUNTEADO (`punteado.rs`). Cada uno arma su punta y su toque en su propio archivo; aqui
+//! solo estan el tipo `DryKind`, el toque ya preparado (`DryDab`) y la resta del papel.
+//!
+//! Su papel o lienzo no multiplica cada toque: RESTA cobertura al trazo ya acumulado (`dry_subtract`, modo Subtract
+//! de photocraft), asi que dos toques sobre el mismo sitio no cambian el dibujo del papel.
+
+use glam::Vec3;
+
+use super::{carboncillo, follaje, pastel, punteado};
+
+/// Los pinceles de medio seco portados de photocraft.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DryKind {
+    Charcoal,
+    Pastel,
+    /// Punteado: gotas sueltas, sin papel ni lienzo.
+    Stipple,
+    /// Follaje: hojas de tamano, giro y color al azar (1 o 2 por toque), sin papel ni lienzo.
+    Foliage,
+}
+
+/// Cuanta cobertura RESTA el papel (carboncillo) o el lienzo (pastel) en un texel: `profundidad * t`, con `t` el patron
+/// invertido (1 - valor). Va de 0 a la profundidad. Es el modo Subtract de photocraft: se resta a la cobertura YA
+/// acumulada del trazo, no a cada toque, asi que pasar dos veces por el mismo sitio no cambia el dibujo del papel.
+pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
+    match kind {
+        DryKind::Charcoal => carboncillo::subtract(pos, tx, ty),
+        DryKind::Pastel => pastel::subtract(tx, ty),
+        // El punteado no lleva textura: su preset de photocraft no activa ninguna.
+        DryKind::Stipple | DryKind::Foliage => 0.0,
+    }
+}
+
+/// Un toque de medio seco ya preparado. Cada pincel lo arma a su manera:
+///
+/// - Carboncillo: la punta (elipse con vetas) apunta en la direccion del trazo, sobre el plano de la superficie.
+/// - Pastel: la punta gira, se aplasta un poco y el centro se dispersa de lado respecto al trazo.
+/// - Punteado: la punta de gotas gira, se voltea y el centro se dispersa en los dos ejes del plano.
+/// - Follaje: una o dos hojas, cada una con su tamano, giro, redondez, dispersion y color (`follaje.rs`).
+pub struct DryDab {
+    pub(super) kind: DryKind,
+    /// Ejes de la punta sobre la superficie.
+    pub(super) t: Vec3,
+    pub(super) b: Vec3,
+    pub(super) inv_radius: f32,
+    /// Factor de redondez de la punta (1 = redonda); aplasta el eje `b`.
+    pub(super) roundness: f32,
+    /// Desplazamiento del centro del toque (dispersion); cero para el carboncillo.
+    pub(super) shift: Vec3,
+    /// Solo el follaje: el color propio de la hoja y la segunda hoja del toque (`None` en los demas pinceles).
+    pub(super) follaje: Option<Box<follaje::Extras>>,
+}
+
+impl DryDab {
+    /// `dab` es el numero del toque, `normal` la normal de la superficie (cero = se usa Z), `dir` la direccion del
+    /// trazo en 3D (cero = no se sabe) y `radius` el radio del pincel en las mismas unidades que los puntos.
+    pub fn new(kind: DryKind, dab: u32, normal: Vec3, dir: Vec3, radius: f32) -> DryDab {
+        let n = normal.try_normalize().unwrap_or(Vec3::Z);
+        let helper = if n.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+        let t0 = n.cross(helper).normalize();
+        let b0 = n.cross(t0);
+        // La direccion del trazo proyectada en el plano de la superficie.
+        let tangent = dir - n * dir.dot(n);
+        let along = (tangent.length_squared() > 1e-12).then(|| tangent.normalize());
+        let inv_radius = 1.0 / radius.max(1e-6);
+        match kind {
+            DryKind::Charcoal => carboncillo::nuevo(inv_radius, t0, n, along),
+            DryKind::Pastel => pastel::nuevo(dab, inv_radius, radius, t0, b0, n, along),
+            DryKind::Stipple => punteado::nuevo(dab, inv_radius, radius, t0, b0),
+            DryKind::Foliage => follaje::nuevo(dab, inv_radius, radius, t0, b0),
+        }
+    }
+
+    /// La segunda hoja del toque (solo el follaje la tiene).
+    fn otra(&self) -> Option<&DryDab> {
+        self.follaje.as_ref().and_then(|f| f.otra.as_ref())
+    }
+
+    /// Cuanto se aleja el centro de la punta del punto tocado (para ampliar la zona que se revisa). Con dos hojas, la
+    /// que mas se aleja.
+    pub fn reach(&self) -> f32 {
+        let own = self.shift.length();
+        self.otra().map_or(own, |o| own.max(o.reach()))
+    }
+
+    /// Cobertura (0..1) de UNA punta (la hoja principal, sin la segunda) en un texel.
+    fn punta_alpha(&self, offset: Vec3) -> f32 {
+        let o = offset - self.shift;
+        let (u, v) = (o.dot(self.t) * self.inv_radius, o.dot(self.b) * self.inv_radius / self.roundness);
+        let tip = match self.kind {
+            DryKind::Charcoal => carboncillo::punta(),
+            DryKind::Pastel => pastel::punta(),
+            DryKind::Stipple => punteado::punta(),
+            DryKind::Foliage => follaje::punta(),
+        };
+        tip.sample(u * 0.5 + 0.5, v * 0.5 + 0.5)
+    }
+
+    /// Cobertura (0..1) de la punta en un texel; `offset` es su posicion respecto al punto tocado. Es 0 fuera de la
+    /// punta. Con dos hojas (follaje) es la de la que mas cubre el texel. El papel o el lienzo no entran aqui: restan
+    /// despues (`dry_subtract`).
+    pub fn alpha(&self, offset: Vec3) -> f32 {
+        let own = self.punta_alpha(offset);
+        self.otra().map_or(own, |o| own.max(o.alpha(offset)))
+    }
+
+    /// Calcula el color propio de cada hoja a partir del color del pincel (`base`). Solo el follaje cambia algo: cada
+    /// hoja corre un poco el tono y el brillo. Se llama una vez por toque, no por texel.
+    pub fn with_color(mut self, base: [u8; 3]) -> DryDab {
+        if let Some(f) = self.follaje.as_mut() {
+            f.paint = Some(follaje::matizar(base, f.hue, f.bright));
+            if let Some(otra) = f.otra.take() {
+                f.otra = Some(otra.with_color(base));
+            }
+        }
+        self
+    }
+
+    /// Como `alpha`, pero devuelve tambien el color con que se pinta ese texel: el de la hoja que mas lo cubre (el del
+    /// pincel, `base`, si el toque no tiene color propio, como todos menos el follaje).
+    pub fn alpha_color(&self, offset: Vec3, base: [u8; 3]) -> (f32, [u8; 3]) {
+        let a = self.punta_alpha(offset);
+        let color = self.follaje.as_ref().and_then(|f| f.paint).unwrap_or(base);
+        match self.otra() {
+            Some(o) => {
+                let (b, cb) = o.alpha_color(offset, base);
+                if b > a { (b, cb) } else { (a, color) }
+            }
+            None => (a, color),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pinceles::carboncillo::CHARCOAL_PAPER_DEPTH;
+    use crate::pinceles::pastel::PASTEL_CANVAS_DEPTH;
+
+    #[test]
+    fn la_resta_del_papel_y_del_lienzo_esta_en_rango_y_varia() {
+        for (kind, depth) in [(DryKind::Charcoal, CHARCOAL_PAPER_DEPTH), (DryKind::Pastel, PASTEL_CANVAS_DEPTH)] {
+            let vals: Vec<f32> = (0..300u32)
+                .map(|i| dry_subtract(kind, Vec3::new(i as f32 * 0.011, 0.2, i as f32 * 0.005), i, i * 3 % 1024))
+                .collect();
+            assert!(vals.iter().all(|v| (0.0..=depth + 1e-6).contains(v)), "{kind:?}");
+            let (lo, hi) = (vals.iter().cloned().fold(f32::MAX, f32::min), vals.iter().cloned().fold(0.0, f32::max));
+            assert!(hi - lo > 0.2 * depth, "{kind:?} es casi plano: de {lo} a {hi}");
+            // Mismo punto, mismo valor.
+            assert_eq!(dry_subtract(kind, Vec3::ONE, 5, 9), dry_subtract(kind, Vec3::ONE, 5, 9));
+        }
+    }
+}
