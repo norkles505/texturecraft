@@ -270,6 +270,76 @@ const FIT_SIZE: f32 = 4.5;
 /// inicial cubre un 4 % del lado mas largo.
 const WORLD_PER_RADIUS: f32 = FIT_SIZE / 450.0;
 
+/// Cada cuantos puntos de pantalla se mide el recorrido del raton para colocar los toques (mas fino = toques mas
+/// exactos sobre curvas y bordes del modelo).
+const WALK_STEP_PX: f32 = 2.0;
+
+/// Reparte un tramo de `dist` unidades en toques separados exactamente `spacing` (como `next_at` de photocraft).
+/// `to_next` es cuanto falta recorrer hasta el proximo toque: se actualiza, asi el sobrante pasa de un tramo al
+/// siguiente y los toques quedan igual de separados sin importar cuantos eventos mande el raton (trazo rapido o
+/// lento). Devuelve, para cada toque que cae en este tramo, la fraccion (0..=1) del tramo donde queda.
+fn dab_points(to_next: &mut f32, dist: f32, spacing: f32) -> Vec<f32> {
+    let mut points = Vec::new();
+    if dist <= 0.0 || spacing <= 0.0 {
+        return points;
+    }
+    let mut walked = 0.0;
+    while dist - walked >= *to_next {
+        walked += *to_next;
+        points.push((walked / dist).min(1.0));
+        *to_next = spacing;
+    }
+    *to_next -= dist - walked;
+    points
+}
+
+#[cfg(test)]
+mod dab_points_tests {
+    use super::dab_points;
+
+    /// Posiciones (a lo largo de un camino de `total` unidades) de los toques, recorriendo el camino en tramos de `chunk`.
+    fn posiciones(total: f32, chunk: f32, spacing: f32) -> Vec<f32> {
+        let (mut to_next, mut at, mut out) = (spacing, 0.0f32, Vec::new());
+        while at < total - 1e-6 {
+            let d = chunk.min(total - at);
+            for t in dab_points(&mut to_next, d, spacing) {
+                out.push(at + d * t);
+            }
+            at += d;
+        }
+        out
+    }
+
+    #[test]
+    fn los_toques_quedan_igual_de_separados_con_pasos_chicos_o_grandes() {
+        let (total, spacing) = (10.0, 0.7);
+        let lento = posiciones(total, 0.05, spacing);
+        let rapido = posiciones(total, 3.3, spacing);
+        // 10 / 0.7 = 14 toques (el ultimo en 9.8), y los mismos en los dos casos.
+        assert_eq!(lento.len(), 14);
+        assert_eq!(rapido.len(), lento.len());
+        for (i, (a, b)) in lento.iter().zip(&rapido).enumerate() {
+            let esperado = 0.7 * (i + 1) as f32;
+            assert!((a - esperado).abs() < 1e-3 && (b - esperado).abs() < 1e-3, "toque {i}: {a} y {b}, esperado {esperado}");
+        }
+    }
+
+    #[test]
+    fn el_sobrante_pasa_de_un_tramo_al_siguiente() {
+        let mut to_next = 1.0;
+        // Tres pasos de 0.4 no completan 1.0 hasta el tercero.
+        assert!(dab_points(&mut to_next, 0.4, 1.0).is_empty());
+        assert!(dab_points(&mut to_next, 0.4, 1.0).is_empty());
+        let p = dab_points(&mut to_next, 0.4, 1.0);
+        assert_eq!(p.len(), 1);
+        assert!((p[0] - 0.5).abs() < 1e-5, "{p:?}");
+        // Un tramo sin longitud no cambia nada.
+        let antes = to_next;
+        assert!(dab_points(&mut to_next, 0.0, 1.0).is_empty());
+        assert_eq!(to_next, antes);
+    }
+}
+
 /// Esfera de prueba: mide 1 de diametro, se agranda a `FIT_SIZE` como un OBJ cargado.
 fn test_sphere() -> ObjMesh {
     let mut mesh = ObjMesh::uv_sphere(48, 24);
@@ -865,6 +935,8 @@ impl Gpu {
         self.stroke_piece = None;
         self.stroke_dir = Vec3::ZERO;
         self.last_dab_pos = None;
+        // El primer toque se pinta aqui; el siguiente cae a un espaciado de distancia.
+        self.stroke_to_next = self.dab_spacing();
         let mut dirty = None;
         if let Some(pick) = self.pick_uv(camera, px, py) {
             self.dab_surface(pick, &mut dirty);
@@ -952,20 +1024,35 @@ impl Gpu {
         if self.tool == Tool::Fill || self.tool == Tool::Smudge || self.tool == Tool::Blur || self.tool == Tool::Hand {
             return false;
         }
-        // Distancia entre toques en unidades del modelo (una fraccion del radio del pincel, como en la seccion 7.4).
-        let spacing = (self.brush.radius * WORLD_PER_RADIUS * self.brush.kind.spacing()).max(0.5 * WORLD_PER_RADIUS);
-        let ua = self.pick_uv(camera, from.0, from.1);
-        let ub = self.pick_uv(camera, to.0, to.1);
+        // Se recorre el tramo de pantalla en pasos chicos y se mide la distancia 3D sobre el modelo entre cada par de
+        // puntos; los toques se colocan cada `spacing` unidades arrastrando el sobrante (`dab_points`), asi quedan igual
+        // de separados con un trazo rapido o lento (como en photocraft).
+        let spacing = self.dab_spacing();
+        let screen = ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt();
+        let steps = (screen / WALK_STEP_PX).ceil().max(1.0) as usize;
+        let (mut a, mut ua) = (from, self.pick_uv(camera, from.0, from.1));
         let mut dirty = None;
-        self.stroke_segment(camera, from, ua, to, ub, spacing, 0, &mut dirty);
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let b = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+            let ub = self.pick_uv(camera, b.0, b.1);
+            self.stroke_step(camera, a, ua, b, ub, spacing, &mut dirty);
+            (a, ua) = (b, ub);
+        }
         self.flush(dirty)
     }
 
-    /// Parte el tramo por la mitad hasta que los extremos quedan a `spacing` unidades del modelo o menos; solo se
-    /// pinta el extremo final de cada trozo (el inicial ya se pinto). Si un extremo cae fuera del modelo o en otra
-    /// pieza se mide en pantalla.
+    /// Distancia entre toques en unidades del modelo (una fraccion del radio del pincel, como en la seccion 7.4).
+    fn dab_spacing(&self) -> f32 {
+        (self.brush.radius * WORLD_PER_RADIUS * self.brush.kind.spacing()).max(0.5 * WORLD_PER_RADIUS)
+    }
+
+    /// Un paso corto del raton `a` -> `b`: pone los toques que le tocan segun lo recorrido sobre el modelo. Si `a` cae
+    /// fuera del modelo o en otra pieza (el trazo entra o cambia de pieza), o si hay un salto enorme entre los dos
+    /// puntos (el borde del modelo, donde un punto es de la parte de delante y otro de la de atras), se pinta un toque
+    /// en `b` y se vuelve a contar desde ahi. Si `b` cae fuera del modelo no se pinta nada.
     #[allow(clippy::too_many_arguments)]
-    fn stroke_segment(
+    fn stroke_step(
         &mut self,
         camera: &Camera,
         a: (f32, f32),
@@ -973,24 +1060,27 @@ impl Gpu {
         b: (f32, f32),
         ub: Option<Pick>,
         spacing: f32,
-        depth: u32,
         dirty: &mut Option<Rect>,
     ) {
-        let screen = ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
-        let close = match (ua, ub) {
-            (Some(p), Some(q)) if p.piece == q.piece => p.pos.distance(q.pos) <= spacing,
-            _ => screen <= 6.0,
-        };
-        if close || screen < 0.05 || depth >= 12 {
-            if let Some(q) = ub {
+        let Some(q) = ub else { return };
+        let jump = 8.0 * self.brush.radius * WORLD_PER_RADIUS;
+        let dist = match ua {
+            Some(p) if p.piece == q.piece && p.pos.distance(q.pos) <= jump => p.pos.distance(q.pos),
+            _ => {
                 self.dab_surface(q, dirty);
+                self.stroke_to_next = spacing;
+                return;
             }
-            return;
+        };
+        for t in dab_points(&mut self.stroke_to_next, dist, spacing) {
+            // Con t = 1 el toque cae justo en `b`: ya se tiene el punto.
+            let pick = if t >= 0.9999 {
+                q
+            } else {
+                self.pick_uv(camera, a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t).unwrap_or(q)
+            };
+            self.dab_surface(pick, dirty);
         }
-        let m = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
-        let um = self.pick_uv(camera, m.0, m.1);
-        self.stroke_segment(camera, a, ua, m, um, spacing, depth + 1, dirty);
-        self.stroke_segment(camera, m, um, b, ub, spacing, depth + 1, dirty);
     }
 
     /// Dibuja un cuadro (modelo + interfaz). Devuelve cuanto falta para el proximo cuadro que pide egui

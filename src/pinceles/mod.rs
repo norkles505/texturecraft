@@ -6,6 +6,7 @@
 //! - `pastel.rs`: el PASTEL (punta de grano que gira y se dispersa de lado, con lienzo que resta).
 //! - `punteado.rs`: el PUNTEADO (gotas sueltas que giran, se voltean y se dispersan en los dos ejes).
 //! - `follaje.rs`: el FOLLAJE (hojas de tamano, giro y color al azar, 1 o 2 por toque, que se dispersan en los dos ejes).
+//! - `dual_grain.rs`: el DOBLE GRANO (disco con borde ruidoso multiplicado por una segunda punta de gotas sueltas).
 //!
 //! Lo compartido esta aparte:
 //!
@@ -18,6 +19,7 @@
 
 mod azar;
 mod carboncillo;
+mod dual_grain;
 mod follaje;
 mod medio_seco;
 mod papel;
@@ -26,6 +28,7 @@ mod punta;
 mod punteado;
 mod tiza;
 
+pub use dual_grain::{DUAL_GRAIN_REACH, DualDab};
 pub use follaje::FOLIAGE_REACH;
 pub use medio_seco::{DryDab, DryKind, dry_subtract};
 pub use papel::paper_mask;

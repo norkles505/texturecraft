@@ -3,7 +3,7 @@
 //! `falloff(t)` recibe `t = 1 - d/radio` (1 en el centro del toque, 0 en el borde) y devuelve cuanta opacidad queda
 //! ahi (0..1). El espaciado es una fraccion del radio. El tamano es el RADIO en texeles (el slider va de 1 a 100).
 
-use crate::pinceles::{DryKind, FOLIAGE_REACH, PASTEL_SCATTER, STIPPLE_REACH};
+use crate::pinceles::{DUAL_GRAIN_REACH, DryKind, FOLIAGE_REACH, PASTEL_SCATTER, STIPPLE_REACH};
 
 /// Radio minimo y maximo del pincel en texeles.
 pub const MIN_RADIUS: f32 = 1.0;
@@ -34,6 +34,9 @@ pub enum BrushType {
     /// Follaje (Foliage de photocraft): una o dos hojas por toque, cada una con su tamano, giro y color al azar, que se
     /// dispersan en los dos ejes, sin papel (`pinceles/follaje.rs`).
     Foliage,
+    /// Doble grano (Dual Grain de photocraft): un disco con borde ruidoso multiplicado por una segunda punta de gotas
+    /// sueltas, asi el trazo sale granulado (`pinceles/dual_grain.rs`).
+    DualGrain,
 }
 
 /// Categorias del panel de pinceles (la columna de la izquierda).
@@ -71,7 +74,7 @@ impl BrushGroup {
 
 impl BrushType {
     /// En el orden en que salen en el panel.
-    pub const ALL: [BrushType; 12] = [
+    pub const ALL: [BrushType; 13] = [
         BrushType::Soft,
         BrushType::Hard,
         BrushType::Airbrush,
@@ -84,6 +87,7 @@ impl BrushType {
         BrushType::Pastel,
         BrushType::Stipple,
         BrushType::Foliage,
+        BrushType::DualGrain,
     ];
 
     pub fn name(self) -> &'static str {
@@ -100,6 +104,7 @@ impl BrushType {
             BrushType::Pastel => "Pastel",
             BrushType::Stipple => "Punteado",
             BrushType::Foliage => "Follaje",
+            BrushType::DualGrain => "Doble grano",
         }
     }
 
@@ -110,7 +115,11 @@ impl BrushType {
             BrushType::MarkerSoft | BrushType::MarkerHard => BrushGroup::Marker,
             BrushType::Airbrush => BrushGroup::Airbrush,
             BrushType::Chalk => BrushGroup::Chalk,
-            BrushType::Charcoal | BrushType::Pastel | BrushType::Stipple | BrushType::Foliage => BrushGroup::Dry,
+            BrushType::Charcoal
+            | BrushType::Pastel
+            | BrushType::Stipple
+            | BrushType::Foliage
+            | BrushType::DualGrain => BrushGroup::Dry,
         }
     }
 
@@ -130,6 +139,8 @@ impl BrushType {
             BrushType::Stipple => 20.0,
             // Foliage de photocraft mide 50 de diametro.
             BrushType::Foliage => 25.0,
+            // Dual Grain de photocraft mide 50 de diametro.
+            BrushType::DualGrain => 25.0,
         }
     }
 
@@ -150,6 +161,8 @@ impl BrushType {
             BrushType::Stipple => 1.0,
             // Foliage: 0.35 del diametro en photocraft = 0.7 del radio.
             BrushType::Foliage => 0.7,
+            // Dual Grain: 0.25 del diametro en photocraft = 0.5 del radio.
+            BrushType::DualGrain => 0.5,
         }
     }
 
@@ -173,6 +186,8 @@ impl BrushType {
             BrushType::Pastel => PASTEL_SCATTER,
             BrushType::Stipple => STIPPLE_REACH,
             BrushType::Foliage => FOLIAGE_REACH,
+            // Lo que se pasa del radio la segunda punta (sus gotas caen hasta 1.45 radios del centro).
+            BrushType::DualGrain => DUAL_GRAIN_REACH - 1.0,
             _ => 0.0,
         }
     }
@@ -193,6 +208,8 @@ impl BrushType {
             // Carboncillo, pastel y punteado tampoco usan el falloff radial (su forma sale de la punta de bitmap): igual
             // que la tiza, el valor solo existe para que la funcion este definida para todos los pinceles.
             BrushType::Charcoal | BrushType::Pastel | BrushType::Stipple | BrushType::Foliage => (6.0 * t).min(1.0),
+            // Doble grano: tampoco usa el falloff radial (su disco y sus gotas salen de `pinceles/dual_grain.rs`).
+            BrushType::DualGrain => (6.0 * t).min(1.0),
         }
     }
 }
@@ -306,6 +323,20 @@ mod tests {
         // Dispersion 1.2 del radio en cada eje: la esquina esta a 1.2 * raiz de 2.
         assert!((b.scatter() - 1.2 * 2f32.sqrt()).abs() < 1e-6);
         assert!(b.scatter() > BrushType::Stipple.scatter());
+    }
+
+    #[test]
+    fn el_doble_grano_es_de_medio_seco_con_los_valores_de_photocraft() {
+        let b = BrushType::DualGrain;
+        assert_eq!(b.name(), "Doble grano");
+        assert_eq!(b.group(), BrushGroup::Dry);
+        // No es un `DryKind`: lleva dos puntas y su propio toque (`DualDab`).
+        assert_eq!(b.dry_kind(), None);
+        // 50 de diametro en photocraft = radio 25; espaciado 0.25 del diametro = 0.5 del radio.
+        assert_eq!(b.default_radius(), 25.0);
+        assert!((b.spacing() - 0.5).abs() < 1e-6);
+        // Las gotas llegan a 0.6 * (1 + raiz de 2) radios del centro: el margen es lo que pasa de 1.
+        assert!((b.scatter() - (0.6 * (1.0 + 2f32.sqrt()) - 1.0)).abs() < 1e-5);
     }
 
     #[test]

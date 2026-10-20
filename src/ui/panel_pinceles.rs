@@ -15,7 +15,7 @@ use egui::pos2;
 
 use super::*;
 use crate::brush::{Brush, BrushGroup, BrushType, MAX_RADIUS, MIN_FLOW, MIN_RADIUS};
-use crate::pinceles::{ChalkDab, DryDab, PREVIEW_UNITS_PER_PX};
+use crate::pinceles::{ChalkDab, DryDab, DualDab, PREVIEW_UNITS_PER_PX};
 use glam::Vec3;
 
 /// Medidas del panel (en puntos de egui). `PB_LEFT`/`PB_TOP` = donde se ancla (justo a la derecha de la barra de
@@ -122,9 +122,11 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     let r = r_pt * TEX_SCALE;
     // Carboncillo, pastel, punteado y follaje se dibujan con su punta de verdad. Como dispersan sus toques, el radio se
     // reduce para que el racimo quepa en la franja de la muestra.
-    let r = if kind.dry_kind().is_some() { r / (1.0 + 0.6 * kind.scatter()) } else { r };
+    let r = if kind.dry_kind().is_some() || kind == BrushType::DualGrain { r / (1.0 + 0.6 * kind.scatter()) } else { r };
     let amp = amp_pt * TEX_SCALE;
     let mut alpha = vec![0.0f32; w * h];
+    // Doble grano: las gotas de la segunda punta se acumulan en cada texel a lo largo del trazo (como en `paint.rs`).
+    let mut dual_acc = vec![0.0f32; if kind == BrushType::DualGrain { w * h } else { 0 }];
     let spacing = (r * kind.spacing()).max(0.5);
     // Margen para que los extremos redondeados no se corten.
     let margin = (r + 6.0 * TEX_SCALE).min(w as f32 * 0.25);
@@ -142,8 +144,16 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
             chalk_n += 1;
             DryDab::new(k, chalk_n, Vec3::Z, Vec3::new(dir.0, dir.1, 0.0).normalize_or_zero(), r)
         });
+        // Doble grano: el disco ruidoso y las gotas de la segunda punta.
+        let dual = (kind == BrushType::DualGrain).then(|| {
+            chalk_n += 1;
+            DualDab::new(chalk_n, Vec3::Z, r)
+        });
         // Hasta donde puede llegar el toque: su radio mas lo que se desplaza su centro.
-        let lim = r + dry.as_ref().map_or(0.0, |d| d.reach());
+        let lim = match &dual {
+            Some(dd) => dd.limit(),
+            None => r + dry.as_ref().map_or(0.0, |d| d.reach()),
+        };
         let xa = (cx - lim).floor().max(0.0) as usize;
         let xb = ((cx + lim).ceil() as usize).min(w - 1);
         let ya = (cy - lim).floor().max(0.0) as usize;
@@ -154,12 +164,17 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
                 if d >= lim {
                     continue;
                 }
-                let a = match (&chalk, &dry) {
-                    (Some(c), _) => {
+                let a = match (&chalk, &dry, &dual) {
+                    (Some(c), _, _) => {
                         let (fx, fy) = (x as f32, y as f32);
                         c.alpha(Vec3::new(fx - cx, fy - cy, 0.0), Vec3::new(fx, fy, 0.0) * PREVIEW_UNITS_PER_PX, x as u32, y as u32)
                     }
-                    (_, Some(dd)) => dd.alpha(Vec3::new(x as f32 - cx, y as f32 - cy, 0.0)),
+                    (_, Some(dd), _) => dd.alpha(Vec3::new(x as f32 - cx, y as f32 - cy, 0.0)),
+                    (_, _, Some(dd)) => {
+                        let acc = &mut dual_acc[y * w + x];
+                        *acc += dd.dual(Vec3::new(x as f32 - cx, y as f32 - cy, 0.0)) * (1.0 - *acc);
+                        dd.primary(d, x as u32, y as u32) * *acc
+                    }
                     _ => kind.falloff(1.0 - d / r),
                 } * opacity;
                 let i = y * w + x;

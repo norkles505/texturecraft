@@ -17,7 +17,7 @@
 use glam::Vec3;
 
 use crate::brush::BrushType;
-use crate::pinceles::{ChalkDab, DryDab, DryKind, dry_subtract, paper_mask};
+use crate::pinceles::{ChalkDab, DryDab, DryKind, DualDab, dry_subtract, paper_mask};
 
 /// Lado de la textura de cada pieza (fijo en la app Android).
 pub const TEX_SIZE: u32 = 1024;
@@ -84,6 +84,9 @@ pub struct StrokeState {
     stroke_last: Vec<u32>,
     /// Ultimo toque que ya reviso cada texel dentro de un triangulo (para no pisar con el relleno de otra isla).
     dab_mark: Vec<u32>,
+    /// Solo el Doble grano: cobertura acumulada de la segunda punta (las gotas) en cada texel durante el trazo. Se
+    /// limpia con `stroke_alpha`.
+    stroke_dual: Vec<f32>,
     stroke_dab: u32,
     /// Rectangulo tocado por el trazo (para limpiar `stroke_alpha` sin recorrer todo).
     touched: Option<Rect>,
@@ -210,6 +213,7 @@ impl StrokeState {
             stroke_base: vec![0; n * 4],
             stroke_last: vec![0; n],
             dab_mark: vec![0; n],
+            stroke_dual: vec![0.0; n],
             stroke_dab: 0,
             touched: None,
         }
@@ -222,6 +226,7 @@ impl StrokeState {
                 let a = (y * self.size + x0) as usize;
                 let b = (y * self.size + x1) as usize;
                 self.stroke_alpha[a..=b].fill(0.0);
+                self.stroke_dual[a..=b].fill(0.0);
             }
         }
     }
@@ -339,8 +344,14 @@ impl StrokeState {
             .brush
             .dry_kind()
             .map(|k| (k, DryDab::new(k, self.stroke_dab, opts.normal, opts.dir, radius).with_color(color)));
-        // La dispersion del pastel desplaza el centro de la punta: los texeles se revisan un poco mas lejos.
-        let limit = radius + dry.as_ref().map_or(0.0, |(_, d)| d.reach());
+        // Doble grano: el disco ruidoso y las gotas de la segunda punta (que se acumulan en `stroke_dual`).
+        let dual = (opts.brush == BrushType::DualGrain).then(|| DualDab::new(self.stroke_dab, opts.normal, radius));
+        // La dispersion del pastel desplaza el centro de la punta: los texeles se revisan un poco mas lejos. Las gotas
+        // del Doble grano llegan todavia mas lejos (`DualDab::limit`).
+        let limit = match &dual {
+            Some(d) => d.limit(),
+            None => radius + dry.as_ref().map_or(0.0, |(_, d)| d.reach()),
+        };
         let max = (self.size - 1) as f32;
         // Preparacion: cada triangulo en texeles, con su caja.
         let mut preps: Vec<Prep> = Vec::with_capacity(tris.len());
@@ -408,15 +419,23 @@ impl StrokeState {
                         }
                         // Color con que se pinta este texel: el del pincel, salvo el follaje (cada hoja tiene el suyo).
                         let mut texel_color = color;
-                        let (cov, sub, mul) = match (&chalk, &dry) {
+                        let (cov, sub, mul) = match (&chalk, &dry, &dual) {
                             // Tiza: punta de bitmap girada en el plano de la superficie; el papel (anclado al modelo)
                             // multiplica despues, sobre la cobertura acumulada.
-                            (Some(c), _) => (c.tip(pos - center), 0.0, paper_mask(pos, x, y)),
+                            (Some(c), _, _) => (c.tip(pos - center), 0.0, paper_mask(pos, x, y)),
                             // Medio seco: la punta da la cobertura; el papel o lienzo resta despues, al acumular.
-                            (_, Some((kind, dd))) => {
+                            (_, Some((kind, dd)), _) => {
                                 let (a, c) = dd.alpha_color(pos - center, color);
                                 texel_color = c;
                                 (a, dry_subtract(*kind, pos, x, y), 1.0)
+                            }
+                            // Doble grano: las gotas se acumulan en el trazo (`c + v * (1 - c)`, aunque el disco no
+                            // llegue a este texel en este toque) y el disco ruidoso solo pinta donde ya hay gotas
+                            // (modo Multiply de photocraft).
+                            (_, _, Some(dd)) => {
+                                let acc = &mut self.stroke_dual[idx];
+                                *acc += dd.dual(pos - center) * (1.0 - *acc);
+                                (dd.primary(d, x, y) * *acc, 0.0, 1.0)
                             }
                             _ => (opts.brush.falloff(1.0 - d / radius), 0.0, 1.0),
                         };

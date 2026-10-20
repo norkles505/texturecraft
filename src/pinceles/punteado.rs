@@ -27,7 +27,7 @@ const DAB_SCATTER_Y_SALT: u64 = 0x5343_4154_5459;
 /// el radio (de 3 a 12 % del lado, mas gotas chicas que grandes). El valor de un texel es el de la gota que mas lo
 /// cubre, con un borde suave de un texel. Usa el azar de este programa, asi que la disposicion de las gotas no es
 /// la misma que la de photocraft (que usa otro generador), pero la forma y las proporciones si.
-fn construir(seed: u32, drops: u32) -> Punta {
+pub(super) fn construir(seed: u32, drops: u32) -> Punta {
     let salt = u64::from(seed) + 202;
     let n = TIP_SIZE;
     let s = n as f32;
