@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 500 500">
+  <defs>
+    <style>
+      .cls-1{fill:none;stroke:#ffffff;stroke-width:80;stroke-miterlimit:10}
+    </style>
+  </defs>
+  <title>layer_drag</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path d="M31.979 250 L464.75 250" class="cls-1"/>
+    <path d="M33.615 424.15 L466.385 424.15" class="cls-1"/>
+    <path d="M33.615 83.384 L466.385 83.384" class="cls-1"/>
+  </g>
+</svg>

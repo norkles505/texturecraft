@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <title>ojo.svg</title>
+  <path d="M1.5 12 C4 7 8 5 12 5 C16 5 20 7 22.5 12 C20 17 16 19 12 19 C8 19 4 17 1.5 12 Z" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="12" cy="12" r="3.8" fill="#FFFFFF"/>
+</svg>

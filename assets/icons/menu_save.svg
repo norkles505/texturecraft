@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="500" height="500" viewBox="0 0 500 500">
+  <title>guardar imagen.svg</title>
+  <g id="Layer_2" data-name="Layer 2">
+    <path d="M250 39.23 L250 418.81 L133.969 302.78" fill="none" stroke="#FFFFFF" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M250 418.81 L366.031 302.78" fill="none" stroke="#FFFFFF" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M75 462.86 L425 462.86" fill="#ffffff" stroke="#FFFFFF" stroke-width="30" stroke-linecap="round" stroke-miterlimit="10"/>
+  </g>
+</svg>

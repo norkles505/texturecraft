@@ -11,9 +11,9 @@
 //! Exportar PNG a la carpeta actual: E = textura con fondo, Mayus+E = transparente, X = solo la capa elegida.
 
 mod blend;
+mod brush;
 mod bvh;
 mod camera;
-mod color_panel;
 mod export;
 mod fill;
 mod layers;
@@ -38,20 +38,17 @@ use winit::{
 };
 
 use blend::BlendMode;
+use brush::Brush;
 use bvh::TriBvh;
 use camera::{Camera, ViewAxis};
 use layers::LayerStack;
 use obj::{ObjMesh, load_obj};
 use paint::{DabOptions, Rect, StrokeState, TEX_SIZE, dab_box};
-use ui::UiLayer;
+use ui::{BrushRing, UiLayer};
 use undo::History;
 use uvmap::UvMaps;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-/// Pincel de prueba del paso 3: suave, radio 18 texeles, rojo (los valores iniciales del panel de la app).
-const BRUSH_RADIUS: f32 = 18.0;
-/// Distancia entre toques, como fraccion del radio (Suave = 0.25, seccion 7.5).
-const BRUSH_SPACING: f32 = 0.25;
 /// Colores de prueba para distinguir capas (tecla K).
 const PALETTE: [[u8; 3]; 6] = [[225, 70, 60], [60, 120, 230], [70, 190, 90], [240, 200, 50], [20, 20, 20], [255, 255, 255]];
 const CLEAR: wgpu::Color = wgpu::Color { r: 0.16, g: 0.16, b: 0.18, a: 1.0 };
@@ -109,6 +106,8 @@ struct Gpu {
     brush_color: [u8; 3],
     /// Opacidad del pincel (0..1), la barra de opacidad del panel de color.
     brush_opacity: f32,
+    /// Pincel elegido en el panel de pinceles: preset (falloff y espaciado) y radio en texeles.
+    brush: Brush,
     tool: Tool,
     /// Candado de la barra: con la vista bloqueada la camara no gira, no se mueve y no hace zoom.
     view_locked: bool,
@@ -122,6 +121,8 @@ struct Gpu {
     mesh_count: usize,
     /// Interfaz egui (barra de herramientas...), dibujada encima del modelo.
     ui: UiLayer,
+    /// Ultimo radio (en pixeles de pantalla) del circulo del pincel; se usa cuando el cursor sale del modelo.
+    ring_radius: f32,
 }
 
 struct App {
@@ -136,6 +137,8 @@ struct App {
     /// Ultima posicion de pantalla del trazo en curso.
     last_paint: Option<(f32, f32)>,
     modifiers: ModifiersState,
+    /// El cursor esta dentro de la ventana (para mostrar u ocultar el circulo del pincel).
+    cursor_in_window: bool,
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
@@ -364,6 +367,7 @@ impl Gpu {
             history: History::default(),
             brush_color: PALETTE[0],
             brush_opacity: 1.0,
+            brush: Brush::default(),
             tool: Tool::Brush,
             view_locked: false,
             palette_index: 0,
@@ -372,6 +376,7 @@ impl Gpu {
             uv_maps: None,
             mesh_count: mesh.parts.len().max(1),
             ui,
+            ring_radius: 20.0,
         }
     }
 
@@ -403,6 +408,29 @@ impl Gpu {
     fn pick_uv(&self, camera: &Camera, px: f32, py: f32) -> Option<(f32, f32)> {
         let (origin, dir) = camera.ray(px, py, self.config.width as f32, self.config.height as f32);
         self.bvh.pick(origin, dir).map(|h| (h.u, h.v))
+    }
+
+    /// Radio del pincel en pixeles de pantalla en el punto `(x, y)`: se mide cuantos texeles hay por pixel alrededor
+    /// de ese punto (dos rayos vecinos) y se divide el radio del pincel entre eso. `None` si el cursor no esta sobre el modelo.
+    fn brush_radius_px(&self, camera: &Camera, (x, y): (f32, f32)) -> Option<f32> {
+        let max = (self.layers.size - 1) as f32;
+        let a = self.pick_uv(camera, x, y)?;
+        let step = 6.0;
+        let (mut sum, mut n) = (0.0f32, 0u32);
+        for (dx, dy) in [(step, 0.0), (0.0, step)] {
+            if let Some(b) = self.pick_uv(camera, x + dx, y + dy) {
+                let d = (((a.0 - b.0) * max).powi(2) + ((a.1 - b.1) * max).powi(2)).sqrt();
+                // Un salto enorme es una costura de las UV (otra isla): no sirve para medir.
+                if d > 0.0 && d < 300.0 {
+                    sum += d / step;
+                    n += 1;
+                }
+            }
+        }
+        if n == 0 {
+            return None;
+        }
+        Some(self.brush.radius / (sum / n as f32))
     }
 
     /// Sube a la GPU el rectangulo de la textura compuesta.
@@ -454,16 +482,22 @@ impl Gpu {
         )
     }
 
-    /// Cuentagotas (seccion 8.2): toma el color de la textura COMPUESTA (lo que se ve, con fondo y todas las capas)
-    /// en el punto de pantalla y lo pone como color del pincel.
-    fn pick_color(&mut self, camera: &Camera, px: f32, py: f32) {
-        let Some((u, v)) = self.pick_uv(camera, px, py) else { return };
+    /// Color de la textura COMPUESTA (lo que se ve) bajo el punto de pantalla, o `None` si ahi no hay modelo.
+    fn color_at(&self, camera: &Camera, px: f32, py: f32) -> Option<[u8; 3]> {
+        let (u, v) = self.pick_uv(camera, px, py)?;
         let max = (self.layers.size - 1) as f32;
         let x = ((u - u.floor()) * max).round() as u32;
         let y = ((v - v.floor()) * max).round() as u32;
         let i = ((y * self.layers.size + x) * 4) as usize;
         let c = &self.layers.composite;
-        self.brush_color = [c[i], c[i + 1], c[i + 2]];
+        Some([c[i], c[i + 1], c[i + 2]])
+    }
+
+    /// Cuentagotas (seccion 8.2): toma el color de la textura COMPUESTA (lo que se ve, con fondo y todas las capas)
+    /// en el punto de pantalla y lo pone como color del pincel.
+    fn pick_color(&mut self, camera: &Camera, px: f32, py: f32) {
+        let Some(c) = self.color_at(camera, px, py) else { return };
+        self.brush_color = c;
         self.window.set_title(&self.status());
         // El cuadrito de color de la barra tambien debe mostrar el color nuevo.
         self.window.request_redraw();
@@ -476,11 +510,12 @@ impl Gpu {
         if !layer.paintable() {
             return;
         }
-        let opts = DabOptions { alpha_lock: layer.alpha_lock, erase: self.tool == Tool::Eraser };
+        let opts = DabOptions { alpha_lock: layer.alpha_lock, erase: self.tool == Tool::Eraser, brush: self.brush.kind };
+        let radius = self.brush.radius;
         // Antes de tocar nada: copia de las baldosas que va a cambiar el toque (deshacer).
         let size = self.layers.size;
-        self.history.save_tiles(&layer.pixels, size, dab_box(size, u, v, BRUSH_RADIUS));
-        if let Some(r) = self.stroke.dab(&mut layer.pixels, u, v, BRUSH_RADIUS, self.brush_color, self.brush_opacity, opts) {
+        self.history.save_tiles(&layer.pixels, size, dab_box(size, u, v, radius));
+        if let Some(r) = self.stroke.dab(&mut layer.pixels, u, v, radius, self.brush_color, self.brush_opacity, opts) {
             self.layers.composite_rect(r);
             *dirty = Some(match *dirty {
                 Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
@@ -593,7 +628,7 @@ impl Gpu {
         if self.tool == Tool::Fill || self.tool == Tool::Smudge || self.tool == Tool::Blur || self.tool == Tool::Hand {
             return false;
         }
-        let spacing = (BRUSH_RADIUS * BRUSH_SPACING).max(0.5);
+        let spacing = (self.brush.radius * self.brush.kind.spacing()).max(0.5);
         let ua = self.pick_uv(camera, from.0, from.1);
         let ub = self.pick_uv(camera, to.0, to.1);
         let mut dirty = None;
@@ -638,7 +673,7 @@ impl Gpu {
     /// Dibuja un cuadro (modelo + interfaz). Devuelve cuanto falta para el proximo cuadro que pide egui
     /// (`ZERO` = ya mismo, `Duration::MAX` = ninguno) y el eje del gizmo al que se hizo clic, si hubo (la camara
     /// vive en `App`, asi que es quien la gira).
-    fn render(&mut self, camera: &Camera) -> (Duration, Option<ViewAxis>) {
+    fn render(&mut self, camera: &Camera, mouse: (f32, f32), cursor_in_window: bool) -> (Duration, Option<ViewAxis>) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
@@ -689,19 +724,45 @@ impl Gpu {
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.draw(0..self.vertex_count, 0..1);
         }
+        // Cursor propio sobre el modelo: circulo del pincel (pincel y borrador) o la chincheta del cuentagotas.
+        let ring = if cursor_in_window && matches!(self.tool, Tool::Brush | Tool::Eraser | Tool::Eyedropper) {
+            let pin = self.tool == Tool::Eyedropper;
+            // Chincheta: el color que hay bajo la punta (el que se tomaria al hacer clic), para mostrarlo dentro del aro.
+            let color = if pin { self.color_at(camera, mouse.0, mouse.1) } else { None };
+            let on_model = if pin {
+                true
+            } else {
+                match self.brush_radius_px(camera, mouse) {
+                    Some(r) => {
+                        self.ring_radius = r.clamp(3.0, 300.0);
+                        true
+                    }
+                    None => false,
+                }
+            };
+            Some(BrushRing { pos: [mouse.0, mouse.1], radius: self.ring_radius, on_model, pin, color })
+        } else {
+            None
+        };
         // Interfaz (egui) encima del modelo.
-        let layer_count = self.layers.layers.len();
         let mesh_count = self.mesh_count;
-        let (full_output, ui_changed, view_axis) = self.ui.run(
+        let (full_output, ui_changed, view_axis, layers_dirty) = self.ui.run(
             &self.window,
             &mut self.tool,
             &mut self.brush_color,
             &mut self.brush_opacity,
-            layer_count,
+            &mut self.brush,
+            &mut self.layers,
             mesh_count,
             camera,
             &mut self.view_locked,
+            ring,
         );
+        // El panel de capas cambio algo que se ve (ojo, opacidad, modo, recorte, fondo): se recompone y se sube la
+        // textura antes de enviar este cuadro.
+        if layers_dirty {
+            self.refresh_all();
+        }
         if ui_changed {
             self.window.set_title(&self.status());
         }
@@ -814,6 +875,7 @@ impl ApplicationHandler for App {
                 let (x, y) = (position.x as f32, position.y as f32);
                 let (dx, dy) = (x - self.mouse.0, y - self.mouse.1);
                 self.mouse = (x, y);
+                self.cursor_in_window = true;
                 if self.left_down && gpu.tool == Tool::Hand {
                     // Mano: el boton izquierdo mueve la vista en vez de pintar (si la vista esta bloqueada, nada).
                     if !gpu.view_locked {
@@ -835,6 +897,19 @@ impl ApplicationHandler for App {
                     }
                     gpu.window.request_redraw();
                 }
+                // El cursor propio (circulo del pincel o chincheta del cuentagotas) sigue al raton.
+                if matches!(gpu.tool, Tool::Brush | Tool::Eraser | Tool::Eyedropper) {
+                    gpu.window.request_redraw();
+                }
+            }
+            WindowEvent::CursorEntered { .. } => {
+                self.cursor_in_window = true;
+                gpu.window.request_redraw();
+            }
+            WindowEvent::CursorLeft { .. } => {
+                // Al salir de la ventana el circulo desaparece.
+                self.cursor_in_window = false;
+                gpu.window.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if ui_has_it || gpu.view_locked {
@@ -980,7 +1055,7 @@ impl ApplicationHandler for App {
                 // Si hay un giro animado de la vista (clic en el gizmo), se avanza antes de dibujar y se sigue
                 // redibujando hasta que termine.
                 let animating = self.camera.update_animation();
-                let (delay, view_axis) = gpu.render(&self.camera);
+                let (delay, view_axis) = gpu.render(&self.camera, self.mouse, self.cursor_in_window);
                 if let Some(axis) = view_axis {
                     if !gpu.view_locked {
                         self.camera.snap_to(axis);
@@ -1012,6 +1087,7 @@ fn main() {
         right_down: false,
         last_paint: None,
         modifiers: ModifiersState::default(),
+        cursor_in_window: false,
     };
     event_loop.run_app(&mut app).expect("error en el bucle de eventos");
 }

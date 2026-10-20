@@ -145,11 +145,11 @@ impl LayerStack {
     }
 
     /// Color final de un texel (indice `i` en bytes) sobre el fondo `bg`, con las reglas de la seccion 5.
-    fn blend_texel(&self, i: usize, bg: [u8; 4]) -> [u8; 4] {
+    fn blend_texel(layers: &[PaintLayer], i: usize, bg: [u8; 4]) -> [u8; 4] {
         let mut acc = bg;
         // Alfa del pixel de la ultima capa no recortada del grupo (0 si esa capa esta oculta).
         let mut base_a = 0u32;
-        for (n, layer) in self.layers.iter().enumerate() {
+        for (n, layer) in layers.iter().enumerate() {
             let p = &layer.pixels[i..i + 4];
             let clipped = layer.clip_to_below && n > 0;
             if !clipped {
@@ -171,15 +171,33 @@ impl LayerStack {
     }
 
     /// Recompone solo el rectangulo (extremos incluidos). Mismas reglas de la seccion 5 para pantalla y exportacion.
+    /// Si la zona es grande (cambiar la opacidad, el modo de mezcla, el fondo...) se reparte por franjas de filas entre
+    /// los hilos del procesador; los toques pequenos del pincel se hacen en un solo hilo, donde crear hilos no compensa.
     pub fn composite_rect(&mut self, (x0, y0, x1, y1): Rect) {
         let size = self.size;
-        for y in y0..=y1 {
-            for x in x0..=x1 {
-                let i = ((y * size + x) * 4) as usize;
-                let acc = self.blend_texel(i, self.background.pixel(x, y));
-                self.composite[i..i + 4].copy_from_slice(&acc);
-            }
+        let stride = (size * 4) as usize;
+        let rows = (y1 - y0 + 1) as usize;
+        let area = (x1 - x0 + 1) as usize * rows;
+        let layers: &[PaintLayer] = &self.layers;
+        let bg = self.background;
+        let out = &mut self.composite[y0 as usize * stride..(y1 as usize + 1) * stride];
+
+        let threads = if area < 65_536 {
+            1
+        } else {
+            std::thread::available_parallelism().map_or(1, |n| n.get()).min(rows)
+        };
+        if threads <= 1 {
+            composite_rows(layers, bg, size, y0, out, x0, x1);
+            return;
         }
+        let band = rows.div_ceil(threads);
+        std::thread::scope(|s| {
+            for (n, chunk) in out.chunks_mut(band * stride).enumerate() {
+                let y_start = y0 + (n * band) as u32;
+                s.spawn(move || composite_rows(layers, bg, size, y_start, chunk, x0, x1));
+            }
+        });
     }
 
     /// Textura completa para exportar (seccion 13): con el fondo elegido, o transparente. Con el fondo `None`
@@ -192,7 +210,7 @@ impl LayerStack {
             for x in 0..size {
                 let i = ((y * size + x) * 4) as usize;
                 let bg = if opaque_bg { self.background.pixel(x, y) } else { [0, 0, 0, 0] };
-                out[i..i + 4].copy_from_slice(&self.blend_texel(i, bg));
+                out[i..i + 4].copy_from_slice(&Self::blend_texel(&self.layers, i, bg));
             }
         }
         out
@@ -207,6 +225,21 @@ impl LayerStack {
             out.extend_from_slice(&self.composite[a..b]);
         }
         out
+    }
+}
+
+/// Compone las columnas `x0..=x1` de un grupo de filas de la textura. `rows` son las filas completas (RGBA) de la
+/// textura compuesta a partir de la fila `y_start`; cada hilo recibe su propia franja, asi que no se pisan.
+fn composite_rows(layers: &[PaintLayer], bg: Background, size: u32, y_start: u32, rows: &mut [u8], x0: u32, x1: u32) {
+    let stride = (size * 4) as usize;
+    for (k, row) in rows.chunks_mut(stride).enumerate() {
+        let y = y_start + k as u32;
+        for x in x0..=x1 {
+            let i = ((y * size + x) * 4) as usize;
+            let acc = LayerStack::blend_texel(layers, i, bg.pixel(x, y));
+            let o = (x * 4) as usize;
+            row[o..o + 4].copy_from_slice(&acc);
+        }
     }
 }
 

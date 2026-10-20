@@ -177,7 +177,7 @@ fn pill_half_height(rect: Rect, x: f32) -> f32 {
 
 /// Barra en forma de pastilla (puntas redondas) con degradado horizontal y borde suavizado: el contorno se difumina
 /// un pixel hacia afuera con vertices transparentes, igual que hace egui con sus formas.
-fn pill_gradient(p: &Painter, rect: Rect, stops: &[Color32]) {
+pub(crate) fn pill_gradient(p: &Painter, rect: Rect, stops: &[Color32]) {
     const CAP: u32 = 10;
     const MID: u32 = 32;
     const FEATHER: f32 = 1.0;
@@ -225,7 +225,7 @@ fn pill_gradient(p: &Painter, rect: Rect, stops: &[Color32]) {
 }
 
 /// Fondo de cuadros para la barra de opacidad, tambien en forma de pastilla.
-fn pill_checker(p: &Painter, rect: Rect, cell: f32) {
+pub(crate) fn pill_checker(p: &Painter, rect: Rect, cell: f32) {
     pill_gradient(p, rect, &[Color32::from_gray(235), Color32::from_gray(235)]);
     let cy = rect.center().y;
     let nx = (rect.width() / cell).ceil() as i32;
@@ -330,13 +330,13 @@ fn handle(p: &Painter, pos: egui::Pos2, fill: Color32) {
 
 // ---------------------------------------------------------------- deslizador
 
-struct Edit {
-    changed: bool,
-    done: bool,
+pub(crate) struct Edit {
+    pub(crate) changed: bool,
+    pub(crate) done: bool,
 }
 
 /// Una fila: etiqueta, boton -, barra con degradado, boton +. `frac` va de 0 a 1.
-fn slider_row(
+pub(crate) fn slider_row(
     ui: &Ui,
     rect: Rect,
     id: egui::Id,
@@ -345,11 +345,27 @@ fn slider_row(
     step: f32,
     paint_track: impl FnOnce(&Painter, Rect),
 ) -> Edit {
+    slider_row_with(ui, rect, id, label, 38.0, frac, step, paint_track)
+}
+
+/// Igual que `slider_row`, pero el ancho que se reserva a la izquierda para la etiqueta (`label_w`) se elige: con
+/// `0.0` y la etiqueta vacia la fila empieza directo en el boton - (el panel de pinceles pone el titulo y el valor
+/// arriba de la fila).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn slider_row_with(
+    ui: &Ui,
+    rect: Rect,
+    id: egui::Id,
+    label: &str,
+    label_w: f32,
+    frac: &mut f32,
+    step: f32,
+    paint_track: impl FnOnce(&Painter, Rect),
+) -> Edit {
     let p = ui.painter().clone();
     // El centro se redondea a pixel entero para que el borde de arriba y el de abajo de la barra queden iguales.
     let ppp = ui.ctx().pixels_per_point();
     let cy = (rect.center().y * ppp).round() / ppp;
-    let label_w = 38.0;
     let btn_r = 10.0;
     let minus_c = pos2(rect.left() + label_w + btn_r, cy);
     let plus_c = pos2(rect.right() - btn_r, cy);
@@ -516,12 +532,14 @@ impl ColorPanel {
                     }
                 }
                 Tab::Rgb => {
-                    for off in [vec2(0.0, -4.0), vec2(-4.0, 3.0), vec2(4.0, 3.0)] {
-                        p.circle_stroke(c + off, 6.5, Stroke::new(1.5, col));
-                    }
+                    // Icono SVG (assets/icons/rgb.svg), teñido de azul si la pestaña esta activa o de blanco si no.
+                    let icon = Rect::from_center_size(c, vec2(20.0, 20.0));
+                    egui::Image::new(egui::include_image!("../../assets/icons/rgb.svg")).tint(col).paint_at(ui, icon);
                 }
                 Tab::Hsb => {
-                    p.circle_stroke(c, 6.5, Stroke::new(3.5, col));
+                    // Icono SVG (assets/icons/hsb.svg), teñido de azul si la pestaña esta activa o de blanco si no.
+                    let icon = Rect::from_center_size(c, vec2(18.0, 18.0));
+                    egui::Image::new(egui::include_image!("../../assets/icons/hsb.svg")).tint(col).paint_at(ui, icon);
                 }
             }
             p.text(pos2(r.center().x, r.bottom() - 3.0), Align2::CENTER_BOTTOM, name, FontId::proportional(10.0), col);

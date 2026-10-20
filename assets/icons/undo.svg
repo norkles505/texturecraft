@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="500" height="500" viewBox="0 0 500 500">
+  <defs>
+    <style>
+      .cls-1{fill:none;stroke:#FFFFFF;stroke-width:35;stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+  <title>deshacer.svg</title>
+  <g id="Layer_2" data-name="Layer 2">
+    <path d="M427.531 260.206 L65.177 260.206 L215.357 110.025" class="cls-1"/>
+    <path d="M65.177 260.206 L215.357 410.386" class="cls-1"/>
+  </g>
+</svg>

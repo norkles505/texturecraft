@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 500 500">
+  <defs>
+    <style>
+      .cls-1{fill:#FFFFFF;stroke:#FFFFFF;stroke-width:30;stroke-linecap:round;stroke-linejoin:round}
+      .cls-2{fill:none;stroke:#FFFFFF;stroke-width:30;stroke-miterlimit:10}
+      .cls-3{fill:none;stroke:#FFFFFF;stroke-width:30;stroke-linecap:round;stroke-linejoin:round}
+      .cls-4{fill:#FFFFFF;stroke:#FFFFFF;stroke-width:25;stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+  <title>borrar capa.svg</title>
+  <g id="Layer_2" data-name="Layer 2">
+    <path d="M121.571 151.81 L378.429 151.81" class="cls-1"/>
+    <path d="M349.502 162.211 L349.502 369.999 C349.502 384.031 338.128 395.405 324.096 395.405 L175.904 395.405 C161.872 395.405 150.498 384.031 150.498 369.999 L150.498 162.211" class="cls-2"/>
+    <path d="M173.046 143.381 L173.046 103.085 C173.046 95.112 179.51 88.649 187.483 88.649 L312.517 88.649 C320.49 88.649 326.954 95.112 326.954 103.085 L326.954 143.381" class="cls-3"/>
+    <path d="M250 331.121 L250 212.513" class="cls-4"/>
+    <path d="M300 331.121 L300 212.513" class="cls-4"/>
+    <path d="M200 331.121 L200 212.513" class="cls-4"/>
+  </g>
+</svg>

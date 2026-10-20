@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 500 500">
+  <defs>
+    <style>
+      .cls-1{fill:#FFFFFF}
+      .cls-2{fill:#FFFFFF}
+      .cls-3{fill:#FFFFFF;stroke:#FFFFFF;stroke-width:48;stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+  <title>layer_merge.svg</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <g>
+      <path d="M250 34.844 L250 241.531" class="cls-1"/>
+      <path d="M180.434 5.376 L312.494 5.376 C318.054 5.376 322.562 9.884 322.562 15.445 L322.562 176.062 C322.562 181.623 327.07 186.131 332.631 186.131 L393.909 186.131 C402.799 186.131 407.327 196.812 401.144 203.201 L257.236 351.925 C253.279 356.015 246.721 356.015 242.764 351.925 L98.856 203.201 C92.673 196.812 97.201 186.131 106.091 186.131 L160.297 186.131 C165.857 186.131 170.365 181.623 170.365 176.062 L170.365 15.445 C170.365 9.884 174.873 5.376 180.434 5.376 Z" class="cls-2"/>
+    </g>
+    <path d="M51.272 391.342 L443.288 391.342" class="cls-3"/>
+    <path d="M51.272 459.319 L443.288 459.319" class="cls-3"/>
+  </g>
+</svg>

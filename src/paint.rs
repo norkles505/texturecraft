@@ -1,9 +1,12 @@
-//! Pincel en CPU (ESPECIFICACION.md, secciones 7.1 y 7.2): estado del trazo + un toque `SOFT`, modo Normal.
+//! Pincel en CPU (ESPECIFICACION.md, secciones 7.1 y 7.2): estado del trazo + un toque con el `falloff` del pincel
+//! elegido (`brush.rs`), modo Normal.
 //! Los pixeles de la capa los pone quien llama; el estado del trazo se comparte entre capas (una pieza = un trazo
 //! a la vez), como `strokeAlpha`/`strokeBase`/`strokeLastDab` de la app Android.
 //!
 //! Dentro de una misma pasada la opacidad es el MAXIMO de los toques (no se acumula); si el trazo se va y vuelve
 //! (hueco de mas de 3 toques) la segunda pasada si suma.
+
+use crate::brush::BrushType;
 
 /// Lado de la textura de cada pieza (fijo en la app Android).
 pub const TEX_SIZE: u32 = 1024;
@@ -19,6 +22,8 @@ pub type Rect = (u32, u32, u32, u32);
 pub struct DabOptions {
     pub alpha_lock: bool,
     pub erase: bool,
+    /// Pincel elegido: de el sale el `falloff` del toque (seccion 7.5). El borrador usa el mismo.
+    pub brush: BrushType,
 }
 
 pub struct StrokeState {
@@ -79,8 +84,8 @@ impl StrokeState {
         }
     }
 
-    /// Un toque de pincel suave en `(u, v)` sobre `pixels` (RGBA recto de la capa): `falloff = min(1, 2t)` con
-    /// `t = 1 - d/radio`. Devuelve el rectangulo cambiado `(x0, y0, x1, y1)`, ambos extremos incluidos.
+    /// Un toque de pincel en `(u, v)` sobre `pixels` (RGBA recto de la capa): el `falloff` es el de `opts.brush`
+    /// con `t = 1 - d/radio`. Devuelve el rectangulo cambiado `(x0, y0, x1, y1)`, ambos extremos incluidos.
     pub fn dab(
         &mut self,
         pixels: &mut [u8],
@@ -105,7 +110,7 @@ impl StrokeState {
                     continue;
                 }
                 let t = 1.0 - d / radius;
-                let dab_alpha = (2.0 * t).min(1.0) * opacity;
+                let dab_alpha = opts.brush.falloff(t) * opacity;
                 if dab_alpha <= 0.0 {
                     continue;
                 }
@@ -186,7 +191,7 @@ mod tests {
         s.begin_stroke();
         // Centro en el texel (32, 32): u = v = 32/63.
         let c = 32.0 / 63.0;
-        let r = s.dab(&mut pixels, c, c, 10.0, [0, 0, 0], 1.0, DabOptions { alpha_lock: false, erase: true });
+        let r = s.dab(&mut pixels, c, c, 10.0, [0, 0, 0], 1.0, DabOptions { erase: true, ..Default::default() });
         assert!(r.is_some());
         assert_eq!(px(&pixels, 64, 32, 32), [200, 10, 10, 0]);
         // Fuera del radio no cambia nada.
@@ -199,7 +204,7 @@ mod tests {
         let mut pixels = layer(64, [200, 10, 10, 255]);
         s.begin_stroke();
         let c = 32.0 / 63.0;
-        s.dab(&mut pixels, c, c, 10.0, [0, 0, 0], 1.0, DabOptions { alpha_lock: true, erase: true });
+        s.dab(&mut pixels, c, c, 10.0, [0, 0, 0], 1.0, DabOptions { alpha_lock: true, erase: true, ..Default::default() });
         assert_eq!(px(&pixels, 64, 32, 32), [200, 10, 10, 255]);
     }
 
