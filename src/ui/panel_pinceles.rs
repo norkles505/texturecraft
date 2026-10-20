@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use egui::pos2;
 
 use super::*;
-use crate::brush::{Brush, BrushGroup, BrushType, MAX_RADIUS, MIN_RADIUS};
+use crate::brush::{Brush, BrushGroup, BrushType, MAX_RADIUS, MIN_FLOW, MIN_RADIUS};
+use crate::chalk::{ChalkDab, PREVIEW_UNITS_PER_PX};
+use glam::Vec3;
 
 /// Medidas del panel (en puntos de egui). `PB_LEFT`/`PB_TOP` = donde se ancla (justo a la derecha de la barra de
 /// herramientas, igual que el panel de color).
@@ -33,8 +35,9 @@ const PB_RAIL_ITEM_H: f32 = 62.0;
 const PB_LIST_MIN_H: f32 = 132.0;
 const PB_LIST_MAX_H: f32 = 308.0;
 const PB_ROW_H: f32 = 44.0;
-/// Zona de los deslizadores (dos bloques iguales: titulo + fila) y alto de la fila del deslizador.
-const PB_SLIDERS_H: f32 = 112.0;
+/// Zona de los deslizadores (tres bloques iguales: titulo + fila; Grosor, Opacidad y Flujo) y alto de la fila del
+/// deslizador.
+const PB_SLIDERS_H: f32 = 168.0;
 const PB_SLIDER_ROW_H: f32 = 28.0;
 /// Trazo de muestra de cada fila (en puntos). Las texturas se dibujan al doble para que se vean nitidas.
 const THUMB_W: f32 = 176.0;
@@ -124,7 +127,13 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     let margin = (r + 6.0 * TEX_SCALE).min(w as f32 * 0.25);
     let (x0, x1) = (margin, w as f32 - margin);
     let pos = |t: f32| (x0 + (x1 - x0) * t, h as f32 * 0.5 - amp * (t * std::f32::consts::TAU * 0.95).sin());
+    let mut chalk_n = 0u32;
     let mut dab = |cx: f32, cy: f32| {
+        // La tiza gira y cambia de tamano en cada toque, como la de verdad (chalk.rs).
+        let chalk = (kind == BrushType::Chalk).then(|| {
+            chalk_n += 1;
+            ChalkDab::new(chalk_n, Vec3::Z, r)
+        });
         let xa = (cx - r).floor().max(0.0) as usize;
         let xb = ((cx + r).ceil() as usize).min(w - 1);
         let ya = (cy - r).floor().max(0.0) as usize;
@@ -135,7 +144,13 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
                 if d >= r {
                     continue;
                 }
-                let a = kind.falloff(1.0 - d / r) * opacity;
+                let a = match &chalk {
+                    Some(c) => {
+                        let (fx, fy) = (x as f32, y as f32);
+                        c.alpha(Vec3::new(fx - cx, fy - cy, 0.0), Vec3::new(fx, fy, 0.0) * PREVIEW_UNITS_PER_PX, x as u32, y as u32)
+                    }
+                    None => kind.falloff(1.0 - d / r),
+                } * opacity;
                 let i = y * w + x;
                 if a > alpha[i] {
                     alpha[i] = a;
@@ -169,13 +184,13 @@ impl BrushPanel {
         if !self.open {
             return false;
         }
-        let before = (brush.kind, brush.radius, *opacity);
+        let before = (brush.kind, brush.radius, brush.flow, *opacity);
         // La lista ocupa lo que sobre de la ventana (la de la referencia mide ~308 y muestra 7 filas).
         let fixed = PB_TOP + 2.0 * PB_PAD + PB_TITLE_H + PB_PREVIEW_H + PB_TABS_H + PB_SLIDERS_H + 4.0 * PB_GAP + 12.0;
         let list_h = (ctx.content_rect().height() - fixed).clamp(PB_LIST_MIN_H, PB_LIST_MAX_H);
         #[allow(deprecated)]
         let id = egui::Id::new("brush_panel");
-        egui::Area::new(id).anchor(Align2::LEFT_TOP, vec2(PB_LEFT, PB_TOP)).show(ctx, |ui| {
+        let out = egui::Area::new(id).anchor(Align2::LEFT_TOP, vec2(PB_LEFT, PB_TOP)).show(ctx, |ui| {
             Frame::new()
                 .fill(bar_fill())
                 .stroke(Stroke::new(1.0, Color32::from_white_alpha(16)))
@@ -185,7 +200,12 @@ impl BrushPanel {
                     self.contents(ui, brush, opacity, color, list_h);
                 });
         });
-        (brush.kind, brush.radius, *opacity) != before
+        // Un clic fuera del panel (y fuera de la barra de herramientas, cuyo boton del pincel ya lo abre y cierra) lo
+        // cierra, como el panel de capas.
+        if pressed_outside(ctx, out.response.rect) {
+            self.open = false;
+        }
+        (brush.kind, brush.radius, brush.flow, *opacity) != before
     }
 
     fn contents(&mut self, ui: &mut egui::Ui, brush: &mut Brush, opacity: &mut f32, color: [u8; 3], list_h: f32) {
@@ -253,7 +273,7 @@ impl BrushPanel {
         egui::Image::new(egui::include_image!("../../assets/icons/lock.svg"))
             .tint(lock_color)
             .paint_at(ui, Rect::from_center_size(lock_c, vec2(17.0, 17.0)));
-        if lock.on_hover_text("Conservar tamaño y opacidad al cambiar de pincel").clicked() {
+        if lock.on_hover_text("Conservar tamaño, opacidad y flujo al cambiar de pincel").clicked() {
             self.lock = !self.lock;
         }
 
@@ -433,18 +453,23 @@ impl BrushPanel {
         if let Some(kind) = picked {
             if brush.kind != kind {
                 brush.kind = kind;
-                // Con el candado puesto se queda el tamano; si no, el pincel trae el suyo.
+                // Con el candado puesto se quedan el tamano y el flujo; si no, el pincel trae los suyos.
                 if !self.lock {
                     brush.radius = kind.default_radius();
+                    brush.flow = Brush::new(kind).flow;
                 }
             }
         }
 
-        // ---- Deslizadores: Grosor (radio en texeles) y Opacidad. El titulo y el valor van arriba de cada fila.
+        // ---- Deslizadores: Grosor (radio en texeles), Opacidad y Flujo. El titulo y el valor van arriba de cada fila.
         let (sl, _) = ui.allocate_exact_size(vec2(PB_W, PB_SLIDERS_H), Sense::hover());
         p.rect_filled(sl, CornerRadius::same(8), PB_SLIDERS_FILL);
-        let block_h = PB_SLIDERS_H / 2.0;
-        let titles = [("Grosor", format!("{:.1}px", brush.radius)), ("Opacidad", format!("{}%", (*opacity * 100.0).round() as i32))];
+        let block_h = PB_SLIDERS_H / 3.0;
+        let titles = [
+            ("Grosor", format!("{:.1}px", brush.radius)),
+            ("Opacidad", format!("{}%", (*opacity * 100.0).round() as i32)),
+            ("Flujo", format!("{}%", (brush.flow * 100.0).round() as i32)),
+        ];
         for (k, (name, value)) in titles.iter().enumerate() {
             let top = sl.top() + block_h * k as f32;
             p.text(pos2(sl.left() + 12.0, top + 16.0), Align2::LEFT_CENTER, *name, FontId::proportional(14.0), Color32::WHITE);
@@ -480,6 +505,21 @@ impl BrushPanel {
         });
         if e.changed {
             *opacity = o;
+        }
+
+        // Flujo: cuanta cobertura suma cada toque. Con un flujo bajo hacen falta varios toques para llegar a la opacidad.
+        let mut fl = brush.flow;
+        let fl0 = fl;
+        let e = slider_row_with(ui, row(2), base.with("flow"), "", 0.0, &mut fl, 0.01, move |p, r| {
+            pill_gradient(p, r, &[Color32::from_gray(205), Color32::from_gray(205)]);
+            let w = r.width() * fl0;
+            if w >= r.height() {
+                pill_gradient(p, Rect::from_min_max(r.min, pos2(r.left() + w, r.max.y)), &[PB_BLUE, PB_BLUE]);
+            }
+        });
+        if e.changed {
+            // Un entero por ciento, como se muestra.
+            brush.flow = ((fl * 100.0).round() / 100.0).clamp(MIN_FLOW, 1.0);
         }
     }
 }

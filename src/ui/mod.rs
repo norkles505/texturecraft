@@ -13,6 +13,7 @@ mod estilo;
 mod gizmo;
 mod panel_capas;
 mod panel_color;
+mod panel_mallas;
 mod panel_menu;
 mod panel_opciones;
 mod panel_pinceles;
@@ -31,6 +32,7 @@ use crate::camera::{Camera, ViewAxis};
 use panel_color::{ColorPanel, pill_checker, pill_gradient, slider_row, slider_row_with};
 use panel_pinceles::BrushPanel;
 use crate::layers::{Background, LayerStack};
+use crate::obj::MeshPart;
 
 use barra_herramientas::*;
 use barra_inferior::*;
@@ -38,10 +40,22 @@ use cursor::*;
 use estilo::*;
 use gizmo::*;
 use panel_capas::*;
+use panel_mallas::*;
 use panel_menu::*;
 use panel_opciones::*;
 use ventana_referencia::*;
 pub use cursor::BrushRing;
+
+/// true si en este cuadro se apreto el boton principal del raton fuera de `panel` y fuera de la barra de herramientas
+/// (sus botones abren y cierran los paneles por su cuenta: si tambien contaran como "fuera", el panel se cerraria y se
+/// volveria a abrir en el mismo clic). Los paneles flotantes lo usan para cerrarse al hacer clic en el vacio.
+fn pressed_outside(ctx: &egui::Context, panel: Rect) -> bool {
+    let toolbar = ctx.memory(|m| m.area_rect(egui::Id::new("toolbar")));
+    ctx.input(|i| i.pointer.primary_pressed())
+        && ctx
+            .input(|i| i.pointer.interact_pos())
+            .is_some_and(|p| !panel.contains(p) && !toolbar.is_some_and(|t| t.contains(p)))
+}
 
 /// Estado del panel de opciones (el que abre el boton de los interruptores de la barra inferior).
 #[derive(Default)]
@@ -53,6 +67,16 @@ struct OptionsPanel {
     /// y si esta abierto el desplegable de modos de mezcla.
     layers_open: bool,
     layers_scroll: f32,
+    /// Panel de mallas (el que abre el boton del cubo de la barra inferior) y cuanto se desplazo su lista (en puntos).
+    meshes_open: bool,
+    meshes_scroll: f32,
+    /// Opacidad (0..1) del deslizador del panel de mallas. `None` = 1 (100 %). Todavia solo se muestra: no cambia el
+    /// dibujo del modelo.
+    meshes_opacity: Option<f32>,
+    /// Mientras el selector de archivos del boton Importar esta abierto: canal por donde llega la ruta elegida
+    /// (`None` = cancelado). Cuando llega, queda en `pending_import` hasta que `UiLayer::take_import` la entrega.
+    mesh_import: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
+    pending_import: Option<std::path::PathBuf>,
     /// Menu de los tres puntos del panel de capas.
     more_open: bool,
     blend_open: bool,
@@ -60,6 +84,9 @@ struct OptionsPanel {
     blend_scroll: f32,
     /// Interruptor "Ventana de referencia": mientras esta encendido se muestra la ventana flotante.
     reference_window: bool,
+    /// Interruptor "Acumular pasada" APAGADO (asi el valor por defecto, `false`, es "encendido"): el trazo no pasa de la
+    /// opacidad del pincel, como en photocraft. Ver `UiLayer::pass_ceiling`.
+    pass_ceiling: bool,
     /// Esquina superior izquierda de la ventana de referencia (`None` = aun no se coloco; se pone la primera vez).
     reference_pos: Option<egui::Pos2>,
     /// Tamano de la ventana de referencia (`None` = el inicial, `REF_SIZE` cuadrado). Se cambia estirando los bordes.
@@ -73,6 +100,20 @@ struct OptionsPanel {
     reference_offset: egui::Vec2,
     /// Mientras el selector de archivos esta abierto: canal por donde llega la ruta elegida (`None` = cancelado).
     reference_pick: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
+}
+
+/// Lo que devuelve `UiLayer::run` en cada cuadro.
+pub struct UiOutput {
+    /// Lo que hay que dibujar.
+    pub full_output: egui::FullOutput,
+    /// Cambio la herramienta, el pincel o el color (hay que actualizar el titulo de la ventana).
+    pub changed: bool,
+    /// Eje del gizmo al que se hizo clic (la camara debe girar a esa vista).
+    pub view_axis: Option<ViewAxis>,
+    /// El panel de capas cambio algo que obliga a recomponer la textura (ojo, opacidad, modo, recorte o fondo).
+    pub layers_dirty: bool,
+    /// El panel de mallas mostro u oculto alguna malla.
+    pub parts_dirty: bool,
 }
 
 /// Todo lo de egui junto: contexto, entrada de winit y dibujado en wgpu.
@@ -119,6 +160,17 @@ impl UiLayer {
         self.state.on_window_event(window, event)
     }
 
+    /// El .obj que se eligio con el boton Importar del panel de mallas, si ya llego (se entrega una sola vez).
+    pub fn take_import(&mut self) -> Option<std::path::PathBuf> {
+        self.options.pending_import.take()
+    }
+
+    /// true si el interruptor "Acumular pasada" del panel de opciones esta APAGADO: el trazo sube hacia la opacidad
+    /// del pincel y no la pasa (como photocraft). Encendido (por defecto) = la regla de siempre.
+    pub fn pass_ceiling(&self) -> bool {
+        self.options.pass_ceiling
+    }
+
     /// Arma la interfaz de este cuadro. Devuelve lo que hay que dibujar, si cambio la herramienta, el eje del
     /// gizmo al que se hizo clic (la camara debe girar a esa vista) y si el panel de capas cambio algo que obliga a
     /// recomponer la textura (ojo, opacidad, modo de mezcla, recorte o fondo).
@@ -130,14 +182,16 @@ impl UiLayer {
         opacity: &mut f32,
         brush: &mut Brush,
         layers: &mut LayerStack,
-        mesh_count: usize,
+        parts: &mut [MeshPart],
+        selected_part: &mut usize,
         camera: &Camera,
         view_locked: &mut bool,
         ring: Option<BrushRing>,
-    ) -> (egui::FullOutput, bool, Option<ViewAxis>, bool) {
+    ) -> UiOutput {
         let raw_input = self.state.take_egui_input(window);
         let mut changed = false;
         let mut layers_dirty = false;
+        let mut parts_dirty = false;
         let mut view_axis = None;
         let panel = &mut self.panel;
         let options = &mut self.options;
@@ -151,7 +205,9 @@ impl UiLayer {
             } else if panel.open && !color_was_open {
                 brush_panel.open = false;
             }
-            layers_dirty |= bottom_bar(ui, layers, mesh_count, options);
+            let (layers_changed, parts_changed) = bottom_bar(ui, layers, parts, selected_part, options);
+            layers_dirty |= layers_changed;
+            parts_dirty |= parts_changed;
             changed |= reference_window(ui.ctx(), options, *tool, color);
             view_axis = nav_gizmo(ui.ctx(), camera);
             changed |= panel.show(ui.ctx(), color, opacity);
@@ -163,7 +219,7 @@ impl UiLayer {
         });
         // Cursor, portapapeles, enlaces...
         self.state.handle_platform_output(window, std::mem::take(&mut full_output.platform_output));
-        (full_output, changed, view_axis, layers_dirty)
+        UiOutput { full_output, changed, view_axis, layers_dirty, parts_dirty }
     }
 
     /// Dibuja la interfaz sobre `view` (que ya tiene el modelo). Devuelve los buffers de comandos extra que haya

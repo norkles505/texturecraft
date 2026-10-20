@@ -3,6 +3,8 @@
 //! `falloff(t)` recibe `t = 1 - d/radio` (1 en el centro del toque, 0 en el borde) y devuelve cuanta opacidad queda
 //! ahi (0..1). El espaciado es una fraccion del radio. El tamano es el RADIO en texeles (el slider va de 1 a 100).
 
+use crate::chalk::{DryKind, PASTEL_SCATTER};
+
 /// Radio minimo y maximo del pincel en texeles.
 pub const MIN_RADIUS: f32 = 1.0;
 pub const MAX_RADIUS: f32 = 100.0;
@@ -18,6 +20,14 @@ pub enum BrushType {
     PencilSoft,
     MarkerSoft,
     MarkerHard,
+    /// Tiza (portada del Chalk de photocraft): punta de bitmap con grano, que gira en cada toque, y papel (`chalk.rs`).
+    Chalk,
+    /// Carboncillo (portado de photocraft): punta elipse con vetas que sigue la direccion del trazo y papel que resta
+    /// cobertura (`chalk.rs`).
+    Charcoal,
+    /// Pastel (portado de photocraft): punta de grano que gira y se dispersa en cada toque, con trama de lienzo que
+    /// resta cobertura (`chalk.rs`).
+    Pastel,
 }
 
 /// Categorias del panel de pinceles (la columna de la izquierda).
@@ -27,10 +37,19 @@ pub enum BrushGroup {
     Pencil,
     Marker,
     Airbrush,
+    Chalk,
+    Dry,
 }
 
 impl BrushGroup {
-    pub const ALL: [BrushGroup; 4] = [BrushGroup::Basic, BrushGroup::Pencil, BrushGroup::Marker, BrushGroup::Airbrush];
+    pub const ALL: [BrushGroup; 6] = [
+        BrushGroup::Basic,
+        BrushGroup::Pencil,
+        BrushGroup::Marker,
+        BrushGroup::Airbrush,
+        BrushGroup::Chalk,
+        BrushGroup::Dry,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -38,13 +57,15 @@ impl BrushGroup {
             BrushGroup::Pencil => "Lápiz",
             BrushGroup::Marker => "Rotulador",
             BrushGroup::Airbrush => "Aerógrafo",
+            BrushGroup::Chalk => "Tiza",
+            BrushGroup::Dry => "Seco",
         }
     }
 }
 
 impl BrushType {
     /// En el orden en que salen en el panel.
-    pub const ALL: [BrushType; 7] = [
+    pub const ALL: [BrushType; 10] = [
         BrushType::Soft,
         BrushType::Hard,
         BrushType::Airbrush,
@@ -52,6 +73,9 @@ impl BrushType {
         BrushType::PencilSoft,
         BrushType::MarkerSoft,
         BrushType::MarkerHard,
+        BrushType::Chalk,
+        BrushType::Charcoal,
+        BrushType::Pastel,
     ];
 
     pub fn name(self) -> &'static str {
@@ -63,6 +87,9 @@ impl BrushType {
             BrushType::PencilSoft => "Lápiz (Difuminado)",
             BrushType::MarkerSoft => "Rotulador (Suave)",
             BrushType::MarkerHard => "Rotulador (Fuerte)",
+            BrushType::Chalk => "Tiza",
+            BrushType::Charcoal => "Carboncillo",
+            BrushType::Pastel => "Pastel",
         }
     }
 
@@ -72,6 +99,8 @@ impl BrushType {
             BrushType::Pencil | BrushType::PencilSoft => BrushGroup::Pencil,
             BrushType::MarkerSoft | BrushType::MarkerHard => BrushGroup::Marker,
             BrushType::Airbrush => BrushGroup::Airbrush,
+            BrushType::Chalk => BrushGroup::Chalk,
+            BrushType::Charcoal | BrushType::Pastel => BrushGroup::Dry,
         }
     }
 
@@ -83,6 +112,10 @@ impl BrushType {
             BrushType::PencilSoft => 48.0,
             BrushType::MarkerSoft => 6.0,
             BrushType::MarkerHard => 14.0,
+            BrushType::Chalk => 20.0,
+            // Los presets de photocraft miden 45 y 50 de diametro: aqui el radio es la mitad.
+            BrushType::Charcoal => 22.0,
+            BrushType::Pastel => 25.0,
         }
     }
 
@@ -94,6 +127,29 @@ impl BrushType {
             BrushType::PencilSoft => 0.20,
             BrushType::MarkerSoft => 0.15,
             BrushType::MarkerHard => 0.12,
+            BrushType::Chalk => 0.20,
+            // photocraft mide el espaciado en fraccion del diametro (0.12 y 0.15): aqui es del radio, el doble.
+            BrushType::Charcoal => 0.24,
+            BrushType::Pastel => 0.30,
+        }
+    }
+
+    /// El pincel de medio seco que es (carboncillo o pastel), o `None` si no lo es. Estos pinceles no usan el
+    /// `falloff`: su forma sale de la punta de bitmap y su papel o lienzo resta cobertura al trazo (`chalk.rs`).
+    pub fn dry_kind(self) -> Option<DryKind> {
+        match self {
+            BrushType::Charcoal => Some(DryKind::Charcoal),
+            BrushType::Pastel => Some(DryKind::Pastel),
+            _ => None,
+        }
+    }
+
+    /// Cuanto se puede alejar un toque de su centro, como fraccion del radio (la dispersion del pastel). Sirve para
+    /// buscar los triangulos cercanos con un poco de margen.
+    pub fn scatter(self) -> f32 {
+        match self {
+            BrushType::Pastel => PASTEL_SCATTER,
+            _ => 0.0,
         }
     }
 
@@ -107,20 +163,43 @@ impl BrushType {
             BrushType::PencilSoft => t * t * (3.0 - 2.0 * t),
             BrushType::MarkerSoft => (4.0 * t).min(1.0),
             BrushType::MarkerHard => (20.0 * t).min(1.0),
+            // La tiza no usa el falloff radial: su forma sale de la punta de bitmap (`chalk.rs`). Este valor solo
+            // existe para que la funcion este definida para todos los pinceles.
+            BrushType::Chalk => (6.0 * t).min(1.0),
+            // Carboncillo y pastel tampoco usan el falloff radial (su forma sale de la punta de bitmap): igual que la
+            // tiza, el valor solo existe para que la funcion este definida para todos los pinceles.
+            BrushType::Charcoal | BrushType::Pastel => (6.0 * t).min(1.0),
         }
     }
 }
 
-/// El pincel elegido: preset y radio actual (texeles).
+/// Flujo minimo del pincel (el deslizador no baja de aqui: con 0 no pintaria nada).
+pub const MIN_FLOW: f32 = 0.01;
+
+/// Cada cuanto deposita un toque el aerografo con el boton apretado y el puntero quieto (20 por segundo, como en
+/// photocraft).
+pub const BUILD_UP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+impl BrushType {
+    /// true si el pincel sigue depositando pintura con el puntero quieto (un toque cada `BUILD_UP_INTERVAL`).
+    pub fn build_up(self) -> bool {
+        matches!(self, BrushType::Airbrush)
+    }
+}
+
+/// El pincel elegido: preset, radio actual (texeles) y flujo.
 #[derive(Clone, Copy, Debug)]
 pub struct Brush {
     pub kind: BrushType,
     pub radius: f32,
+    /// Flujo (`MIN_FLOW..=1`): multiplica la cobertura de cada toque (como `flow` en photocraft). Con 1 el pincel se
+    /// comporta como siempre; con un flujo bajo cada toque suma poco y hacen falta varios para llegar a la opacidad.
+    pub flow: f32,
 }
 
 impl Brush {
     pub fn new(kind: BrushType) -> Brush {
-        Brush { kind, radius: kind.default_radius() }
+        Brush { kind, radius: kind.default_radius(), flow: 1.0 }
     }
 }
 
@@ -165,5 +244,21 @@ mod tests {
             assert!((MIN_RADIUS..=MAX_RADIUS).contains(&b.default_radius()));
             assert!(b.spacing() > 0.0);
         }
+    }
+
+    #[test]
+    fn el_flujo_inicial_es_1_y_solo_el_aerografo_deposita_con_el_puntero_quieto() {
+        assert_eq!(Brush::default().flow, 1.0);
+        for b in BrushType::ALL {
+            assert_eq!(b.build_up(), b == BrushType::Airbrush, "{}", b.name());
+        }
+    }
+
+    #[test]
+    fn la_tiza_esta_en_su_categoria_con_sus_valores() {
+        assert_eq!(BrushType::Chalk.group(), BrushGroup::Chalk);
+        assert_eq!(BrushType::Chalk.name(), "Tiza");
+        assert_eq!(BrushType::Chalk.default_radius(), 20.0);
+        assert_eq!(BrushType::Chalk.spacing(), 0.20);
     }
 }

@@ -3,6 +3,20 @@ name = "texturecraft"
 version = "0.1.0"
 edition = "2024"
 
+# `cargo run` compila en debug, donde el pintado (bucles por texel), la composicion de capas y el BVH van muy lentos.
+# Se optimiza tambien el debug: nuestro codigo a nivel 2 (mantiene los chequeos de desbordamiento y los simbolos para
+# depurar) y las dependencias (egui, wgpu, image, png...) a nivel 3, porque casi nunca se depuran.
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Para entregar: `cargo run --release` / `cargo build --release`.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
 egui = { version = "0.37", features = ["default_fonts"] }

@@ -85,15 +85,21 @@ pub(super) fn options_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
 }
 
 /// Boton del cubo de la barra inferior (a la izquierda del de capas): muestra cuantas mallas (partes) tiene el modelo.
-/// Por ahora no abre nada: el panel viene despues.
-pub(super) fn cube_button(ui: &mut egui::Ui, count: usize) {
+/// Abre el panel de mallas; se pinta de azul mientras ese panel esta abierto.
+pub(super) fn cube_button(ui: &mut egui::Ui, count: usize, open: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(LAYERS_BTN_W, LAYERS_BTN_H), Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
         if hovered {
             ui.painter().rect_filled(rect, CornerRadius::same(6), Color32::from_white_alpha(14));
         }
-        let color = if hovered { Color32::WHITE } else { Color32::from_gray(205) };
+        let color = if open {
+            ACCENT
+        } else if hovered {
+            Color32::WHITE
+        } else {
+            Color32::from_gray(205)
+        };
         let icon_rect = Rect::from_center_size(rect.center(), vec2(LAYERS_ICON, LAYERS_ICON));
         egui::Image::new(egui::include_image!("../../assets/icons/cube.svg")).tint(color).paint_at(ui, icon_rect);
         // Numero en el centro del cubo, negro con contorno blanco para que se lea sobre las caras y sobre los huecos.
@@ -115,17 +121,27 @@ pub(super) fn cube_button(ui: &mut egui::Ui, count: usize) {
         }
         p.text(pos, Align2::CENTER_CENTER, &label, font, Color32::BLACK);
     }
+    response.on_hover_text("Mallas")
 }
 
 /// Barra inferior: ocupa todo el ancho de la ventana, pegada abajo, con el mismo estilo que la barra de herramientas.
 /// Su contenido va dentro del `with_layout` de abajo (a la derecha: capas y, a su izquierda, el cubo).
-pub(super) fn bottom_bar(ui: &mut egui::Ui, stack: &mut LayerStack, mesh_count: usize, options: &mut OptionsPanel) -> bool {
+pub(super) fn bottom_bar(
+    ui: &mut egui::Ui,
+    stack: &mut LayerStack,
+    parts: &mut [MeshPart],
+    selected_part: &mut usize,
+    options: &mut OptionsPanel,
+) -> (bool, bool) {
+    // Si el selector de archivos del boton Importar ya devolvio algo, queda listo para `UiLayer::take_import`.
+    poll_mesh_import(ui.ctx(), options);
     let width = ui.ctx().content_rect().width();
     // Donde quedo el boton de opciones: el panel se abre justo encima de el.
     let mut options_rect = None;
     // Lo mismo para el boton del menu (la flecha) y el de capas.
     let mut menu_rect = None;
     let mut layers_rect = None;
+    let mut mesh_rect = None;
     egui::Area::new(egui::Id::new("bottombar"))
         .anchor(Align2::LEFT_BOTTOM, vec2(0.0, 0.0))
         .show(ui.ctx(), |ui| {
@@ -143,6 +159,7 @@ pub(super) fn bottom_bar(ui: &mut egui::Ui, stack: &mut LayerStack, mesh_count: 
                             options.menu_open = !options.menu_open;
                             options.open = false;
                             options.layers_open = false;
+                            options.meshes_open = false;
                             options.blend_open = false;
                         }
                         menu_rect = Some(m.rect);
@@ -151,15 +168,25 @@ pub(super) fn bottom_bar(ui: &mut egui::Ui, stack: &mut LayerStack, mesh_count: 
                             options.layers_open = !options.layers_open;
                             options.menu_open = false;
                             options.open = false;
+                            options.meshes_open = false;
                             options.blend_open = false;
                         }
                         layers_rect = Some(l.rect);
-                        cube_button(ui, mesh_count);
+                        let c = cube_button(ui, parts.len(), options.meshes_open);
+                        if c.clicked() {
+                            options.meshes_open = !options.meshes_open;
+                            options.menu_open = false;
+                            options.open = false;
+                            options.layers_open = false;
+                            options.blend_open = false;
+                        }
+                        mesh_rect = Some(c.rect);
                         let r = options_button(ui, options.open);
                         if r.clicked() {
                             options.open = !options.open;
                             options.menu_open = false;
                             options.layers_open = false;
+                            options.meshes_open = false;
                             options.blend_open = false;
                         }
                         options_rect = Some(r.rect);
@@ -172,8 +199,14 @@ pub(super) fn bottom_bar(ui: &mut egui::Ui, stack: &mut LayerStack, mesh_count: 
     if let Some(button) = menu_rect {
         menu_panel(ui.ctx(), options, button);
     }
-    match layers_rect {
+    // El panel de mallas tambien cambia el fondo de la pieza activa (recompone su textura, igual que el de capas).
+    let (parts_dirty, mesh_bg_dirty) = match mesh_rect {
+        Some(button) => meshes_panel(ui.ctx(), options, parts, selected_part, stack, button),
+        None => (false, false),
+    };
+    let layers_dirty = match layers_rect {
         Some(button) => layers_panel(ui.ctx(), options, stack, button),
         None => false,
-    }
+    } || mesh_bg_dirty;
+    (layers_dirty, parts_dirty)
 }

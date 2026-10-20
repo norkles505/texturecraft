@@ -38,6 +38,8 @@ pub struct TriBvh {
     uvs: Vec<[[f32; 2]; 3]>,
     order: Vec<u32>,
     nodes: Vec<Node>,
+    /// Triangulos que el rayo puede tocar (los de mallas ocultas se saltan: el rayo los atraviesa).
+    visible: Vec<bool>,
 }
 
 impl TriBvh {
@@ -54,7 +56,58 @@ impl TriBvh {
         if n > 0 {
             build(&tris, &cent, &mut order, 0, &mut nodes);
         }
-        TriBvh { tris, uvs, order, nodes }
+        TriBvh { tris, uvs, order, nodes, visible: vec![true; n] }
+    }
+
+    pub fn triangle_count(&self) -> usize {
+        self.tris.len()
+    }
+
+    /// Elige que triangulos puede tocar el rayo (uno por triangulo; si la cantidad no coincide no se cambia nada).
+    /// La estructura del arbol no cambia: los ocultos solo se saltan al recorrer.
+    pub fn set_visible(&mut self, visible: Vec<bool>) {
+        if visible.len() == self.tris.len() {
+            self.visible = visible;
+        }
+    }
+
+    /// Posiciones y UVs de los 3 vertices del triangulo `i`.
+    pub fn tri(&self, i: usize) -> (&[Vec3; 3], &[[f32; 2]; 3]) {
+        (&self.tris[i], &self.uvs[i])
+    }
+
+    /// Triangulos visibles cuya caja toca la esfera `(center, radius)`, en `out` (se vacia antes). Es la caja del
+    /// triangulo, no el triangulo exacto: de sobra para el pincel, que despues mide la distancia de cada texel.
+    pub fn query_sphere(&self, center: Vec3, radius: f32, out: &mut Vec<usize>) {
+        out.clear();
+        if self.nodes.is_empty() {
+            return;
+        }
+        let r2 = radius * radius;
+        let mut stack: Vec<usize> = Vec::with_capacity(128);
+        stack.push(0);
+        while let Some(ni) = stack.pop() {
+            let node = &self.nodes[ni];
+            if box_dist2(node.min, node.max, center) > r2 {
+                continue;
+            }
+            if node.count > 0 {
+                for &ti in &self.order[node.start..node.start + node.count] {
+                    let ti = ti as usize;
+                    if !self.visible[ti] {
+                        continue;
+                    }
+                    let t = &self.tris[ti];
+                    let (mn, mx) = (t[0].min(t[1]).min(t[2]), t[0].max(t[1]).max(t[2]));
+                    if box_dist2(mn, mx, center) <= r2 {
+                        out.push(ti);
+                    }
+                }
+            } else {
+                stack.push(node.left);
+                stack.push(node.right);
+            }
+        }
     }
 
     /// Primer triangulo que toca el rayo `origin + t * dir` (el de menor `t`).
@@ -77,6 +130,9 @@ impl TriBvh {
             let node = &self.nodes[ni];
             if node.count > 0 {
                 for &ti in &self.order[node.start..node.start + node.count] {
+                    if !self.visible[ti as usize] {
+                        continue;
+                    }
                     if let Some(h) = hit_tri(&self.tris[ti as usize], &self.uvs[ti as usize], origin, dir) {
                         if h.0 < best_t {
                             best_t = h.0;
@@ -112,6 +168,9 @@ impl TriBvh {
     fn pick_brute(&self, origin: Vec3, dir: Vec3) -> Option<Hit> {
         let mut best: Option<Hit> = None;
         for (i, (t, uv)) in self.tris.iter().zip(&self.uvs).enumerate() {
+            if !self.visible[i] {
+                continue;
+            }
             if let Some(h) = hit_tri(t, uv, origin, dir) {
                 if best.is_none_or(|b| h.0 < b.t) {
                     best = Some(Hit { t: h.0, u: h.1, v: h.2, tri: i });
@@ -152,6 +211,11 @@ fn build(tris: &[[Vec3; 3]], cent: &[Vec3], order: &mut [u32], base: usize, node
     nodes[idx].right = right;
     nodes[idx].count = 0;
     idx
+}
+
+/// Distancia al cuadrado del punto `c` a la caja `[min, max]` (0 si esta dentro).
+fn box_dist2(min: Vec3, max: Vec3, c: Vec3) -> f32 {
+    (min - c).max(c - max).max(Vec3::ZERO).length_squared()
 }
 
 /// Distancia de entrada del rayo a la caja (0 si el origen esta dentro), o `None` si no la toca.
@@ -222,5 +286,48 @@ mod tests {
             }
         }
         assert!(aciertos > 100 && fallos > 100, "la prueba no cubre aciertos y fallos ({aciertos}/{fallos})");
+    }
+
+    /// La consulta por esfera tiene que dar los mismos triangulos que recorrerlos todos con la misma prueba de cajas.
+    #[test]
+    fn query_sphere_igual_que_recorrido_completo() {
+        let mesh = ObjMesh::uv_sphere(32, 16);
+        let bvh = TriBvh::new(&mesh);
+        let mut out = Vec::new();
+        for (c, r) in [(Vec3::new(0.0, -0.5, 0.0), 0.1), (Vec3::new(0.2, 0.1, 0.3), 0.25), (Vec3::new(5.0, 5.0, 5.0), 0.5)] {
+            bvh.query_sphere(c, r, &mut out);
+            out.sort_unstable();
+            let mut brute: Vec<usize> = (0..bvh.triangle_count())
+                .filter(|&i| {
+                    let t = &bvh.tris[i];
+                    box_dist2(t[0].min(t[1]).min(t[2]), t[0].max(t[1]).max(t[2]), c) <= r * r
+                })
+                .collect();
+            brute.sort_unstable();
+            assert_eq!(out, brute, "centro {c:?} radio {r}");
+        }
+        // Un punto lejano no trae nada; uno sobre la superficie trae algo.
+        bvh.query_sphere(Vec3::new(5.0, 5.0, 5.0), 0.5, &mut out);
+        assert!(out.is_empty());
+        bvh.query_sphere(Vec3::new(0.0, -0.5, 0.0), 0.1, &mut out);
+        assert!(!out.is_empty());
+    }
+
+    /// Los triangulos de una malla oculta se atraviesan; al volver a mostrarlos se tocan otra vez.
+    #[test]
+    fn los_triangulos_ocultos_se_atraviesan() {
+        let mesh = ObjMesh::uv_sphere(16, 8);
+        let n = mesh.triangle_count();
+        let mut bvh = TriBvh::new(&mesh);
+        let (origin, dir) = (Vec3::new(0.01, -5.0, 0.01), Vec3::Y);
+        assert!(bvh.pick(origin, dir).is_some());
+        bvh.set_visible(vec![false; n]);
+        assert!(bvh.pick(origin, dir).is_none());
+        assert!(bvh.pick_brute(origin, dir).is_none());
+        bvh.set_visible(vec![true; n]);
+        assert!(bvh.pick(origin, dir).is_some());
+        // Una lista de otro tamano no se acepta.
+        bvh.set_visible(vec![false; n + 1]);
+        assert!(bvh.pick(origin, dir).is_some());
     }
 }

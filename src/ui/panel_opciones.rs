@@ -22,6 +22,19 @@ pub(super) fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) {
     p.circle_filled(egui::pos2(x, rect.center().y), r, Color32::WHITE);
 }
 
+/// Ancho de la etiqueta de cada fila del panel de opciones: asi todos los interruptores quedan alineados a la derecha.
+const OPTION_LABEL_W: f32 = 170.0;
+
+/// Una fila del panel de opciones: el nombre a la izquierda y el interruptor a la derecha.
+fn option_row(ui: &mut egui::Ui, label: &str, on: &mut bool) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 28.0;
+        let (rect, _) = ui.allocate_exact_size(vec2(OPTION_LABEL_W, TOGGLE_H), Sense::hover());
+        ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, label, FontId::proportional(15.0), Color32::WHITE);
+        toggle_switch(ui, on);
+    });
+}
+
 /// Panel flotante del boton de opciones: aparece justo encima del boton y se cierra al hacer clic fuera de el.
 pub(super) fn options_panel(ctx: &egui::Context, options: &mut OptionsPanel, button: Rect) {
     if !options.open {
@@ -39,11 +52,13 @@ pub(super) fn options_panel(ctx: &egui::Context, options: &mut OptionsPanel, but
                 .corner_radius(CornerRadius::same(14))
                 .inner_margin(Margin::symmetric(16, 12))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 28.0;
-                        ui.label(egui::RichText::new("Ventana de referencia").size(15.0).color(Color32::WHITE));
-                        toggle_switch(ui, &mut options.reference_window);
-                    });
+                    ui.spacing_mut().item_spacing.y = 12.0;
+                    option_row(ui, "Ventana de referencia", &mut options.reference_window);
+                    // "Acumular pasada": encendido (por defecto) = volver a pasar por el mismo sitio suma, como
+                    // siempre; apagado = el trazo no pasa de la opacidad, como en photocraft (`DabOptions::ceiling`).
+                    let mut accumulate = !options.pass_ceiling;
+                    option_row(ui, "Acumular pasada", &mut accumulate);
+                    options.pass_ceiling = !accumulate;
                 });
         });
     // Un clic fuera del panel (y fuera del boton, que ya lo abre/cierra) lo cierra.

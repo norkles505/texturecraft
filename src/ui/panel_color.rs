@@ -434,7 +434,7 @@ impl ColorPanel {
         let mut done = false;
         #[allow(deprecated)]
         let id = egui::Id::new("color_panel");
-        egui::Area::new(id).anchor(Align2::LEFT_TOP, vec2(PANEL_LEFT, PANEL_TOP)).show(ctx, |ui| {
+        let out = egui::Area::new(id).anchor(Align2::LEFT_TOP, vec2(PANEL_LEFT, PANEL_TOP)).show(ctx, |ui| {
             Frame::new()
                 .fill(PANEL_FILL)
                 .stroke(Stroke::new(1.0, Color32::from_white_alpha(16)))
@@ -446,6 +446,11 @@ impl ColorPanel {
         });
         if done {
             self.commit(*color);
+        }
+        // Un clic fuera del panel (y fuera de la barra de herramientas, cuyo cuadrito de color ya lo abre y cierra) lo
+        // cierra, como el panel de capas.
+        if super::pressed_outside(ctx, out.response.rect) {
+            self.open = false;
         }
         *color != start_color || *opacity != start_opacity
     }

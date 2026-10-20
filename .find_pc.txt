@@ -1,0 +1,2 @@
+/home/kenny/Documentos/programas/photocraft/crates/paint/src/procedural.rs
+fin

@@ -10,6 +10,8 @@ pub struct MeshPart {
     pub name: String,
     pub first_vertex: usize,
     pub vertex_count: usize,
+    /// Una parte oculta no se dibuja ni se puede pintar (el rayo la atraviesa, seccion 3.1).
+    pub visible: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +35,15 @@ impl ObjMesh {
 
     pub fn triangle_count(&self) -> usize {
         self.vertex_count() / 3
+    }
+
+    /// Las mallas del modelo tal como las muestra el panel de mallas: las partes del OBJ o, si no trae partes (o trae
+    /// una sola), una sola malla llamada `fallback_name` que cubre todo el modelo. Todas empiezan visibles.
+    pub fn scene_parts(&self, fallback_name: &str) -> Vec<MeshPart> {
+        if !self.parts.is_empty() {
+            return self.parts.clone();
+        }
+        vec![MeshPart { name: fallback_name.to_string(), first_vertex: 0, vertex_count: self.vertex_count(), visible: true }]
     }
 
     /// Vertices entrelazados para la GPU: x y z nx ny nz u v (8 floats = 32 bytes por vertice).
@@ -254,13 +265,23 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
     let mut mesh_parts: Vec<MeshPart> = Vec::new();
     if !part_starts.is_empty() {
         if part_starts[0] > 0 {
-            mesh_parts.push(MeshPart { name: "Sin nombre".to_string(), first_vertex: 0, vertex_count: part_starts[0] });
+            mesh_parts.push(MeshPart {
+                name: "Sin nombre".to_string(),
+                first_vertex: 0,
+                vertex_count: part_starts[0],
+                visible: true,
+            });
         }
         for k in 0..part_starts.len() {
             let from = part_starts[k];
             let to = if k + 1 < part_starts.len() { part_starts[k + 1] } else { total_vertices };
             if to > from {
-                mesh_parts.push(MeshPart { name: part_names[k].clone(), first_vertex: from, vertex_count: to - from });
+                mesh_parts.push(MeshPart {
+                    name: part_names[k].clone(),
+                    first_vertex: from,
+                    vertex_count: to - from,
+                    visible: true,
+                });
             }
         }
     }
@@ -276,4 +297,119 @@ fn num(s: &str, line_no: usize) -> Result<f32, ObjError> {
 
 fn int(s: &str, line_no: usize) -> Result<i64, ObjError> {
     s.parse::<i64>().map_err(|_| ObjError(format!("Linea {line_no}: indice invalido '{s}'")))
+}
+
+/// Tramos de vertices que hay que dibujar: las partes visibles, juntando las que quedan seguidas en una sola llamada
+/// (seccion 14.2).
+pub fn visible_ranges(parts: &[MeshPart]) -> Vec<std::ops::Range<u32>> {
+    let mut out: Vec<std::ops::Range<u32>> = Vec::new();
+    for p in parts.iter().filter(|p| p.visible) {
+        let (a, b) = (p.first_vertex as u32, (p.first_vertex + p.vertex_count) as u32);
+        match out.last_mut() {
+            Some(last) if last.end == a => last.end = b,
+            _ => out.push(a..b),
+        }
+    }
+    out
+}
+
+/// Para cada triangulo, si pertenece a una parte visible (lo que el pincel puede tocar).
+pub fn triangle_visibility(parts: &[MeshPart], triangle_count: usize) -> Vec<bool> {
+    let mut vis = vec![false; triangle_count];
+    for p in parts.iter().filter(|p| p.visible) {
+        for t in p.first_vertex / 3..(p.first_vertex + p.vertex_count) / 3 {
+            if let Some(v) = vis.get_mut(t) {
+                *v = true;
+            }
+        }
+    }
+    vis
+}
+
+/// Maximo de piezas (seccion 3.3): con mas partes el modelo queda como una sola malla con una sola textura.
+pub const MAX_PIECES: usize = 12;
+
+/// Tramos `(primer vertice, cantidad)` de cada pieza: una por parte si el modelo tiene de 2 a `MAX_PIECES` partes; si
+/// no, una sola pieza que cubre todo el modelo.
+pub fn piece_ranges(parts: &[MeshPart]) -> Vec<(usize, usize)> {
+    if (2..=MAX_PIECES).contains(&parts.len()) {
+        return parts.iter().map(|p| (p.first_vertex, p.vertex_count)).collect();
+    }
+    let total = parts.last().map_or(0, |p| p.first_vertex + p.vertex_count);
+    vec![(0, total)]
+}
+
+/// Posicion en `parts` de la parte a la que pertenece el triangulo `tri`.
+pub fn part_of_triangle(parts: &[MeshPart], tri: usize) -> usize {
+    let v = tri * 3;
+    parts.iter().position(|p| v >= p.first_vertex && v < p.first_vertex + p.vertex_count).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn part(name: &str, first_tri: usize, tris: usize, visible: bool) -> MeshPart {
+        MeshPart { name: name.to_string(), first_vertex: first_tri * 3, vertex_count: tris * 3, visible }
+    }
+
+    #[test]
+    fn los_tramos_visibles_seguidos_se_juntan() {
+        let parts = [part("a", 0, 2, true), part("b", 2, 3, true), part("c", 5, 1, false), part("d", 6, 4, true)];
+        assert_eq!(visible_ranges(&parts), vec![0..15, 18..30]);
+    }
+
+    #[test]
+    fn con_todo_oculto_no_se_dibuja_nada() {
+        let parts = [part("a", 0, 2, false), part("b", 2, 3, false)];
+        assert!(visible_ranges(&parts).is_empty());
+        assert_eq!(triangle_visibility(&parts, 5), vec![false; 5]);
+    }
+
+    #[test]
+    fn la_visibilidad_por_triangulo_sigue_a_las_partes() {
+        let parts = [part("a", 0, 2, true), part("b", 2, 1, false), part("c", 3, 2, true)];
+        assert_eq!(triangle_visibility(&parts, 5), vec![true, true, false, true, true]);
+    }
+
+    #[test]
+    fn un_modelo_sin_partes_es_una_sola_malla_visible() {
+        let mesh = ObjMesh::uv_sphere(8, 4);
+        let parts = mesh.scene_parts("Esfera");
+        assert_eq!(parts.len(), 1);
+        assert_eq!((parts[0].first_vertex, parts[0].vertex_count), (0, mesh.vertex_count()));
+        assert_eq!(parts[0].name, "Esfera");
+        assert!(parts[0].visible);
+    }
+
+    #[test]
+    fn el_lector_deja_las_partes_visibles() {
+        let obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\no A\nf 1 2 3\no B\nf 1 2 3\n";
+        let mesh = load_obj(obj, 0.0, false).unwrap();
+        assert_eq!(mesh.parts.len(), 2);
+        assert!(mesh.parts.iter().all(|p| p.visible));
+    }
+
+    #[test]
+    fn una_pieza_por_parte_de_2_a_12_partes() {
+        let parts: Vec<MeshPart> = (0..3).map(|i| part("p", i * 2, 2, true)).collect();
+        assert_eq!(piece_ranges(&parts), vec![(0, 6), (6, 6), (12, 6)]);
+        let doce: Vec<MeshPart> = (0..MAX_PIECES).map(|i| part("p", i, 1, true)).collect();
+        assert_eq!(piece_ranges(&doce).len(), MAX_PIECES);
+    }
+
+    #[test]
+    fn con_una_parte_o_mas_de_12_es_una_sola_pieza() {
+        let una = [part("a", 0, 4, true)];
+        assert_eq!(piece_ranges(&una), vec![(0, 12)]);
+        let trece: Vec<MeshPart> = (0..MAX_PIECES + 1).map(|i| part("p", i, 1, true)).collect();
+        assert_eq!(piece_ranges(&trece), vec![(0, (MAX_PIECES + 1) * 3)]);
+    }
+
+    #[test]
+    fn cada_triangulo_sabe_de_que_parte_es() {
+        let parts = [part("a", 0, 2, true), part("b", 2, 1, true), part("c", 3, 2, true)];
+        let of: Vec<usize> = (0..5).map(|t| part_of_triangle(&parts, t)).collect();
+        assert_eq!(of, vec![0, 0, 1, 2, 2]);
+    }
 }

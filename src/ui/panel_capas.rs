@@ -639,6 +639,9 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
             #[allow(deprecated)]
             let pid = egui::Id::new("layers_blend_popup");
             let po = egui::Area::new(pid)
+                // `Foreground`: siempre por encima del panel de capas. Con el orden normal, al hacer clic dentro del
+                // panel (la caja del modo) egui lo sube al frente y tapaba el desplegable.
+                .order(egui::Order::Foreground)
                 .pivot(Align2::RIGHT_BOTTOM)
                 .fixed_pos(egui::pos2(panel_right, dd.top() - BP_GAP))
                 .sense(Sense::click())
@@ -780,6 +783,8 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
             #[allow(deprecated)]
             let mid = egui::Id::new("layers_more_menu");
             let mo = egui::Area::new(mid)
+                // Igual que el desplegable de modos: siempre por encima del panel de capas.
+                .order(egui::Order::Foreground)
                 .pivot(Align2::RIGHT_BOTTOM)
                 .fixed_pos(egui::pos2(out.response.rect.right() - 2.0, dots.bottom() + 2.0))
                 .sense(Sense::click())

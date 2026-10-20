@@ -4,6 +4,9 @@
 //! 1 = vista ortografica frontal, 2 = perspectiva. Gizmo de ejes (arriba a la derecha): clic en un eje = girar
 //! (animado) a esa vista ortografica; clic otra vez en el mismo = la vista opuesta. Ctrl+Z = deshacer, Ctrl+Mayus+Z o
 //! Ctrl+Y = rehacer (por ahora solo trazos).
+//! Piezas (seccion 3.3): un modelo con 2 a 12 partes se separa en una pieza por parte, cada una con su textura, sus
+//! capas y su historial. La pieza activa es la que muestran el panel de capas y la exportacion; se elige en el panel de
+//! mallas o apoyando el pincel sobre ella.
 //! Capas (pruebas, hasta tener panel): N = capa nueva, [ ] = bajar/subir de capa, B / Mayus+B = modo de mezcla
 //! siguiente/anterior, + - = opacidad, V = ojo, C = recorte, L = bloqueo, A = bloqueo alfa, K = cambiar color.
 //! Herramientas (boton izquierdo): P = pincel, G = borrador (goma), F = relleno (balde), I = cuentagotas (toma el color
@@ -14,6 +17,7 @@ mod blend;
 mod brush;
 mod bvh;
 mod camera;
+mod chalk;
 mod export;
 mod fill;
 mod layers;
@@ -38,13 +42,14 @@ use winit::{
 };
 
 use blend::BlendMode;
-use brush::Brush;
+use brush::{BUILD_UP_INTERVAL, Brush};
 use bvh::TriBvh;
 use camera::{Camera, ViewAxis};
+use glam::Vec3;
 use layers::LayerStack;
-use obj::{ObjMesh, load_obj};
-use paint::{DabOptions, Rect, StrokeState, TEX_SIZE, dab_box};
-use ui::{BrushRing, UiLayer};
+use obj::{MeshPart, ObjMesh, load_obj, part_of_triangle, piece_ranges, triangle_visibility, visible_ranges};
+use paint::{DabOptions, Rect, StrokeState, SurfTri, TEX_SIZE, surface_rect};
+use ui::{BrushRing, UiLayer, UiOutput};
 use undo::History;
 use uvmap::UvMaps;
 
@@ -62,7 +67,7 @@ enum Tool {
     Eyedropper,
     Smudge,
     Blur,
-    /// Mano: con el boton izquierdo mueve la vista en vez de girarla (el derecho no pinta con ella).
+    /// Mano: con el boton izquierdo mueve la vista en vez de pintar (el derecho no pinta con ella).
     Hand,
 }
 
@@ -87,6 +92,88 @@ struct Uniforms {
     normal_matrix: [[f32; 4]; 4],
 }
 
+/// Una pieza del modelo (seccion 3.3): su propio tramo de vertices, su textura en la GPU, sus capas y su historial.
+/// Un modelo con 2 a 12 partes tiene una pieza por parte; si no, una sola pieza que cubre todo.
+struct Piece {
+    /// Tramo de vertices del modelo que cubre esta pieza (multiplos de 3).
+    first_vertex: usize,
+    vertex_count: usize,
+    texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    layers: LayerStack,
+    history: History,
+    /// Mapas de islas y cobertura UV de los triangulos de esta pieza (se arman la primera vez que se rellena).
+    uv_maps: Option<UvMaps>,
+}
+
+/// Lo que toco un rayo de pantalla: en que pieza y en que parte cayo, la UV del punto, el triangulo, su posicion 3D y
+/// la direccion en que miraba el rayo (unitaria).
+#[derive(Clone, Copy)]
+struct Pick {
+    piece: usize,
+    part: usize,
+    u: f32,
+    v: f32,
+    tri: usize,
+    pos: Vec3,
+    view: Vec3,
+}
+
+/// Crea una pieza: textura propia (con el fondo ya compuesto) y el grupo de enlaces que la une a los uniforms.
+fn new_piece(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    uniform_buffer: &wgpu::Buffer,
+    sampler: &wgpu::Sampler,
+    (first_vertex, vertex_count): (usize, usize),
+) -> Piece {
+    let layers = LayerStack::new(TEX_SIZE);
+    let texture = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("tablero"),
+            size: wgpu::Extent3d { width: TEX_SIZE, height: TEX_SIZE, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // Sin conversion sRGB: la luz se multiplica sobre los valores tal cual, como en la app Android (el
+            // shader pasa el resultado a lineal al final porque la superficie si es sRGB).
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &layers.composite,
+    );
+    let tex_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&tex_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    });
+    Piece { first_vertex, vertex_count, texture, bind_group, layers, history: History::default(), uv_maps: None }
+}
+
+/// Llamadas de dibujo `(pieza, tramo de vertices)`: solo las mallas visibles. Con una pieza por parte cada parte se
+/// dibuja con la textura de su pieza; con una sola pieza las partes visibles seguidas se juntan en una llamada.
+fn draw_calls(piece_count: usize, parts: &[MeshPart]) -> Vec<(usize, std::ops::Range<u32>)> {
+    if piece_count == parts.len() {
+        parts
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.visible)
+            .map(|(i, p)| (i, p.first_vertex as u32..(p.first_vertex + p.vertex_count) as u32))
+            .collect()
+    } else {
+        visible_ranges(parts).into_iter().map(|r| (0, r)).collect()
+    }
+}
+
 struct Gpu {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -95,14 +182,25 @@ struct Gpu {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    vertex_count: u32,
+    /// Llamadas de dibujo (pieza y tramo de vertices) de las mallas visibles; las ocultas no entran.
+    draw_ranges: Vec<(usize, std::ops::Range<u32>)>,
     uniform_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    /// Para crear la textura de cada pieza nueva.
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
     depth_view: wgpu::TextureView,
-    texture: wgpu::Texture,
-    layers: LayerStack,
+    /// Piezas del modelo, cada una con su textura, sus capas y su historial (seccion 3.3).
+    pieces: Vec<Piece>,
+    /// Malla elegida (posicion en `parts`): su pieza es la activa. Con una sola pieza no cambia nada.
+    selected_part: usize,
+    /// Estado del trazo en curso (se comparte entre piezas: un trazo a la vez).
     stroke: StrokeState,
-    history: History,
+    /// Pieza donde esta pintando el trazo en curso (`None` = aun no toco el modelo).
+    stroke_piece: Option<usize>,
+    /// Direccion del trazo en 3D (unitaria; cero = aun no se sabe) y el punto desde el que se mide: el carboncillo
+    /// orienta su punta con ella. Se reinician al apoyar el boton.
+    stroke_dir: Vec3,
+    last_dab_pos: Option<Vec3>,
     brush_color: [u8; 3],
     /// Opacidad del pincel (0..1), la barra de opacidad del panel de color.
     brush_opacity: f32,
@@ -113,12 +211,11 @@ struct Gpu {
     view_locked: bool,
     palette_index: usize,
     bvh: TriBvh,
-    /// UVs del modelo (u,v por vertice) y los mapas de islas/cobertura que salen de ellas (se arman la primera vez
-    /// que se rellena y se tiran al cambiar de modelo).
+    /// UVs del modelo (u,v por vertice); de ellas salen los mapas de islas y cobertura de cada pieza.
     uvs: Vec<f32>,
-    uv_maps: Option<UvMaps>,
-    /// Cuantas mallas (partes `o`/`g` del OBJ) tiene el modelo; 1 si no trae partes. Es el numero del boton del cubo.
-    mesh_count: usize,
+    /// Mallas del modelo (partes `o`/`g` del OBJ; si no trae partes, una sola que es todo el modelo) y si se ven. Su
+    /// cantidad es el numero del boton del cubo y su lista es la del panel de mallas.
+    parts: Vec<MeshPart>,
     /// Interfaz egui (barra de herramientas...), dibujada encima del modelo.
     ui: UiLayer,
     /// Ultimo radio (en pixeles de pantalla) del circulo del pincel; se usa cuando el cursor sale del modelo.
@@ -139,6 +236,11 @@ struct App {
     modifiers: ModifiersState,
     /// El cursor esta dentro de la ventana (para mostrar u ocultar el circulo del pincel).
     cursor_in_window: bool,
+    /// Proximo toque del temporizador del aerografo (`None` = no hay trazo que lo necesite).
+    next_build_up: Option<Instant>,
+    /// El puntero se movio desde el ultimo toque del temporizador: ese tramo ya deposito pintura al moverse, asi que
+    /// el temporizador se salta ese toque (solo deposita cuando el puntero esta quieto).
+    moved_since_tick: bool,
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
@@ -158,6 +260,11 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
 
 /// Lado mas largo al que se ajusta cada modelo (la camara por defecto lo encuadra bien).
 const FIT_SIZE: f32 = 4.5;
+
+/// Cuanto mide, en unidades del modelo, cada punto del tamano del pincel (el slider va de 1 a 100). El pincel mide
+/// lo mismo en toda la superficie, sin importar como este estirado el UV. Con 450 puntos por modelo, el tamano 18
+/// inicial cubre un 4 % del lado mas largo.
+const WORLD_PER_RADIUS: f32 = FIT_SIZE / 450.0;
 
 /// Esfera de prueba: mide 1 de diametro, se agranda a `FIT_SIZE` como un OBJ cargado.
 fn test_sphere() -> ObjMesh {
@@ -182,8 +289,13 @@ fn file_name(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// Nombre apto para un archivo: lo que no es letra o numero pasa a `_`.
+fn slug(name: &str) -> String {
+    name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect()
+}
+
 impl Gpu {
-    fn new(event_loop: &ActiveEventLoop, window: Arc<Window>, mesh: &ObjMesh) -> Gpu {
+    fn new(event_loop: &ActiveEventLoop, window: Arc<Window>, mesh: &ObjMesh, model_name: &str) -> Gpu {
         // winit recomienda pasar su handle de pantalla al crear la instancia (Wayland/X11/GL lo necesitan).
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
             event_loop.owned_display_handle(),
@@ -219,28 +331,7 @@ impl Gpu {
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
-        // Textura de prueba.
-        let tex_size = TEX_SIZE;
-        let layers = LayerStack::new(tex_size);
-        let stroke = StrokeState::new(tex_size);
-        let texture = device.create_texture_with_data(
-            &queue,
-            &wgpu::TextureDescriptor {
-                label: Some("tablero"),
-                size: wgpu::Extent3d { width: tex_size, height: tex_size, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                // Sin conversion sRGB: la luz se multiplica sobre los valores tal cual, como en la app Android (el
-                // shader pasa el resultado a lineal al final porque la superficie si es sRGB).
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            &layers.composite,
-        );
-        let tex_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let stroke = StrokeState::new(TEX_SIZE);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
@@ -285,15 +376,6 @@ impl Gpu {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-            ],
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bg"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&tex_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -348,6 +430,13 @@ impl Gpu {
         let depth_view = create_depth_view(&device, config.width, config.height);
 
         let ui = UiLayer::new(&window, &device, config.format.remove_srgb_suffix());
+        let parts = mesh.scene_parts(model_name);
+        // Una pieza por parte (2 a 12 partes) o una sola, cada una con su textura, capas e historial.
+        let pieces: Vec<Piece> = piece_ranges(&parts)
+            .into_iter()
+            .map(|r| new_piece(&device, &queue, &bind_group_layout, &uniform_buffer, &sampler, r))
+            .collect();
+        let draw_ranges = draw_calls(pieces.len(), &parts);
 
         Gpu {
             window,
@@ -357,14 +446,17 @@ impl Gpu {
             config,
             pipeline,
             vertex_buffer,
-            vertex_count: mesh.vertex_count() as u32,
+            draw_ranges,
             uniform_buffer,
-            bind_group,
+            bind_group_layout,
+            sampler,
             depth_view,
-            texture,
-            layers,
+            pieces,
+            selected_part: 0,
             stroke,
-            history: History::default(),
+            stroke_piece: None,
+            stroke_dir: Vec3::ZERO,
+            last_dab_pos: None,
             brush_color: PALETTE[0],
             brush_opacity: 1.0,
             brush: Brush::default(),
@@ -373,8 +465,7 @@ impl Gpu {
             palette_index: 0,
             bvh: TriBvh::new(mesh),
             uvs: mesh.uvs.clone(),
-            uv_maps: None,
-            mesh_count: mesh.parts.len().max(1),
+            parts,
             ui,
             ring_radius: 20.0,
         }
@@ -390,57 +481,133 @@ impl Gpu {
         self.depth_view = create_depth_view(&self.device, width, height);
     }
 
-    /// Cambia el modelo que se dibuja.
-    fn set_mesh(&mut self, mesh: &ObjMesh) {
+    /// Pieza donde cae una malla: con una pieza por parte es la misma posicion; con una sola pieza, la 0.
+    fn piece_for_part(&self, part: usize) -> usize {
+        if self.pieces.len() == self.parts.len() { part.min(self.pieces.len() - 1) } else { 0 }
+    }
+
+    /// Pieza activa: la que muestran el panel de capas, el titulo y la exportacion (seccion 3.3).
+    fn active(&self) -> usize {
+        self.piece_for_part(self.selected_part)
+    }
+
+    /// Capas de la pieza activa.
+    fn layers_mut(&mut self) -> &mut LayerStack {
+        let a = self.active();
+        &mut self.pieces[a].layers
+    }
+
+    /// Hace activa la pieza de la malla `part` (al apoyar el pincel sobre ella). Con una sola pieza no cambia nada.
+    fn activate_part(&mut self, part: usize) {
+        if self.pieces.len() == self.parts.len() && self.selected_part != part {
+            self.selected_part = part;
+            self.window.set_title(&self.status());
+            self.window.request_redraw();
+        }
+    }
+
+    /// Cambia el modelo que se dibuja. `model_name` es el nombre de la malla si el OBJ no trae partes. Las piezas
+    /// nuevas empiezan con una textura y un historial vacios (el historial era de otro modelo).
+    fn set_mesh(&mut self, mesh: &ObjMesh, model_name: &str) {
         self.vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vertices"),
             contents: bytemuck::cast_slice(&mesh.interleaved()),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        self.vertex_count = mesh.vertex_count() as u32;
         self.bvh = TriBvh::new(mesh);
         self.uvs = mesh.uvs.clone();
-        self.uv_maps = None;
-        self.mesh_count = mesh.parts.len().max(1);
+        self.parts = mesh.scene_parts(model_name);
+        self.pieces = piece_ranges(&self.parts)
+            .into_iter()
+            .map(|r| {
+                new_piece(&self.device, &self.queue, &self.bind_group_layout, &self.uniform_buffer, &self.sampler, r)
+            })
+            .collect();
+        self.selected_part = 0;
+        self.stroke_piece = None;
+        self.apply_visibility();
     }
 
-    /// Rayo de pantalla -> BVH -> UV del punto tocado (`None` si el cursor no esta sobre el modelo).
-    fn pick_uv(&self, camera: &Camera, px: f32, py: f32) -> Option<(f32, f32)> {
+    /// Tras mostrar u ocultar mallas: recalcula las llamadas de dibujo y los triangulos que puede tocar el pincel
+    /// (una malla oculta ni se dibuja ni se pinta: el rayo la atraviesa, seccion 3.1).
+    fn apply_visibility(&mut self) {
+        self.draw_ranges = draw_calls(self.pieces.len(), &self.parts);
+        let tris = self.bvh.triangle_count();
+        self.bvh.set_visible(triangle_visibility(&self.parts, tris));
+        self.window.request_redraw();
+    }
+
+    /// Abre un .obj (arrastrado a la ventana o elegido en el panel de mallas) y reemplaza el modelo actual.
+    fn open_obj(&mut self, path: &Path) {
+        match load_mesh(path) {
+            Ok(mesh) => {
+                self.set_mesh(&mesh, &file_name(path));
+                self.window.set_title(&format!("texturecraft - {}", file_name(path)));
+                self.window.request_redraw();
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                self.window.set_title("texturecraft - no se pudo abrir el archivo (mira la terminal)");
+            }
+        }
+    }
+
+    /// Rayo de pantalla -> BVH -> pieza, parte, UV, triangulo y posicion 3D del punto tocado (`None` si el cursor no
+    /// esta sobre el modelo).
+    fn pick_uv(&self, camera: &Camera, px: f32, py: f32) -> Option<Pick> {
         let (origin, dir) = camera.ray(px, py, self.config.width as f32, self.config.height as f32);
-        self.bvh.pick(origin, dir).map(|h| (h.u, h.v))
+        self.bvh.pick(origin, dir).map(|h| {
+            let part = part_of_triangle(&self.parts, h.tri);
+            Pick {
+                piece: self.piece_for_part(part),
+                part,
+                u: h.u,
+                v: h.v,
+                tri: h.tri,
+                pos: origin + dir * h.t,
+                view: dir.normalize_or_zero(),
+            }
+        })
     }
 
-    /// Radio del pincel en pixeles de pantalla en el punto `(x, y)`: se mide cuantos texeles hay por pixel alrededor
-    /// de ese punto (dos rayos vecinos) y se divide el radio del pincel entre eso. `None` si el cursor no esta sobre el modelo.
+    /// Radio del pincel en pixeles de pantalla en el punto `(x, y)`: se mide cuantas unidades del modelo hay por pixel
+    /// alrededor de ese punto (dos rayos vecinos) y se divide el radio del pincel entre eso. `None` si el cursor no
+    /// esta sobre el modelo.
     fn brush_radius_px(&self, camera: &Camera, (x, y): (f32, f32)) -> Option<f32> {
-        let max = (self.layers.size - 1) as f32;
         let a = self.pick_uv(camera, x, y)?;
         let step = 6.0;
-        let (mut sum, mut n) = (0.0f32, 0u32);
+        let mut per_px: Vec<f32> = Vec::with_capacity(2);
         for (dx, dy) in [(step, 0.0), (0.0, step)] {
-            if let Some(b) = self.pick_uv(camera, x + dx, y + dy) {
-                let d = (((a.0 - b.0) * max).powi(2) + ((a.1 - b.1) * max).powi(2)).sqrt();
-                // Un salto enorme es una costura de las UV (otra isla): no sirve para medir.
-                if d > 0.0 && d < 300.0 {
-                    sum += d / step;
-                    n += 1;
+            // Un punto vecino en otra pieza no sirve para medir.
+            if let Some(b) = self.pick_uv(camera, x + dx, y + dy).filter(|b| b.piece == a.piece) {
+                let d = a.pos.distance(b.pos) / step;
+                if d > 0.0 {
+                    per_px.push(d);
                 }
             }
         }
-        if n == 0 {
-            return None;
-        }
-        Some(self.brush.radius / (sum / n as f32))
+        let units_per_px = match per_px.as_slice() {
+            [] => return None,
+            [one] => *one,
+            [p, q] => {
+                let (lo, hi) = (p.min(*q), p.max(*q));
+                // Una medida mucho mayor que la otra es un salto de profundidad (borde del modelo): se descarta.
+                if hi > 3.0 * lo { lo } else { (lo + hi) * 0.5 }
+            }
+            _ => unreachable!(),
+        };
+        Some(self.brush.radius * WORLD_PER_RADIUS / units_per_px)
     }
 
-    /// Sube a la GPU el rectangulo de la textura compuesta.
-    fn upload_rect(&mut self, rect: Rect) {
+    /// Sube a la GPU el rectangulo de la textura compuesta de la pieza `piece`.
+    fn upload_rect(&mut self, piece: usize, rect: Rect) {
         let (x0, y0, x1, y1) = rect;
         let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
-        let bytes = self.layers.rect_bytes(rect);
+        let p = &self.pieces[piece];
+        let bytes = p.layers.rect_bytes(rect);
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
+                texture: &p.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x: x0, y: y0, z: 0 },
                 aspect: wgpu::TextureAspect::All,
@@ -451,27 +618,42 @@ impl Gpu {
         );
     }
 
-    /// Tras cambiar ajustes de capas (ojo, opacidad, modo...): recompone todo y lo sube.
-    fn refresh_all(&mut self) {
-        self.layers.composite_all();
-        let m = self.layers.size - 1;
-        self.upload_rect((0, 0, m, m));
+    /// Tras cambiar ajustes de capas (ojo, opacidad, modo...) en la pieza `piece`: recompone todo y lo sube.
+    fn refresh_piece(&mut self, piece: usize) {
+        self.pieces[piece].layers.composite_all();
+        let m = self.pieces[piece].layers.size - 1;
+        self.upload_rect(piece, (0, 0, m, m));
         self.window.set_title(&self.status());
         self.window.request_redraw();
     }
 
-    /// Texto de estado (en la barra de titulo, mientras no haya panel): herramienta, color y capa elegida.
+    /// Lo mismo, para la pieza activa.
+    fn refresh_all(&mut self) {
+        let a = self.active();
+        self.refresh_piece(a);
+    }
+
+    /// Texto de estado (en la barra de titulo, mientras no haya panel): herramienta, color y capa elegida (de la
+    /// pieza activa; con varias piezas, tambien su nombre).
     fn status(&self) -> String {
-        let l = self.layers.selected_layer();
+        let a = self.active();
+        let stack = &self.pieces[a].layers;
+        let l = stack.selected_layer();
         let c = self.brush_color;
+        let piece = if self.pieces.len() > 1 {
+            format!(" | pieza \"{}\"", self.parts[self.selected_part.min(self.parts.len() - 1)].name)
+        } else {
+            String::new()
+        };
         format!(
-            "texturecraft - {} #{:02X}{:02X}{:02X} | capa {}/{} \"{}\" | {} | {}%{}{}{}{}",
+            "texturecraft - {} #{:02X}{:02X}{:02X}{} | capa {}/{} \"{}\" | {} | {}%{}{}{}{}",
             self.tool.name(),
             c[0],
             c[1],
             c[2],
-            self.layers.selected + 1,
-            self.layers.layers.len(),
+            piece,
+            stack.selected + 1,
+            stack.layers.len(),
             l.name,
             l.blend.name(),
             l.opacity,
@@ -484,12 +666,13 @@ impl Gpu {
 
     /// Color de la textura COMPUESTA (lo que se ve) bajo el punto de pantalla, o `None` si ahi no hay modelo.
     fn color_at(&self, camera: &Camera, px: f32, py: f32) -> Option<[u8; 3]> {
-        let (u, v) = self.pick_uv(camera, px, py)?;
-        let max = (self.layers.size - 1) as f32;
-        let x = ((u - u.floor()) * max).round() as u32;
-        let y = ((v - v.floor()) * max).round() as u32;
-        let i = ((y * self.layers.size + x) * 4) as usize;
-        let c = &self.layers.composite;
+        let p = self.pick_uv(camera, px, py)?;
+        let stack = &self.pieces[p.piece].layers;
+        let max = (stack.size - 1) as f32;
+        let x = ((p.u - p.u.floor()) * max).round() as u32;
+        let y = ((p.v - p.v.floor()) * max).round() as u32;
+        let i = ((y * stack.size + x) * 4) as usize;
+        let c = &stack.composite;
         Some([c[i], c[i + 1], c[i + 2]])
     }
 
@@ -503,20 +686,109 @@ impl Gpu {
         self.window.request_redraw();
     }
 
-    /// Un toque en `(u, v)` sobre la capa elegida; recompone el rectangulo y lo suma a `dirty`.
-    fn dab_uv(&mut self, (u, v): (f32, f32), dirty: &mut Option<Rect>) {
-        let sel = self.layers.selected;
-        let layer = &mut self.layers.layers[sel];
+    /// El trazo en curso pasa a pintar en la pieza de `pick` (la primera vez, o al cruzar a otra pieza): cierra el
+    /// registro del historial de la anterior, abre el de esta, reinicia el estado del trazo y la hace pieza activa
+    /// (seccion 3.3).
+    fn enter_piece(&mut self, pick: Pick) {
+        if self.stroke_piece == Some(pick.piece) {
+            return;
+        }
+        if let Some(old) = self.stroke_piece {
+            self.pieces[old].history.end();
+        }
+        self.stroke_piece = Some(pick.piece);
+        self.activate_part(pick.part);
+        self.stroke.begin_stroke();
+        let piece = &mut self.pieces[pick.piece];
+        let id = piece.layers.selected_layer().id;
+        piece.history.begin(id);
+    }
+
+    /// Un toque en el punto de `pick` sobre la capa elegida de su pieza; recompone el rectangulo y lo suma a
+    /// `dirty` (que es siempre de la pieza del trazo en curso: al cruzar a otra pieza se sube primero el anterior).
+    /// El toque mide en el modelo (ver `paint.rs`): se buscan los triangulos de la pieza que estan cerca del punto
+    /// tocado y miran a la camara, y cada texel se mide por su distancia 3D.
+    fn dab_surface(&mut self, pick: Pick, dirty: &mut Option<Rect>) {
+        if self.stroke_piece != Some(pick.piece) {
+            if let (Some(old), Some(r)) = (self.stroke_piece, dirty.take()) {
+                self.upload_rect(old, r);
+            }
+            self.enter_piece(pick);
+        }
+        let bvh = &self.bvh;
+        let piece = &mut self.pieces[pick.piece];
+        let sel = piece.layers.selected;
+        let size = piece.layers.size;
+        let layer = &mut piece.layers.layers[sel];
         if !layer.paintable() {
             return;
         }
-        let opts = DabOptions { alpha_lock: layer.alpha_lock, erase: self.tool == Tool::Eraser, brush: self.brush.kind };
-        let radius = self.brush.radius;
+        let radius = self.brush.radius * WORLD_PER_RADIUS;
+        // Triangulos cercanos que son de esta pieza (cada pieza tiene su textura). El pastel dispersa su toque de lado:
+        // se busca con ese margen de mas.
+        let mut near = Vec::new();
+        bvh.query_sphere(pick.pos, radius * (1.0 + self.brush.kind.scatter()), &mut near);
+        let (first_tri, end_tri) = (piece.first_vertex / 3, (piece.first_vertex + piece.vertex_count) / 3);
+        // Hacia donde mira un triangulo respecto a la camara. El signo del triangulo tocado dice como esta orientado
+        // el modelo (el giro de las caras varia entre OBJ): solo se pintan los que miran igual que el. Asi la parte de
+        // atras de una pared fina no se pinta.
+        let facing = |tri: usize| {
+            let (p, _) = bvh.tri(tri);
+            (p[1] - p[0]).cross(p[2] - p[0]).dot(-pick.view)
+        };
+        let side = if facing(pick.tri) < 0.0 { -1.0 } else { 1.0 };
+        let tris: Vec<SurfTri> = near
+            .iter()
+            .copied()
+            .filter(|&t| t >= first_tri && t < end_tri && (t == pick.tri || side * facing(t) > 0.0))
+            .map(|t| {
+                let (p, uv) = bvh.tri(t);
+                SurfTri { p: *p, uv: *uv }
+            })
+            .collect();
+        let Some(area) = surface_rect(size, &tris) else { return };
+        // Normal del triangulo tocado: la tiza la usa para orientar su punta sobre la superficie (el signo da igual).
+        let normal = {
+            let (p, _) = bvh.tri(pick.tri);
+            (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero()
+        };
+        // Direccion del trazo: del ultimo punto de referencia a este. El punto de referencia solo avanza cuando el
+        // puntero se movio un poco (un cuarto de punto del tamano), asi la direccion no tiembla con pasos minusculos y
+        // con el puntero quieto se conserva la ultima.
+        match self.last_dab_pos {
+            Some(prev) => {
+                let step = pick.pos - prev;
+                if step.length() > 0.25 * WORLD_PER_RADIUS {
+                    self.stroke_dir = step.normalize();
+                    self.last_dab_pos = Some(pick.pos);
+                }
+            }
+            None => self.last_dab_pos = Some(pick.pos),
+        }
+        let opts = DabOptions {
+            alpha_lock: layer.alpha_lock,
+            erase: self.tool == Tool::Eraser,
+            brush: self.brush.kind,
+            normal,
+            // Interruptor "Acumular pasada" de Opciones: apagado = el trazo no pasa de la opacidad (como photocraft).
+            ceiling: self.ui.pass_ceiling(),
+            // Flujo del pincel: multiplica la cobertura de cada toque.
+            flow: self.brush.flow,
+            // El carboncillo orienta su punta a lo largo del trazo.
+            dir: self.stroke_dir,
+        };
         // Antes de tocar nada: copia de las baldosas que va a cambiar el toque (deshacer).
-        let size = self.layers.size;
-        self.history.save_tiles(&layer.pixels, size, dab_box(size, u, v, radius));
-        if let Some(r) = self.stroke.dab(&mut layer.pixels, u, v, radius, self.brush_color, self.brush_opacity, opts) {
-            self.layers.composite_rect(r);
+        piece.history.save_tiles(&layer.pixels, size, area);
+        if let Some(r) = self.stroke.dab_surface(
+            &mut layer.pixels,
+            &tris,
+            pick.pos,
+            radius,
+            self.brush_color,
+            self.brush_opacity,
+            opts,
+        ) {
+            piece.layers.composite_rect(r);
             *dirty = Some(match *dirty {
                 Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
                 None => r,
@@ -524,32 +796,49 @@ impl Gpu {
         }
     }
 
-    /// Relleno (seccion 8.6): un solo toque por apoyo, entra al historial como un paso. Devuelve true si cambio algo.
+    /// Sube a la GPU lo que cambio el trazo en curso (siempre en la pieza donde pinta). Devuelve true si habia algo.
+    fn flush(&mut self, dirty: Option<Rect>) -> bool {
+        match (dirty, self.stroke_piece) {
+            (Some(r), Some(p)) => {
+                self.upload_rect(p, r);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Relleno (seccion 8.6): un solo toque por apoyo, entra al historial de la pieza como un paso. Devuelve true si
+    /// cambio algo.
     fn fill_at(&mut self, camera: &Camera, px: f32, py: f32) -> bool {
-        let Some((u, v)) = self.pick_uv(camera, px, py) else { return false };
-        let sel = self.layers.selected;
-        if !self.layers.layers[sel].paintable() {
+        let Some(pick) = self.pick_uv(camera, px, py) else { return false };
+        self.activate_part(pick.part);
+        let color = self.brush_color;
+        let uvs = &self.uvs;
+        let piece = &mut self.pieces[pick.piece];
+        let sel = piece.layers.selected;
+        if !piece.layers.layers[sel].paintable() {
             return false;
         }
-        let size = self.layers.size;
+        let size = piece.layers.size;
         let max = (size - 1) as f32;
-        let x = ((u - u.floor()) * max).round() as u32;
-        let y = ((v - v.floor()) * max).round() as u32;
-        // Islas y cobertura UV: se arman la primera vez.
-        let maps = self.uv_maps.get_or_insert_with(|| UvMaps::build(&self.uvs, size));
-        let layer = &mut self.layers.layers[sel];
-        let Some(plan) = fill::plan(&layer.pixels, size, x, y, self.brush_color, layer.alpha_lock, maps) else {
+        let x = ((pick.u - pick.u.floor()) * max).round() as u32;
+        let y = ((pick.v - pick.v.floor()) * max).round() as u32;
+        // Islas y cobertura UV de esta pieza (solo sus triangulos): se arman la primera vez.
+        let (a, b) = (piece.first_vertex, piece.first_vertex + piece.vertex_count);
+        let maps = piece.uv_maps.get_or_insert_with(|| UvMaps::build(&uvs[a * 2..b * 2], size));
+        let layer = &mut piece.layers.layers[sel];
+        let Some(plan) = fill::plan(&layer.pixels, size, x, y, color, layer.alpha_lock, maps) else {
             return false;
         };
         // Antes de tocar nada: copia de las baldosas que va a cambiar (deshacer).
-        self.history.begin(layer.id);
+        piece.history.begin(layer.id);
         for r in fill::touched_tiles(&plan, size) {
-            self.history.save_tiles(&layer.pixels, size, r);
+            piece.history.save_tiles(&layer.pixels, size, r);
         }
-        fill::apply(&mut layer.pixels, &plan, size, self.brush_color, layer.alpha_lock);
-        self.history.end();
-        self.layers.composite_rect(plan.rect);
-        self.upload_rect(plan.rect);
+        fill::apply(&mut layer.pixels, &plan, size, color, layer.alpha_lock);
+        piece.history.end();
+        piece.layers.composite_rect(plan.rect);
+        self.upload_rect(pick.piece, plan.rect);
         true
     }
 
@@ -567,30 +856,58 @@ impl Gpu {
         if self.tool == Tool::Fill {
             return self.fill_at(camera, px, py);
         }
-        self.stroke.begin_stroke();
-        self.history.begin(self.layers.selected_layer().id);
+        // La pieza donde pinta el trazo se decide con el primer toque que cae sobre el modelo (`enter_piece`).
+        self.stroke_piece = None;
+        self.stroke_dir = Vec3::ZERO;
+        self.last_dab_pos = None;
         let mut dirty = None;
-        if let Some(uv) = self.pick_uv(camera, px, py) {
-            self.dab_uv(uv, &mut dirty);
+        if let Some(pick) = self.pick_uv(camera, px, py) {
+            self.dab_surface(pick, &mut dirty);
         }
-        dirty.map(|r| self.upload_rect(r)).is_some()
+        self.flush(dirty)
     }
 
-    /// Soltar el boton: el trazo entra al historial.
+    /// true si con el boton apretado la herramienta sigue depositando pintura aunque el puntero este quieto: pincel o
+    /// borrador con un preset que acumula (el aerografo) y el trazo en modo "techo" (con "Acumular pasada" encendido la
+    /// regla es el maximo de los toques y repetir un toque en el mismo sitio no cambia nada).
+    fn builds_up(&self) -> bool {
+        matches!(self.tool, Tool::Brush | Tool::Eraser) && self.brush.kind.build_up() && self.ui.pass_ceiling()
+    }
+
+    /// Un toque en el sitio donde esta el puntero, sin moverlo (el temporizador del aerografo). Devuelve true si
+    /// cambio algo.
+    fn stroke_hold(&mut self, camera: &Camera, px: f32, py: f32) -> bool {
+        let mut dirty = None;
+        if let Some(pick) = self.pick_uv(camera, px, py) {
+            self.dab_surface(pick, &mut dirty);
+        }
+        self.flush(dirty)
+    }
+
+    /// Soltar el boton: el trazo entra al historial de su pieza.
     fn stroke_end(&mut self) {
-        self.history.end();
+        if let Some(p) = self.stroke_piece.take() {
+            self.pieces[p].history.end();
+        }
     }
 
     /// Exporta un PNG a la carpeta actual (seccion 13). `kind`: 0 = textura con fondo, 1 = textura transparente,
-    /// 2 = solo la capa elegida (sus pixeles tal cual, sin opacidad ni visibilidad). Devuelve el mensaje a mostrar.
+    /// 2 = solo la capa elegida (sus pixeles tal cual, sin opacidad ni visibilidad). Exporta la pieza activa; con
+    /// varias piezas el nombre del archivo lleva el de la malla. Devuelve el mensaje a mostrar.
     fn export_png(&self, kind: u8) -> String {
-        let size = self.layers.size;
+        let stack = &self.pieces[self.active()].layers;
+        let size = stack.size;
         let (base, pixels) = match kind {
-            0 => ("texturecraft_textura", self.layers.export_composite(true)),
-            1 => ("texturecraft_textura_transparente", self.layers.export_composite(false)),
-            _ => ("texturecraft_capa", self.layers.selected_layer().pixels.clone()),
+            0 => ("texturecraft_textura", stack.export_composite(true)),
+            1 => ("texturecraft_textura_transparente", stack.export_composite(false)),
+            _ => ("texturecraft_capa", stack.selected_layer().pixels.clone()),
         };
-        let path = export::free_path(base);
+        let mut base = base.to_string();
+        if self.pieces.len() > 1 {
+            base.push('_');
+            base.push_str(&slug(&self.parts[self.selected_part.min(self.parts.len() - 1)].name));
+        }
+        let path = export::free_path(&base);
         match export::write_png(&path, size, &pixels, true) {
             Ok(()) => {
                 let full = std::fs::canonicalize(&path).unwrap_or(path.clone());
@@ -604,13 +921,15 @@ impl Gpu {
         }
     }
 
-    /// Deshacer (`redo = false`) o rehacer el ultimo trazo. Devuelve true si cambio algo.
+    /// Deshacer (`redo = false`) o rehacer el ultimo trazo de la pieza activa. Devuelve true si cambio algo.
     fn undo_redo(&mut self, redo: bool) -> bool {
-        let rect = if redo { self.history.redo(&mut self.layers) } else { self.history.undo(&mut self.layers) };
+        let a = self.active();
+        let piece = &mut self.pieces[a];
+        let rect = if redo { piece.history.redo(&mut piece.layers) } else { piece.history.undo(&mut piece.layers) };
         match rect {
             Some(r) => {
-                self.layers.composite_rect(r);
-                self.upload_rect(r);
+                piece.layers.composite_rect(r);
+                self.upload_rect(a, r);
                 self.window.request_redraw();
                 true
             }
@@ -628,39 +947,38 @@ impl Gpu {
         if self.tool == Tool::Fill || self.tool == Tool::Smudge || self.tool == Tool::Blur || self.tool == Tool::Hand {
             return false;
         }
-        let spacing = (self.brush.radius * self.brush.kind.spacing()).max(0.5);
+        // Distancia entre toques en unidades del modelo (una fraccion del radio del pincel, como en la seccion 7.4).
+        let spacing = (self.brush.radius * WORLD_PER_RADIUS * self.brush.kind.spacing()).max(0.5 * WORLD_PER_RADIUS);
         let ua = self.pick_uv(camera, from.0, from.1);
         let ub = self.pick_uv(camera, to.0, to.1);
         let mut dirty = None;
         self.stroke_segment(camera, from, ua, to, ub, spacing, 0, &mut dirty);
-        dirty.map(|r| self.upload_rect(r)).is_some()
+        self.flush(dirty)
     }
 
-    /// Parte el tramo por la mitad hasta que los extremos quedan a `spacing` texeles o menos; solo se pinta el
-    /// extremo final de cada trozo (el inicial ya se pinto). Si un extremo cae fuera del modelo se mide en pantalla.
+    /// Parte el tramo por la mitad hasta que los extremos quedan a `spacing` unidades del modelo o menos; solo se
+    /// pinta el extremo final de cada trozo (el inicial ya se pinto). Si un extremo cae fuera del modelo o en otra
+    /// pieza se mide en pantalla.
     #[allow(clippy::too_many_arguments)]
     fn stroke_segment(
         &mut self,
         camera: &Camera,
         a: (f32, f32),
-        ua: Option<(f32, f32)>,
+        ua: Option<Pick>,
         b: (f32, f32),
-        ub: Option<(f32, f32)>,
+        ub: Option<Pick>,
         spacing: f32,
         depth: u32,
         dirty: &mut Option<Rect>,
     ) {
         let screen = ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
         let close = match (ua, ub) {
-            (Some(p), Some(q)) => {
-                let max = (self.layers.size - 1) as f32;
-                (((p.0 - q.0) * max).powi(2) + ((p.1 - q.1) * max).powi(2)).sqrt() <= spacing
-            }
+            (Some(p), Some(q)) if p.piece == q.piece => p.pos.distance(q.pos) <= spacing,
             _ => screen <= 6.0,
         };
         if close || screen < 0.05 || depth >= 12 {
             if let Some(q) = ub {
-                self.dab_uv(q, dirty);
+                self.dab_surface(q, dirty);
             }
             return;
         }
@@ -720,9 +1038,12 @@ impl Gpu {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.draw(0..self.vertex_count, 0..1);
+            // Solo las mallas visibles, cada una con la textura de su pieza.
+            for (piece, range) in &self.draw_ranges {
+                pass.set_bind_group(0, &self.pieces[*piece].bind_group, &[]);
+                pass.draw(range.clone(), 0..1);
+            }
         }
         // Cursor propio sobre el modelo: circulo del pincel (pincel y borrador) o la chincheta del cuentagotas.
         let ring = if cursor_in_window && matches!(self.tool, Tool::Brush | Tool::Eraser | Tool::Eyedropper) {
@@ -744,26 +1065,40 @@ impl Gpu {
         } else {
             None
         };
-        // Interfaz (egui) encima del modelo.
-        let mesh_count = self.mesh_count;
-        let (full_output, ui_changed, view_axis, layers_dirty) = self.ui.run(
+        // Interfaz (egui) encima del modelo. El panel de capas muestra las de la pieza activa.
+        let active = self.active();
+        let UiOutput { full_output, changed: ui_changed, view_axis, layers_dirty, parts_dirty } = self.ui.run(
             &self.window,
             &mut self.tool,
             &mut self.brush_color,
             &mut self.brush_opacity,
             &mut self.brush,
-            &mut self.layers,
-            mesh_count,
+            &mut self.pieces[active].layers,
+            &mut self.parts,
+            &mut self.selected_part,
             camera,
             &mut self.view_locked,
             ring,
         );
         // El panel de capas cambio algo que se ve (ojo, opacidad, modo, recorte, fondo): se recompone y se sube la
-        // textura antes de enviar este cuadro.
+        // textura de esa pieza antes de enviar este cuadro.
         if layers_dirty {
-            self.refresh_all();
+            self.refresh_piece(active);
         }
-        if ui_changed {
+        // El panel de mallas mostro u oculto alguna: cambian lo que se dibuja y lo que el pincel puede tocar.
+        if parts_dirty {
+            self.apply_visibility();
+        }
+        // El panel de mallas eligio otra pieza: el titulo y el panel de capas deben pasar a la nueva.
+        let piece_changed = self.active() != active;
+        if piece_changed {
+            self.window.request_redraw();
+        }
+        // El boton Importar del panel de mallas ya tiene el archivo elegido: se reemplaza el modelo.
+        if let Some(path) = self.ui.take_import() {
+            self.open_obj(&path);
+        }
+        if ui_changed || piece_changed {
             self.window.set_title(&self.status());
         }
         let size = [self.config.width, self.config.height];
@@ -786,6 +1121,30 @@ impl ApplicationHandler for App {
         }
     }
 
+    /// Temporizador del aerografo: con el boton apretado deposita un toque cada `BUILD_UP_INTERVAL` aunque el puntero
+    /// este quieto (como photocraft, 20 por segundo). Si el puntero se movio desde el ultimo toque, ese tramo ya
+    /// pinto por el espaciado y este toque se salta. Se llama al final de cada vuelta del bucle, asi el plazo que se
+    /// pide aqui (`WaitUntil`) gana al `Wait` que deja el redibujado.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(gpu) = self.gpu.as_mut() else { return };
+        if !(self.left_down && gpu.builds_up()) {
+            self.next_build_up = None;
+            return;
+        }
+        let now = Instant::now();
+        let due = *self.next_build_up.get_or_insert(now + BUILD_UP_INTERVAL);
+        let next = if now >= due {
+            if !std::mem::take(&mut self.moved_since_tick) && gpu.stroke_hold(&self.camera, self.mouse.0, self.mouse.1) {
+                gpu.window.request_redraw();
+            }
+            now + BUILD_UP_INTERVAL
+        } else {
+            due
+        };
+        self.next_build_up = Some(next);
+        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gpu.is_some() {
             return;
@@ -797,10 +1156,12 @@ impl ApplicationHandler for App {
         );
         // `cargo run -- modelo.obj` abre ese modelo; sin argumento (o si falla) se ve la esfera de prueba.
         let mut title = String::from("texturecraft");
+        let mut model_name = String::from("Esfera de prueba");
         let mesh = match std::env::args().nth(1) {
             Some(arg) => match load_mesh(Path::new(&arg)) {
                 Ok(m) => {
                     title = format!("texturecraft - {}", file_name(Path::new(&arg)));
+                    model_name = file_name(Path::new(&arg));
                     m
                 }
                 Err(e) => {
@@ -811,7 +1172,7 @@ impl ApplicationHandler for App {
             None => test_sphere(),
         };
         window.set_title(&title);
-        self.gpu = Some(Gpu::new(event_loop, window, &mesh));
+        self.gpu = Some(Gpu::new(event_loop, window, &mesh, &model_name));
         if let Some(g) = &self.gpu {
             g.window.request_redraw();
         }
@@ -833,17 +1194,7 @@ impl ApplicationHandler for App {
                 gpu.window.request_redraw();
             }
             // Arrastrar un .obj a la ventana lo abre.
-            WindowEvent::DroppedFile(path) => match load_mesh(&path) {
-                Ok(mesh) => {
-                    gpu.set_mesh(&mesh);
-                    gpu.window.set_title(&format!("texturecraft - {}", file_name(&path)));
-                    gpu.window.request_redraw();
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    gpu.window.set_title("texturecraft - no se pudo abrir el archivo (mira la terminal)");
-                }
-            },
+            WindowEvent::DroppedFile(path) => gpu.open_obj(&path),
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
@@ -857,6 +1208,8 @@ impl ApplicationHandler for App {
                         self.left_down = down;
                         if down {
                             self.last_paint = Some(self.mouse);
+                            self.moved_since_tick = false;
+                            self.next_build_up = None;
                             if gpu.stroke_begin(&self.camera, self.mouse.0, self.mouse.1) {
                                 gpu.window.request_redraw();
                             }
@@ -885,6 +1238,9 @@ impl ApplicationHandler for App {
                 } else if self.left_down {
                     let from = self.last_paint.unwrap_or((x, y));
                     self.last_paint = Some((x, y));
+                    if dx != 0.0 || dy != 0.0 {
+                        self.moved_since_tick = true;
+                    }
                     if gpu.stroke_move(&self.camera, from, (x, y)) {
                         gpu.window.request_redraw();
                     }
@@ -937,7 +1293,7 @@ impl ApplicationHandler for App {
                         self.camera.orthographic = false;
                         gpu.window.request_redraw();
                     }
-                    // Teclas de prueba de las capas (hasta tener el panel).
+                    // Teclas de prueba de las capas (hasta tener el panel); actuan sobre la pieza activa.
                     Key::Character(ref c) => {
                         let shift = self.modifiers.shift_key();
                         // Ctrl+Z deshace; Ctrl+Mayus+Z o Ctrl+Y rehacen.
@@ -953,46 +1309,46 @@ impl ApplicationHandler for App {
                             }
                             return;
                         }
-                        let sel = gpu.layers.selected;
+                        let sel = gpu.layers_mut().selected;
                         let (mut recompose, mut retitle) = (false, false);
                         match c.to_lowercase().as_str() {
-                            "n" => retitle = gpu.layers.add_layer(),
-                            "]" => retitle = gpu.layers.select_step(1),
-                            "[" => retitle = gpu.layers.select_step(-1),
+                            "n" => retitle = gpu.layers_mut().add_layer(),
+                            "]" => retitle = gpu.layers_mut().select_step(1),
+                            "[" => retitle = gpu.layers_mut().select_step(-1),
                             "b" => {
-                                let l = &mut gpu.layers.layers[sel];
+                                let l = &mut gpu.layers_mut().layers[sel];
                                 let n = BlendMode::ALL.len();
                                 let i = BlendMode::ALL.iter().position(|&m| m == l.blend).unwrap_or(0);
                                 l.blend = BlendMode::ALL[if shift { (i + n - 1) % n } else { (i + 1) % n }];
                                 recompose = true;
                             }
                             "v" => {
-                                let l = &mut gpu.layers.layers[sel];
+                                let l = &mut gpu.layers_mut().layers[sel];
                                 l.visible = !l.visible;
                                 recompose = true;
                             }
                             "c" => {
-                                let l = &mut gpu.layers.layers[sel];
+                                let l = &mut gpu.layers_mut().layers[sel];
                                 l.clip_to_below = !l.clip_to_below;
                                 recompose = true;
                             }
                             "l" => {
-                                let l = &mut gpu.layers.layers[sel];
+                                let l = &mut gpu.layers_mut().layers[sel];
                                 l.locked = !l.locked;
                                 retitle = true;
                             }
                             "a" => {
-                                let l = &mut gpu.layers.layers[sel];
+                                let l = &mut gpu.layers_mut().layers[sel];
                                 l.alpha_lock = !l.alpha_lock;
                                 retitle = true;
                             }
                             "-" => {
-                                let l = &mut gpu.layers.layers[sel];
+                                let l = &mut gpu.layers_mut().layers[sel];
                                 l.opacity = l.opacity.saturating_sub(10);
                                 recompose = true;
                             }
                             "+" | "=" => {
-                                let l = &mut gpu.layers.layers[sel];
+                                let l = &mut gpu.layers_mut().layers[sel];
                                 l.opacity = (l.opacity + 10).min(100);
                                 recompose = true;
                             }
@@ -1088,6 +1444,8 @@ fn main() {
         last_paint: None,
         modifiers: ModifiersState::default(),
         cursor_in_window: false,
+        next_build_up: None,
+        moved_since_tick: false,
     };
     event_loop.run_app(&mut app).expect("error en el bucle de eventos");
 }
