@@ -17,7 +17,9 @@
 use glam::Vec3;
 
 use crate::brush::BrushType;
-use crate::pinceles::{ChalkDab, DryDab, DryKind, DualDab, dry_hardmix, dry_subtract, hard_mix, paper_mask, wet_factor};
+use crate::pinceles::{
+    ChalkDab, DryDab, DryKind, DualDab, dry_hardmix, dry_mezcla_toque, dry_subtract, hard_mix, paper_mask, wet_factor,
+};
 
 /// Lado de la textura de cada pieza (fijo en la app Android).
 pub const TEX_SIZE: u32 = 1024;
@@ -463,6 +465,9 @@ impl StrokeState {
                                     1.0
                                 };
                                 // Puntos de semitono: la trama (modo HardMix) en vez de la resta del papel.
+                                // Crayon de cera: su papel (modo HardMix, `each_tip`) se mezcla con la cobertura de ESTE
+                                // toque, antes de acumularla (`dry_mezcla_toque`); para los demas pinceles no cambia nada.
+                                let a = dry_mezcla_toque(*kind, a, self.stroke_dab, pos, x, y);
                                 (a, dry_subtract(*kind, pos, x, y), mul, dry_hardmix(*kind, x, y))
                             }
                             // Doble grano: las gotas se acumulan en el trazo (`c + v * (1 - c)`, aunque el disco no

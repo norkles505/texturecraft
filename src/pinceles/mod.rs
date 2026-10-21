@@ -13,6 +13,8 @@
 //!   dispersion de lado al azar).
 //! - `semitono.rs`: los PUNTOS DE SEMITONO (disco suave cuya cobertura acumulada se mezcla con una trama de puntos en
 //!   modo HardMix: pinta del todo o nada).
+//! - `crayon.rs`: el CRAYON DE CERA (elipse de borde suave que sigue el trazo, con un papel que se mezcla en modo
+//!   HardMix con cada toque).
 //!
 //! Lo compartido esta aparte:
 //!
@@ -25,6 +27,7 @@
 
 mod azar;
 mod carboncillo;
+mod crayon;
 mod dual_grain;
 mod esponja;
 mod follaje;
@@ -38,10 +41,11 @@ mod salpicadura;
 mod semitono;
 mod tiza;
 
+pub use crayon::CRAYON_REACH;
 pub use dual_grain::{DUAL_GRAIN_REACH, DualDab};
 pub use esponja::wet_factor;
 pub use follaje::FOLIAGE_REACH;
-pub use medio_seco::{DryDab, DryKind, dry_hardmix, dry_subtract};
+pub use medio_seco::{DryDab, DryKind, dry_hardmix, dry_mezcla_toque, dry_subtract};
 pub use papel::paper_mask;
 pub use pastel::PASTEL_SCATTER;
 pub use pasto::GRASS_REACH;

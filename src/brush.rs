@@ -4,7 +4,8 @@
 //! ahi (0..1). El espaciado es una fraccion del radio. El tamano es el RADIO en texeles (el slider va de 1 a 100).
 
 use crate::pinceles::{
-    DUAL_GRAIN_REACH, DryKind, FOLIAGE_REACH, GRASS_REACH, HALFTONE_REACH, PASTEL_SCATTER, SPATTER_REACH, STIPPLE_REACH,
+    CRAYON_REACH, DUAL_GRAIN_REACH, DryKind, FOLIAGE_REACH, GRASS_REACH, HALFTONE_REACH, PASTEL_SCATTER, SPATTER_REACH,
+    STIPPLE_REACH,
 };
 
 /// Radio minimo y maximo del pincel en texeles.
@@ -52,6 +53,10 @@ pub enum BrushType {
     /// de puntos en modo HardMix, asi pinta del todo o nada, con agujeros redondos que crecen hacia el borde del trazo
     /// (`pinceles/semitono.rs`).
     Halftone,
+    /// Crayon de cera (Wax Crayon de photocraft): punta redonda aplastada que sigue la direccion del trazo, con un papel
+    /// que se mezcla en modo HardMix con cada toque, asi el borde sale granulado y el interior con pequenos huecos
+    /// (`pinceles/crayon.rs`).
+    WaxCrayon,
 }
 
 /// Categorias del panel de pinceles (la columna de la izquierda).
@@ -89,7 +94,7 @@ impl BrushGroup {
 
 impl BrushType {
     /// En el orden en que salen en el panel.
-    pub const ALL: [BrushType; 17] = [
+    pub const ALL: [BrushType; 18] = [
         BrushType::Soft,
         BrushType::Hard,
         BrushType::Airbrush,
@@ -100,6 +105,7 @@ impl BrushType {
         BrushType::Chalk,
         BrushType::Charcoal,
         BrushType::Pastel,
+        BrushType::WaxCrayon,
         BrushType::Stipple,
         BrushType::Foliage,
         BrushType::DualGrain,
@@ -128,6 +134,7 @@ impl BrushType {
             BrushType::Spatter => "Salpicadura",
             BrushType::Grass => "Pasto",
             BrushType::Halftone => "Puntos de semitono",
+            BrushType::WaxCrayon => "Crayón de cera",
         }
     }
 
@@ -146,7 +153,8 @@ impl BrushType {
             | BrushType::InkSponge
             | BrushType::Spatter
             | BrushType::Grass
-            | BrushType::Halftone => BrushGroup::Dry,
+            | BrushType::Halftone
+            | BrushType::WaxCrayon => BrushGroup::Dry,
         }
     }
 
@@ -176,6 +184,8 @@ impl BrushType {
             BrushType::Grass => 35.0,
             // Halftone Dots de photocraft mide 80 de diametro.
             BrushType::Halftone => 40.0,
+            // Wax Crayon de photocraft mide 22 de diametro.
+            BrushType::WaxCrayon => 11.0,
         }
     }
 
@@ -206,6 +216,8 @@ impl BrushType {
             BrushType::Grass => 0.5,
             // Halftone Dots: 0.25 del diametro en photocraft (el espaciado base del preset) = 0.5 del radio.
             BrushType::Halftone => 0.5,
+            // Wax Crayon: 0.08 del diametro en photocraft = 0.16 del radio.
+            BrushType::WaxCrayon => 0.16,
         }
     }
 
@@ -222,6 +234,7 @@ impl BrushType {
             BrushType::Spatter => Some(DryKind::Spatter),
             BrushType::Grass => Some(DryKind::Grass),
             BrushType::Halftone => Some(DryKind::Halftone),
+            BrushType::WaxCrayon => Some(DryKind::Crayon),
             _ => None,
         }
     }
@@ -240,6 +253,8 @@ impl BrushType {
             BrushType::Grass => GRASS_REACH,
             // Lo que el hombro suave del disco se sale del radio (la punta llega a 1.384 radios).
             BrushType::Halftone => HALFTONE_REACH,
+            // Lo que el borde suave de la punta se sale del radio (llega a 1.203 radios).
+            BrushType::WaxCrayon => CRAYON_REACH,
             _ => 0.0,
         }
     }
@@ -266,7 +281,8 @@ impl BrushType {
             | BrushType::InkSponge
             | BrushType::Spatter
             | BrushType::Grass
-            | BrushType::Halftone => (6.0 * t).min(1.0),
+            | BrushType::Halftone
+            | BrushType::WaxCrayon => (6.0 * t).min(1.0),
             // Doble grano: tampoco usa el falloff radial (su disco y sus gotas salen de `pinceles/dual_grain.rs`).
             BrushType::DualGrain => (6.0 * t).min(1.0),
         }
@@ -375,8 +391,9 @@ mod tests {
         // Su dispersion cubre el 60 % del radio en cada eje: la esquina esta a 0.6 * raiz de 2.
         assert!((b.scatter() - 0.6 * 2f32.sqrt()).abs() < 1e-6);
         assert!(b.scatter() > BrushType::Pastel.scatter());
-        // Solo los ocho de medio seco (carboncillo, pastel, punteado, follaje, esponja, salpicadura, pasto y semitono) tienen punta propia.
-        assert_eq!(BrushType::ALL.iter().filter(|k| k.dry_kind().is_some()).count(), 8);
+        // Solo los nueve de medio seco (carboncillo, pastel, crayon, punteado, follaje, esponja, salpicadura, pasto y
+        // semitono) tienen punta propia.
+        assert_eq!(BrushType::ALL.iter().filter(|k| k.dry_kind().is_some()).count(), 9);
     }
 
     #[test]
@@ -470,6 +487,21 @@ mod tests {
         assert!((b.spacing() - 0.5).abs() < 1e-6);
         // Su punta llega a 0.63 + 2.6 * 0.29 = 1.384 radios: el margen es lo que pasa de 1.
         assert!((b.scatter() - 0.384).abs() < 1e-5);
+        // Flujo 1 (sin efecto).
+        assert_eq!(b.default_flow(), 1.0);
+    }
+
+    #[test]
+    fn el_crayon_de_cera_es_de_medio_seco_con_los_valores_de_photocraft() {
+        let b = BrushType::WaxCrayon;
+        assert_eq!(b.name(), "Crayón de cera");
+        assert_eq!(b.group(), BrushGroup::Dry);
+        assert_eq!(b.dry_kind(), Some(DryKind::Crayon));
+        // 22 de diametro en photocraft = radio 11; espaciado 0.08 del diametro = 0.16 del radio.
+        assert_eq!(b.default_radius(), 11.0);
+        assert!((b.spacing() - 0.16).abs() < 1e-6);
+        // Su punta llega a 0.865 + 2.6 * 0.13 = 1.203 radios: el margen es lo que pasa de 1.
+        assert!((b.scatter() - 0.203).abs() < 1e-5);
         // Flujo 1 (sin efecto).
         assert_eq!(b.default_flow(), 1.0);
     }

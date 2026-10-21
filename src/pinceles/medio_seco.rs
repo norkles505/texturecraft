@@ -7,7 +7,7 @@
 
 use glam::Vec3;
 
-use super::{carboncillo, esponja, follaje, pastel, pasto, punteado, salpicadura, semitono};
+use super::{carboncillo, crayon, esponja, follaje, pastel, pasto, punteado, salpicadura, semitono};
 
 /// Los pinceles de medio seco portados de photocraft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -31,6 +31,10 @@ pub enum DryKind {
     /// photocraft (pinta del todo o nada). No resta papel: la mezcla se aplica en `paint.rs` con `dry_hardmix`
     /// (`semitono.rs`).
     Halftone,
+    /// Crayon de cera (Wax Crayon de photocraft): punta redonda aplastada que sigue la direccion del trazo, con un papel
+    /// que se mezcla en modo HardMix con CADA toque (`crayon.rs`; la mezcla se aplica en `paint.rs` con
+    /// `dry_mezcla_toque`).
+    Crayon,
 }
 
 /// Cuanta cobertura RESTA el papel (carboncillo) o el lienzo (pastel) en un texel: `profundidad * t`, con `t` el patron
@@ -42,8 +46,15 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
         DryKind::Pastel => pastel::subtract(tx, ty),
         // El punteado no lleva textura: su preset de photocraft no activa ninguna. La esponja tampoco (sus bordes mojados
         // no restan: multiplican, en `paint.rs`).
-        // Los puntos de semitono tampoco restan: su trama se mezcla en modo HardMix (`dry_hardmix`).
-        DryKind::Stipple | DryKind::Foliage | DryKind::Sponge | DryKind::Spatter | DryKind::Grass | DryKind::Halftone => 0.0,
+        // Los puntos de semitono tampoco restan: su trama se mezcla en modo HardMix (`dry_hardmix`). El crayon tampoco:
+        // su papel se mezcla con cada toque (`dry_mezcla_toque`).
+        DryKind::Stipple
+        | DryKind::Foliage
+        | DryKind::Sponge
+        | DryKind::Spatter
+        | DryKind::Grass
+        | DryKind::Halftone
+        | DryKind::Crayon => 0.0,
     }
 }
 
@@ -58,6 +69,17 @@ pub fn dry_hardmix(kind: DryKind, tx: u32, ty: u32) -> Option<f32> {
     }
 }
 
+/// La cobertura `v` de UN toque (el numero `dab`) en el texel `(tx, ty)` (en la posicion `pos` del modelo) ya mezclada
+/// con el papel de ese toque, o `v` tal cual si el pincel no mezcla papel con cada toque (todos menos el crayon). A
+/// diferencia de `dry_subtract` y `dry_hardmix`, que actuan sobre la cobertura ya acumulada del trazo, esta se aplica
+/// a cada toque ANTES de acumularlo (`each_tip` de photocraft; `paint.rs`, `dab_surface`).
+pub fn dry_mezcla_toque(kind: DryKind, v: f32, dab: u32, pos: Vec3, tx: u32, ty: u32) -> f32 {
+    match kind {
+        DryKind::Crayon => crayon::mezcla(v, dab, pos, tx, ty),
+        _ => v,
+    }
+}
+
 /// Un toque de medio seco ya preparado. Cada pincel lo arma a su manera:
 ///
 /// - Carboncillo: la punta (elipse con vetas) apunta en la direccion del trazo, sobre el plano de la superficie.
@@ -69,6 +91,8 @@ pub fn dry_hardmix(kind: DryKind, tx: u32, ty: u32) -> Option<f32> {
 ///   (`pasto.rs`).
 /// - Puntos de semitono: un disco redondo, sin giro, tamano ni dispersion; su punta llega mas alla del radio
 ///   (`semitono.rs`).
+/// - Crayon de cera: una elipse de borde suave que sigue la direccion del trazo, sin tamano ni dispersion al azar; su
+///   punta llega mas alla del radio (`crayon.rs`).
 pub struct DryDab {
     pub(super) kind: DryKind,
     /// Ejes de la punta sobre la superficie.
@@ -105,6 +129,7 @@ impl DryDab {
             DryKind::Spatter => salpicadura::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Grass => pasto::nuevo(dab, inv_radius, radius, t0, b0, n, along),
             DryKind::Halftone => semitono::nuevo(inv_radius, t0, b0),
+            DryKind::Crayon => crayon::nuevo(inv_radius, t0, n, along),
         }
     }
 
@@ -121,6 +146,8 @@ impl DryDab {
             DryKind::Grass => pasto::GRASS_OVERSHOOT / self.inv_radius,
             // Los puntos de semitono: su punta llega mas alla del radio (el hombro suave del disco).
             DryKind::Halftone => semitono::exceso(self.inv_radius),
+            // El crayon: su borde suave llega mas alla del radio.
+            DryKind::Crayon => crayon::exceso(self.inv_radius),
             _ => 0.0,
         };
         let own = self.shift.length() + exceso;
@@ -140,6 +167,7 @@ impl DryDab {
             DryKind::Spatter => salpicadura::punta(),
             DryKind::Grass => pasto::punta(),
             DryKind::Halftone => semitono::punta(),
+            DryKind::Crayon => crayon::punta(),
         };
         tip.sample(u * 0.5 + 0.5, v * 0.5 + 0.5)
     }

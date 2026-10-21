@@ -15,7 +15,7 @@ use egui::pos2;
 
 use super::*;
 use crate::brush::{Brush, BrushGroup, BrushType, MAX_RADIUS, MIN_FLOW, MIN_RADIUS};
-use crate::pinceles::{ChalkDab, DryDab, DualDab, PREVIEW_UNITS_PER_PX, dots_at, hard_mix, wet_factor};
+use crate::pinceles::{ChalkDab, DryDab, DualDab, PREVIEW_UNITS_PER_PX, dots_at, dry_mezcla_toque, hard_mix, wet_factor};
 use glam::Vec3;
 
 /// Medidas del panel (en puntos de egui). `PB_LEFT`/`PB_TOP` = donde se ancla (justo a la derecha de la barra de
@@ -137,6 +137,9 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     // Pixeles de la muestra que mide un texel de la textura: el radio de la muestra es el del pincel inicial (en
     // texeles), asi la trama (8 texeles) guarda la misma proporcion con el pincel que al pintar.
     let texel_px = r / kind.default_radius();
+    // Unidades del modelo que mide un pixel de la muestra (el slider de tamano mide 0.01 por punto): el papel del crayon
+    // de cera esta anclado al modelo, asi guarda con el pincel la misma proporcion que al pintar.
+    let units_per_px = kind.default_radius() * 0.01 / r;
     let spacing = (r * kind.spacing()).max(0.5);
     // Margen para que los extremos redondeados no se corten.
     let margin = (r + 6.0 * TEX_SCALE).min(w as f32 * 0.25);
@@ -184,7 +187,18 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
                         let (fx, fy) = (x as f32, y as f32);
                         c.alpha(Vec3::new(fx - cx, fy - cy, 0.0), Vec3::new(fx, fy, 0.0) * PREVIEW_UNITS_PER_PX, x as u32, y as u32)
                     }
-                    (_, Some(dd), _) => dd.alpha(a3(x as f32 - cx, y as f32 - cy)),
+                    (_, Some(dd), _) => {
+                        let a = dd.alpha(a3(x as f32 - cx, y as f32 - cy));
+                        // Crayon de cera (como en `paint.rs`): su papel se mezcla con la cobertura de CADA toque, antes
+                        // de acumularlo. Los demas pinceles de medio seco no cambian.
+                        match kind.dry_kind() {
+                            Some(k) => {
+                                let pos = Vec3::new(x as f32, y as f32, 0.0) * units_per_px;
+                                dry_mezcla_toque(k, a, chalk_n, pos, x as u32, y as u32)
+                            }
+                            None => a,
+                        }
+                    }
                     (_, _, Some(dd)) => {
                         let acc = &mut dual_acc[y * w + x];
                         *acc += dd.dual(Vec3::new(x as f32 - cx, y as f32 - cy, 0.0)) * (1.0 - *acc);
