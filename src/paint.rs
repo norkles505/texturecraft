@@ -17,7 +17,7 @@
 use glam::Vec3;
 
 use crate::brush::BrushType;
-use crate::pinceles::{ChalkDab, DryDab, DryKind, DualDab, dry_subtract, paper_mask, wet_factor};
+use crate::pinceles::{ChalkDab, DryDab, DryKind, DualDab, dry_hardmix, dry_subtract, hard_mix, paper_mask, wet_factor};
 
 /// Lado de la textura de cada pieza (fijo en la app Android).
 pub const TEX_SIZE: u32 = 1024;
@@ -246,6 +246,12 @@ impl StrokeState {
     /// sin restar y solo lo que se mezcla con el color lleva la resta (`acumulado - sub * opacidad`, que es
     /// `max(0, cobertura - profundidad * t) * opacidad` de photocraft). Asi dos toques sobre el mismo sitio no cambian
     /// el dibujo del papel.
+    ///
+    /// `hard` es la trama de los puntos de semitono (`None` para el resto): modo HardMix de photocraft con profundidad 1.
+    /// Tambien se mezcla con la cobertura YA acumulada (`acumulado / opacidad`, que es la cobertura de photocraft antes
+    /// de la opacidad del trazo) y da todo o nada: `opacidad` donde `cobertura + trama > 1` y 0 donde no. Como la
+    /// cobertura acumulada solo sube, un texel que no se pinto se pinta en cuanto la cobertura pasa el umbral de su
+    /// trama, y uno ya pintado nunca se despinta.
     #[allow(clippy::too_many_arguments)]
     fn apply_texel(
         &mut self,
@@ -256,6 +262,7 @@ impl StrokeState {
         color: [u8; 3],
         sub: f32,
         mul: f32,
+        hard: Option<f32>,
         opts: DabOptions,
     ) -> bool {
         let mut prev = self.stroke_alpha[idx];
@@ -285,7 +292,11 @@ impl StrokeState {
         // Papel o lienzo (medio seco): se resta a lo acumulado, solo para mezclar. Donde el papel se come toda la
         // cobertura no se pinta nada.
         // `mul` es el papel de la tiza: multiplica la cobertura acumulada (1 para el resto de pinceles).
-        let dab_alpha = (dab_alpha * mul - sub * opacity).max(0.0);
+        let dab_alpha = match hard {
+            // `min(1.0)`: el redondeo no debe dejar la cobertura en 1.0000001 y pintar el centro de un punto.
+            Some(t) => hard_mix((dab_alpha / opacity).min(1.0), t) * opacity,
+            None => (dab_alpha * mul - sub * opacity).max(0.0),
+        };
         if dab_alpha <= 0.0 {
             return false;
         }
@@ -424,10 +435,10 @@ impl StrokeState {
                         }
                         // Color con que se pinta este texel: el del pincel, salvo el follaje (cada hoja tiene el suyo).
                         let mut texel_color = color;
-                        let (cov, sub, mul) = match (&chalk, &dry, &dual) {
+                        let (cov, sub, mul, hard) = match (&chalk, &dry, &dual) {
                             // Tiza: punta de bitmap girada en el plano de la superficie; el papel (anclado al modelo)
                             // multiplica despues, sobre la cobertura acumulada.
-                            (Some(c), _, _) => (c.tip(pos - center), 0.0, paper_mask(pos, x, y)),
+                            (Some(c), _, _) => (c.tip(pos - center), 0.0, paper_mask(pos, x, y), None),
                             // Medio seco: la punta da la cobertura; el papel o lienzo resta despues, al acumular.
                             (_, Some((kind, dd)), _) => {
                                 let (a, c) = dd.alpha_color(pos - center, color);
@@ -451,7 +462,8 @@ impl StrokeState {
                                 } else {
                                     1.0
                                 };
-                                (a, dry_subtract(*kind, pos, x, y), mul)
+                                // Puntos de semitono: la trama (modo HardMix) en vez de la resta del papel.
+                                (a, dry_subtract(*kind, pos, x, y), mul, dry_hardmix(*kind, x, y))
                             }
                             // Doble grano: las gotas se acumulan en el trazo (`c + v * (1 - c)`, aunque el disco no
                             // llegue a este texel en este toque) y el disco ruidoso solo pinta donde ya hay gotas
@@ -459,15 +471,15 @@ impl StrokeState {
                             (_, _, Some(dd)) => {
                                 let acc = &mut self.stroke_dual[idx];
                                 *acc += dd.dual(pos - center) * (1.0 - *acc);
-                                (dd.primary(d, x, y) * *acc, 0.0, 1.0)
+                                (dd.primary(d, x, y) * *acc, 0.0, 1.0, None)
                             }
-                            _ => (opts.brush.falloff(1.0 - d / radius), 0.0, 1.0),
+                            _ => (opts.brush.falloff(1.0 - d / radius), 0.0, 1.0, None),
                         };
                         let cov = cov * opts.flow;
                         if cov * opacity <= 0.0 {
                             continue;
                         }
-                        if self.apply_texel(pixels, idx, cov, opacity, texel_color, sub, mul, opts) {
+                        if self.apply_texel(pixels, idx, cov, opacity, texel_color, sub, mul, hard, opts) {
                             changed = Some(union(changed, (x, y, x, y)));
                         }
                     }
@@ -511,7 +523,7 @@ impl StrokeState {
                     continue;
                 }
                 let idx = (y * self.size + x) as usize;
-                changed |= self.apply_texel(pixels, idx, cov, opacity, color, 0.0, 1.0, opts);
+                changed |= self.apply_texel(pixels, idx, cov, opacity, color, 0.0, 1.0, None, opts);
             }
         }
         // El rectangulo del trazo incluye toda la caja (stroke_alpha pudo cambiar aunque no cambie el pixel).

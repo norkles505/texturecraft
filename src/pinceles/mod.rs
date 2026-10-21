@@ -11,6 +11,8 @@
 //! - `salpicadura.rs`: la SALPICADURA (racimos de gotas, 1 o 2 por toque, con tamano, giro, volteo y dispersion al azar).
 //! - `pasto.rs`: el PASTO (un manojo de hojas finas que sube hacia arriba del modelo, con tamano, giro leve, volteo y
 //!   dispersion de lado al azar).
+//! - `semitono.rs`: los PUNTOS DE SEMITONO (disco suave cuya cobertura acumulada se mezcla con una trama de puntos en
+//!   modo HardMix: pinta del todo o nada).
 //!
 //! Lo compartido esta aparte:
 //!
@@ -33,15 +35,17 @@ mod pasto;
 mod punta;
 mod punteado;
 mod salpicadura;
+mod semitono;
 mod tiza;
 
 pub use dual_grain::{DUAL_GRAIN_REACH, DualDab};
 pub use esponja::wet_factor;
 pub use follaje::FOLIAGE_REACH;
-pub use medio_seco::{DryDab, DryKind, dry_subtract};
+pub use medio_seco::{DryDab, DryKind, dry_hardmix, dry_subtract};
 pub use papel::paper_mask;
 pub use pastel::PASTEL_SCATTER;
 pub use pasto::GRASS_REACH;
 pub use punteado::STIPPLE_REACH;
 pub use salpicadura::SPATTER_REACH;
+pub use semitono::{HALFTONE_REACH, dots_at, hard_mix};
 pub use tiza::{ChalkDab, PREVIEW_UNITS_PER_PX};

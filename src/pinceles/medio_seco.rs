@@ -7,7 +7,7 @@
 
 use glam::Vec3;
 
-use super::{carboncillo, esponja, follaje, pastel, pasto, punteado, salpicadura};
+use super::{carboncillo, esponja, follaje, pastel, pasto, punteado, salpicadura, semitono};
 
 /// Los pinceles de medio seco portados de photocraft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -27,6 +27,10 @@ pub enum DryKind {
     /// Pasto: un manojo de hojas finas que sube hacia arriba del modelo (1 por toque), con tamano, giro leve, volteo y
     /// dispersion de lado al azar, sin papel ni lienzo (`pasto.rs`).
     Grass,
+    /// Puntos de semitono: un disco suave cuya cobertura acumulada se mezcla con una trama de puntos en modo HardMix de
+    /// photocraft (pinta del todo o nada). No resta papel: la mezcla se aplica en `paint.rs` con `dry_hardmix`
+    /// (`semitono.rs`).
+    Halftone,
 }
 
 /// Cuanta cobertura RESTA el papel (carboncillo) o el lienzo (pastel) en un texel: `profundidad * t`, con `t` el patron
@@ -38,7 +42,19 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
         DryKind::Pastel => pastel::subtract(tx, ty),
         // El punteado no lleva textura: su preset de photocraft no activa ninguna. La esponja tampoco (sus bordes mojados
         // no restan: multiplican, en `paint.rs`).
-        DryKind::Stipple | DryKind::Foliage | DryKind::Sponge | DryKind::Spatter | DryKind::Grass => 0.0,
+        // Los puntos de semitono tampoco restan: su trama se mezcla en modo HardMix (`dry_hardmix`).
+        DryKind::Stipple | DryKind::Foliage | DryKind::Sponge | DryKind::Spatter | DryKind::Grass | DryKind::Halftone => 0.0,
+    }
+}
+
+/// El valor de la trama (0..1) con que se mezcla en modo HardMix la cobertura acumulada del trazo en el texel `(tx, ty)`,
+/// o `None` si el pincel no lleva esa mezcla (todos menos los puntos de semitono). Es el modo HardMix de photocraft con
+/// profundidad 1: donde `cobertura + trama > 1` se pinta del todo y donde no, nada (`paint.rs`, `apply_texel`). Como
+/// el papel, se aplica a la cobertura ya acumulada y no a cada toque.
+pub fn dry_hardmix(kind: DryKind, tx: u32, ty: u32) -> Option<f32> {
+    match kind {
+        DryKind::Halftone => Some(semitono::patron(tx, ty)),
+        _ => None,
     }
 }
 
@@ -51,6 +67,8 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
 /// - Salpicadura: uno o dos racimos de gotas, cada uno con su tamano, giro, volteo y dispersion (`salpicadura.rs`).
 /// - Pasto: un manojo de hojas que sube hacia arriba del modelo, con tamano, giro leve, volteo y dispersion de lado
 ///   (`pasto.rs`).
+/// - Puntos de semitono: un disco redondo, sin giro, tamano ni dispersion; su punta llega mas alla del radio
+///   (`semitono.rs`).
 pub struct DryDab {
     pub(super) kind: DryKind,
     /// Ejes de la punta sobre la superficie.
@@ -86,6 +104,7 @@ impl DryDab {
             DryKind::Sponge => esponja::nuevo(dab, inv_radius, t0, b0),
             DryKind::Spatter => salpicadura::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Grass => pasto::nuevo(dab, inv_radius, radius, t0, b0, n, along),
+            DryKind::Halftone => semitono::nuevo(inv_radius, t0, b0),
         }
     }
 
@@ -98,7 +117,12 @@ impl DryDab {
     /// racimos), la que mas se aleja. El pasto suma ademas lo que sus hojas se salen del circulo de su radio (llegan
     /// hasta la esquina del cuadrado de la punta).
     pub fn reach(&self) -> f32 {
-        let exceso = if self.kind == DryKind::Grass { pasto::GRASS_OVERSHOOT / self.inv_radius } else { 0.0 };
+        let exceso = match self.kind {
+            DryKind::Grass => pasto::GRASS_OVERSHOOT / self.inv_radius,
+            // Los puntos de semitono: su punta llega mas alla del radio (el hombro suave del disco).
+            DryKind::Halftone => semitono::exceso(self.inv_radius),
+            _ => 0.0,
+        };
         let own = self.shift.length() + exceso;
         self.otra().map_or(own, |o| own.max(o.reach()))
     }
@@ -115,6 +139,7 @@ impl DryDab {
             DryKind::Sponge => esponja::punta(),
             DryKind::Spatter => salpicadura::punta(),
             DryKind::Grass => pasto::punta(),
+            DryKind::Halftone => semitono::punta(),
         };
         tip.sample(u * 0.5 + 0.5, v * 0.5 + 0.5)
     }

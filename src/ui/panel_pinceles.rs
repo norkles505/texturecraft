@@ -15,7 +15,7 @@ use egui::pos2;
 
 use super::*;
 use crate::brush::{Brush, BrushGroup, BrushType, MAX_RADIUS, MIN_FLOW, MIN_RADIUS};
-use crate::pinceles::{ChalkDab, DryDab, DualDab, PREVIEW_UNITS_PER_PX, wet_factor};
+use crate::pinceles::{ChalkDab, DryDab, DualDab, PREVIEW_UNITS_PER_PX, dots_at, hard_mix, wet_factor};
 use glam::Vec3;
 
 /// Medidas del panel (en puntos de egui). `PB_LEFT`/`PB_TOP` = donde se ancla (justo a la derecha de la barra de
@@ -130,7 +130,13 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     // Esponja de tinta: lo mas hondo que llego una punta a cada texel (el valor mas alto de la punta), para los bordes
     // mojados que se aplican al final (como en `paint.rs`).
     let sponge = kind == BrushType::InkSponge;
-    let mut depth = vec![0.0f32; if sponge { w * h } else { 0 }];
+    // Puntos de semitono: tambien guarda lo mas alto que llego la punta a cada texel (la cobertura acumulada del trazo,
+    // sin la opacidad), que se mezcla al final con la trama de puntos en modo HardMix (como en `paint.rs`).
+    let semitono = kind == BrushType::Halftone;
+    let mut depth = vec![0.0f32; if sponge || semitono { w * h } else { 0 }];
+    // Pixeles de la muestra que mide un texel de la textura: el radio de la muestra es el del pincel inicial (en
+    // texeles), asi la trama (8 texeles) guarda la misma proporcion con el pincel que al pintar.
+    let texel_px = r / kind.default_radius();
     let spacing = (r * kind.spacing()).max(0.5);
     // Margen para que los extremos redondeados no se corten.
     let margin = (r + 6.0 * TEX_SCALE).min(w as f32 * 0.25);
@@ -189,7 +195,7 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
                 let a = raw * opacity;
                 let i = y * w + x;
                 // Esponja de tinta: lo mas hondo que llego una punta a este texel (su valor en la punta, sin la opacidad).
-                if sponge && raw > depth[i] {
+                if (sponge || semitono) && raw > depth[i] {
                     depth[i] = raw;
                 }
                 if a > alpha[i] {
@@ -213,7 +219,15 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     let mut rgba = Vec::with_capacity(w * h * 4);
     for (i, a) in alpha.into_iter().enumerate() {
         // Bordes mojados (como en `paint.rs`): la cobertura acumulada se multiplica por `wet_factor` de la profundidad.
-        let a = if sponge { a * wet_factor(1.0 - depth[i]) } else { a };
+        let a = if sponge {
+            a * wet_factor(1.0 - depth[i])
+        } else if semitono {
+            // Puntos de semitono (como en `paint.rs`): pinta del todo donde cobertura + trama pasa de 1, y nada donde no.
+            let (x, y) = ((i % w) as f32 + 0.5, (i / w) as f32 + 0.5);
+            hard_mix(depth[i], dots_at(x / texel_px, y / texel_px)) * opacity
+        } else {
+            a
+        };
         rgba.extend_from_slice(&[color[0], color[1], color[2], (a.clamp(0.0, 1.0) * 255.0).round() as u8]);
     }
     egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba)
