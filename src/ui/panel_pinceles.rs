@@ -15,7 +15,7 @@ use egui::pos2;
 
 use super::*;
 use crate::brush::{Brush, BrushGroup, BrushType, MAX_RADIUS, MIN_FLOW, MIN_RADIUS};
-use crate::pinceles::{ChalkDab, DryDab, DualDab, PREVIEW_UNITS_PER_PX};
+use crate::pinceles::{ChalkDab, DryDab, DualDab, PREVIEW_UNITS_PER_PX, wet_factor};
 use glam::Vec3;
 
 /// Medidas del panel (en puntos de egui). `PB_LEFT`/`PB_TOP` = donde se ancla (justo a la derecha de la barra de
@@ -127,6 +127,10 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     let mut alpha = vec![0.0f32; w * h];
     // Doble grano: las gotas de la segunda punta se acumulan en cada texel a lo largo del trazo (como en `paint.rs`).
     let mut dual_acc = vec![0.0f32; if kind == BrushType::DualGrain { w * h } else { 0 }];
+    // Esponja de tinta: lo mas hondo que llego una punta a cada texel (el valor mas alto de la punta), para los bordes
+    // mojados que se aplican al final (como en `paint.rs`).
+    let sponge = kind == BrushType::InkSponge;
+    let mut depth = vec![0.0f32; if sponge { w * h } else { 0 }];
     let spacing = (r * kind.spacing()).max(0.5);
     // Margen para que los extremos redondeados no se corten.
     let margin = (r + 6.0 * TEX_SCALE).min(w as f32 * 0.25);
@@ -164,7 +168,7 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
                 if d >= lim {
                     continue;
                 }
-                let a = match (&chalk, &dry, &dual) {
+                let raw = match (&chalk, &dry, &dual) {
                     (Some(c), _, _) => {
                         let (fx, fy) = (x as f32, y as f32);
                         c.alpha(Vec3::new(fx - cx, fy - cy, 0.0), Vec3::new(fx, fy, 0.0) * PREVIEW_UNITS_PER_PX, x as u32, y as u32)
@@ -176,8 +180,13 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
                         dd.primary(d, x as u32, y as u32) * *acc
                     }
                     _ => kind.falloff(1.0 - d / r),
-                } * opacity;
+                };
+                let a = raw * opacity;
                 let i = y * w + x;
+                // Esponja de tinta: lo mas hondo que llego una punta a este texel (su valor en la punta, sin la opacidad).
+                if sponge && raw > depth[i] {
+                    depth[i] = raw;
+                }
                 if a > alpha[i] {
                     alpha[i] = a;
                 }
@@ -197,7 +206,9 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     let end = pos(1.0);
     dab(end.0, end.1, (end.0 - last.0, end.1 - last.1));
     let mut rgba = Vec::with_capacity(w * h * 4);
-    for a in alpha {
+    for (i, a) in alpha.into_iter().enumerate() {
+        // Bordes mojados (como en `paint.rs`): la cobertura acumulada se multiplica por `wet_factor` de la profundidad.
+        let a = if sponge { a * wet_factor(1.0 - depth[i]) } else { a };
         rgba.extend_from_slice(&[color[0], color[1], color[2], (a.clamp(0.0, 1.0) * 255.0).round() as u8]);
     }
     egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba)

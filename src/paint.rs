@@ -17,7 +17,7 @@
 use glam::Vec3;
 
 use crate::brush::BrushType;
-use crate::pinceles::{ChalkDab, DryDab, DryKind, DualDab, dry_subtract, paper_mask};
+use crate::pinceles::{ChalkDab, DryDab, DryKind, DualDab, dry_subtract, paper_mask, wet_factor};
 
 /// Lado de la textura de cada pieza (fijo en la app Android).
 pub const TEX_SIZE: u32 = 1024;
@@ -87,6 +87,9 @@ pub struct StrokeState {
     /// Solo el Doble grano: cobertura acumulada de la segunda punta (las gotas) en cada texel durante el trazo. Se
     /// limpia con `stroke_alpha`.
     stroke_dual: Vec<f32>,
+    /// Solo la esponja de tinta (bordes mojados): lo mas hondo que llego una punta a cada texel durante el trazo, o sea
+    /// el valor mas alto de la punta que paso por ahi. Se limpia con `stroke_alpha`.
+    stroke_depth: Vec<f32>,
     stroke_dab: u32,
     /// Rectangulo tocado por el trazo (para limpiar `stroke_alpha` sin recorrer todo).
     touched: Option<Rect>,
@@ -214,6 +217,7 @@ impl StrokeState {
             stroke_last: vec![0; n],
             dab_mark: vec![0; n],
             stroke_dual: vec![0.0; n],
+            stroke_depth: vec![0.0; n],
             stroke_dab: 0,
             touched: None,
         }
@@ -227,6 +231,7 @@ impl StrokeState {
                 let b = (y * self.size + x1) as usize;
                 self.stroke_alpha[a..=b].fill(0.0);
                 self.stroke_dual[a..=b].fill(0.0);
+                self.stroke_depth[a..=b].fill(0.0);
             }
         }
     }
@@ -427,7 +432,26 @@ impl StrokeState {
                             (_, Some((kind, dd)), _) => {
                                 let (a, c) = dd.alpha_color(pos - center, color);
                                 texel_color = c;
-                                (a, dry_subtract(*kind, pos, x, y), 1.0)
+                                // Esponja de tinta, bordes mojados (`wet_edges` de photocraft): cada texel recuerda lo
+                                // mas hondo que lo alcanzo una punta (su valor en la punta) y la cobertura acumulada se
+                                // multiplica por `wet_factor`: la mitad donde la punta pinto del todo, la entera en el
+                                // borde. Se aplica al trazo, no a cada toque, asi que pasar dos veces no oscurece mas.
+                                let mul = if *kind == DryKind::Sponge && a > 0.0 {
+                                    // Una pasada nueva (sin techo, el trazo se fue y volvio) empieza sin profundidad,
+                                    // igual que su cobertura (`apply_texel`).
+                                    if !opts.ceiling
+                                        && self.stroke_alpha[idx] > 0.0
+                                        && self.stroke_dab - self.stroke_last[idx] > PASS_GAP
+                                    {
+                                        self.stroke_depth[idx] = 0.0;
+                                    }
+                                    let depth = &mut self.stroke_depth[idx];
+                                    *depth = depth.max(a);
+                                    wet_factor(1.0 - *depth)
+                                } else {
+                                    1.0
+                                };
+                                (a, dry_subtract(*kind, pos, x, y), mul)
                             }
                             // Doble grano: las gotas se acumulan en el trazo (`c + v * (1 - c)`, aunque el disco no
                             // llegue a este texel en este toque) y el disco ruidoso solo pinta donde ya hay gotas
@@ -800,6 +824,28 @@ mod tests {
             pixels
         };
         assert_eq!(pintar(), pintar());
+    }
+
+    #[test]
+    fn la_esponja_empieza_de_cero_su_profundidad_en_una_pasada_nueva() {
+        let tris = cuadrado();
+        // Sin techo: un hueco de mas de 3 toques empieza una pasada nueva.
+        let opts = DabOptions { brush: BrushType::InkSponge, normal: Vec3::Z, ..Default::default() };
+        let (centro, lejos, radio) = (Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.3, 0.3, 0.0), 0.5);
+        let mut s = StrokeState::new(64);
+        let mut pixels = layer(64, [0, 0, 0, 0]);
+        s.begin_stroke();
+        s.dab_surface(&mut pixels, &tris, centro, radio, [255, 0, 0], 1.0, opts);
+        let antes = s.stroke_depth.clone();
+        assert!(antes.iter().any(|d| *d > 0.9), "la primera pasada no dejo profundidad");
+        for _ in 0..5 {
+            s.dab_surface(&mut pixels, &tris, lejos, 0.1, [255, 0, 0], 1.0, opts);
+        }
+        s.dab_surface(&mut pixels, &tris, centro, radio, [255, 0, 0], 1.0, opts);
+        // Cada toque gira distinto: si la profundidad no se reiniciara, solo podria subir (es el maximo de las puntas).
+        // Al reiniciarse, donde la segunda punta toca menos que la primera la profundidad baja.
+        let baja = (0..antes.len()).any(|i| antes[i] > 0.9 && s.stroke_depth[i] > 0.0 && s.stroke_depth[i] < antes[i] - 0.2);
+        assert!(baja, "la profundidad no se reinicio en la pasada nueva");
     }
 
     /// Texel (37, 32) con el aerografo (`t * t`) y radio 10 desde el centro (32, 32): `t` = 0.5, cobertura 0.25.

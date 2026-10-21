@@ -199,6 +199,8 @@ pub(super) fn bottom_bar(
     if let Some(button) = menu_rect {
         menu_panel(ui.ctx(), options, button);
     }
+    // Ventana de Ajustes (centrada; no depende de ningun boton).
+    settings_panel(ui.ctx(), options);
     // El panel de mallas tambien cambia el fondo de la pieza activa (recompone su textura, igual que el de capas).
     let (parts_dirty, mesh_bg_dirty) = match mesh_rect {
         Some(button) => meshes_panel(ui.ctx(), options, parts, selected_part, stack, button),

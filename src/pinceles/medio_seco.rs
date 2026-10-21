@@ -7,7 +7,7 @@
 
 use glam::Vec3;
 
-use super::{carboncillo, follaje, pastel, punteado};
+use super::{carboncillo, esponja, follaje, pastel, punteado};
 
 /// Los pinceles de medio seco portados de photocraft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -18,6 +18,9 @@ pub enum DryKind {
     Stipple,
     /// Follaje: hojas de tamano, giro y color al azar (1 o 2 por toque), sin papel ni lienzo.
     Foliage,
+    /// Esponja de tinta: punta de esponja con poros que gira en cada toque, sin papel ni lienzo pero con bordes mojados
+    /// (`esponja.rs`; los bordes mojados se aplican en `paint.rs`).
+    Sponge,
 }
 
 /// Cuanta cobertura RESTA el papel (carboncillo) o el lienzo (pastel) en un texel: `profundidad * t`, con `t` el patron
@@ -27,8 +30,9 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
     match kind {
         DryKind::Charcoal => carboncillo::subtract(pos, tx, ty),
         DryKind::Pastel => pastel::subtract(tx, ty),
-        // El punteado no lleva textura: su preset de photocraft no activa ninguna.
-        DryKind::Stipple | DryKind::Foliage => 0.0,
+        // El punteado no lleva textura: su preset de photocraft no activa ninguna. La esponja tampoco (sus bordes mojados
+        // no restan: multiplican, en `paint.rs`).
+        DryKind::Stipple | DryKind::Foliage | DryKind::Sponge => 0.0,
     }
 }
 
@@ -69,6 +73,7 @@ impl DryDab {
             DryKind::Pastel => pastel::nuevo(dab, inv_radius, radius, t0, b0, n, along),
             DryKind::Stipple => punteado::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Foliage => follaje::nuevo(dab, inv_radius, radius, t0, b0),
+            DryKind::Sponge => esponja::nuevo(dab, inv_radius, t0, b0),
         }
     }
 
@@ -93,6 +98,7 @@ impl DryDab {
             DryKind::Pastel => pastel::punta(),
             DryKind::Stipple => punteado::punta(),
             DryKind::Foliage => follaje::punta(),
+            DryKind::Sponge => esponja::punta(),
         };
         tip.sample(u * 0.5 + 0.5, v * 0.5 + 0.5)
     }

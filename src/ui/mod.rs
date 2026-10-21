@@ -63,6 +63,8 @@ struct OptionsPanel {
     open: bool,
     /// Panel del menu (el que abre el boton de la flecha de la barra inferior).
     menu_open: bool,
+    /// Panel de Ajustes (el que abre la fila "Ajustes" del menu): ventana centrada en la pantalla.
+    settings_open: bool,
     /// Panel de capas (el que abre el boton de capas de la barra inferior), cuanto se desplazo su lista (en puntos)
     /// y si esta abierto el desplegable de modos de mezcla.
     layers_open: bool,

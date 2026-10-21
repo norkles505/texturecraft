@@ -7,6 +7,7 @@
 //! - `punteado.rs`: el PUNTEADO (gotas sueltas que giran, se voltean y se dispersan en los dos ejes).
 //! - `follaje.rs`: el FOLLAJE (hojas de tamano, giro y color al azar, 1 o 2 por toque, que se dispersan en los dos ejes).
 //! - `dual_grain.rs`: el DOBLE GRANO (disco con borde ruidoso multiplicado por una segunda punta de gotas sueltas).
+//! - `esponja.rs`: la ESPONJA DE TINTA (punta de esponja con poros que gira en cada toque, con bordes mojados).
 //!
 //! Lo compartido esta aparte:
 //!
@@ -20,6 +21,7 @@
 mod azar;
 mod carboncillo;
 mod dual_grain;
+mod esponja;
 mod follaje;
 mod medio_seco;
 mod papel;
@@ -29,6 +31,7 @@ mod punteado;
 mod tiza;
 
 pub use dual_grain::{DUAL_GRAIN_REACH, DualDab};
+pub use esponja::wet_factor;
 pub use follaje::FOLIAGE_REACH;
 pub use medio_seco::{DryDab, DryKind, dry_subtract};
 pub use papel::paper_mask;
