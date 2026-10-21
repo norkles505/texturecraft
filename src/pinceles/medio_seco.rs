@@ -7,7 +7,7 @@
 
 use glam::Vec3;
 
-use super::{carboncillo, esponja, follaje, pastel, punteado};
+use super::{carboncillo, esponja, follaje, pastel, punteado, salpicadura};
 
 /// Los pinceles de medio seco portados de photocraft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -21,6 +21,9 @@ pub enum DryKind {
     /// Esponja de tinta: punta de esponja con poros que gira en cada toque, sin papel ni lienzo pero con bordes mojados
     /// (`esponja.rs`; los bordes mojados se aplican en `paint.rs`).
     Sponge,
+    /// Salpicadura: racimos de gotas que giran, se voltean y se dispersan en los dos ejes (1 o 2 por toque), sin papel
+    /// ni lienzo (`salpicadura.rs`).
+    Spatter,
 }
 
 /// Cuanta cobertura RESTA el papel (carboncillo) o el lienzo (pastel) en un texel: `profundidad * t`, con `t` el patron
@@ -32,7 +35,7 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
         DryKind::Pastel => pastel::subtract(tx, ty),
         // El punteado no lleva textura: su preset de photocraft no activa ninguna. La esponja tampoco (sus bordes mojados
         // no restan: multiplican, en `paint.rs`).
-        DryKind::Stipple | DryKind::Foliage | DryKind::Sponge => 0.0,
+        DryKind::Stipple | DryKind::Foliage | DryKind::Sponge | DryKind::Spatter => 0.0,
     }
 }
 
@@ -42,6 +45,7 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
 /// - Pastel: la punta gira, se aplasta un poco y el centro se dispersa de lado respecto al trazo.
 /// - Punteado: la punta de gotas gira, se voltea y el centro se dispersa en los dos ejes del plano.
 /// - Follaje: una o dos hojas, cada una con su tamano, giro, redondez, dispersion y color (`follaje.rs`).
+/// - Salpicadura: uno o dos racimos de gotas, cada uno con su tamano, giro, volteo y dispersion (`salpicadura.rs`).
 pub struct DryDab {
     pub(super) kind: DryKind,
     /// Ejes de la punta sobre la superficie.
@@ -52,7 +56,8 @@ pub struct DryDab {
     pub(super) roundness: f32,
     /// Desplazamiento del centro del toque (dispersion); cero para el carboncillo.
     pub(super) shift: Vec3,
-    /// Solo el follaje: el color propio de la hoja y la segunda hoja del toque (`None` en los demas pinceles).
+    /// Solo el follaje: el color propio de la hoja y la segunda hoja del toque. La salpicadura lo usa solo para su
+    /// segundo racimo (sin cambio de color). `None` en los demas pinceles.
     pub(super) follaje: Option<Box<follaje::Extras>>,
 }
 
@@ -74,6 +79,7 @@ impl DryDab {
             DryKind::Stipple => punteado::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Foliage => follaje::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Sponge => esponja::nuevo(dab, inv_radius, t0, b0),
+            DryKind::Spatter => salpicadura::nuevo(dab, inv_radius, radius, t0, b0),
         }
     }
 
@@ -99,6 +105,7 @@ impl DryDab {
             DryKind::Stipple => punteado::punta(),
             DryKind::Foliage => follaje::punta(),
             DryKind::Sponge => esponja::punta(),
+            DryKind::Spatter => salpicadura::punta(),
         };
         tip.sample(u * 0.5 + 0.5, v * 0.5 + 0.5)
     }

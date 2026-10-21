@@ -3,7 +3,7 @@
 //! `falloff(t)` recibe `t = 1 - d/radio` (1 en el centro del toque, 0 en el borde) y devuelve cuanta opacidad queda
 //! ahi (0..1). El espaciado es una fraccion del radio. El tamano es el RADIO en texeles (el slider va de 1 a 100).
 
-use crate::pinceles::{DUAL_GRAIN_REACH, DryKind, FOLIAGE_REACH, PASTEL_SCATTER, STIPPLE_REACH};
+use crate::pinceles::{DUAL_GRAIN_REACH, DryKind, FOLIAGE_REACH, PASTEL_SCATTER, SPATTER_REACH, STIPPLE_REACH};
 
 /// Radio minimo y maximo del pincel en texeles.
 pub const MIN_RADIUS: f32 = 1.0;
@@ -40,6 +40,9 @@ pub enum BrushType {
     /// Esponja de tinta (Ink Wash Sponge de photocraft): punta de esponja con poros que gira en cada toque, flujo 0.6
     /// y bordes mojados (el interior del trazo queda mas claro que su borde), sin papel (`pinceles/esponja.rs`).
     InkSponge,
+    /// Salpicadura (Spatter de photocraft): uno o dos racimos de gotas por toque, cada uno con su tamano, giro, volteo y
+    /// dispersion al azar en los dos ejes, sin papel (`pinceles/salpicadura.rs`).
+    Spatter,
 }
 
 /// Categorias del panel de pinceles (la columna de la izquierda).
@@ -77,7 +80,7 @@ impl BrushGroup {
 
 impl BrushType {
     /// En el orden en que salen en el panel.
-    pub const ALL: [BrushType; 14] = [
+    pub const ALL: [BrushType; 15] = [
         BrushType::Soft,
         BrushType::Hard,
         BrushType::Airbrush,
@@ -92,6 +95,7 @@ impl BrushType {
         BrushType::Foliage,
         BrushType::DualGrain,
         BrushType::InkSponge,
+        BrushType::Spatter,
     ];
 
     pub fn name(self) -> &'static str {
@@ -110,6 +114,7 @@ impl BrushType {
             BrushType::Foliage => "Follaje",
             BrushType::DualGrain => "Doble grano",
             BrushType::InkSponge => "Esponja de tinta",
+            BrushType::Spatter => "Salpicadura",
         }
     }
 
@@ -125,7 +130,8 @@ impl BrushType {
             | BrushType::Stipple
             | BrushType::Foliage
             | BrushType::DualGrain
-            | BrushType::InkSponge => BrushGroup::Dry,
+            | BrushType::InkSponge
+            | BrushType::Spatter => BrushGroup::Dry,
         }
     }
 
@@ -149,6 +155,8 @@ impl BrushType {
             BrushType::DualGrain => 25.0,
             // Ink Wash Sponge de photocraft mide 70 de diametro.
             BrushType::InkSponge => 35.0,
+            // Spatter de photocraft mide 60 de diametro.
+            BrushType::Spatter => 30.0,
         }
     }
 
@@ -173,6 +181,8 @@ impl BrushType {
             BrushType::DualGrain => 0.5,
             // Ink Wash Sponge: 0.3 del diametro en photocraft = 0.6 del radio.
             BrushType::InkSponge => 0.6,
+            // Spatter: 0.6 del diametro en photocraft = 1.2 del radio.
+            BrushType::Spatter => 1.2,
         }
     }
 
@@ -186,6 +196,7 @@ impl BrushType {
             BrushType::Stipple => Some(DryKind::Stipple),
             BrushType::Foliage => Some(DryKind::Foliage),
             BrushType::InkSponge => Some(DryKind::Sponge),
+            BrushType::Spatter => Some(DryKind::Spatter),
             _ => None,
         }
     }
@@ -199,6 +210,7 @@ impl BrushType {
             BrushType::Foliage => FOLIAGE_REACH,
             // Lo que se pasa del radio la segunda punta (sus gotas caen hasta 1.45 radios del centro).
             BrushType::DualGrain => DUAL_GRAIN_REACH - 1.0,
+            BrushType::Spatter => SPATTER_REACH,
             _ => 0.0,
         }
     }
@@ -218,9 +230,12 @@ impl BrushType {
             BrushType::Chalk => (6.0 * t).min(1.0),
             // Carboncillo, pastel y punteado tampoco usan el falloff radial (su forma sale de la punta de bitmap): igual
             // que la tiza, el valor solo existe para que la funcion este definida para todos los pinceles.
-            BrushType::Charcoal | BrushType::Pastel | BrushType::Stipple | BrushType::Foliage | BrushType::InkSponge => {
-                (6.0 * t).min(1.0)
-            }
+            BrushType::Charcoal
+            | BrushType::Pastel
+            | BrushType::Stipple
+            | BrushType::Foliage
+            | BrushType::InkSponge
+            | BrushType::Spatter => (6.0 * t).min(1.0),
             // Doble grano: tampoco usa el falloff radial (su disco y sus gotas salen de `pinceles/dual_grain.rs`).
             BrushType::DualGrain => (6.0 * t).min(1.0),
         }
@@ -329,8 +344,8 @@ mod tests {
         // Su dispersion cubre el 60 % del radio en cada eje: la esquina esta a 0.6 * raiz de 2.
         assert!((b.scatter() - 0.6 * 2f32.sqrt()).abs() < 1e-6);
         assert!(b.scatter() > BrushType::Pastel.scatter());
-        // Solo los cinco de medio seco (carboncillo, pastel, punteado, follaje y esponja) tienen punta propia.
-        assert_eq!(BrushType::ALL.iter().filter(|k| k.dry_kind().is_some()).count(), 5);
+        // Solo los seis de medio seco (carboncillo, pastel, punteado, follaje, esponja y salpicadura) tienen punta propia.
+        assert_eq!(BrushType::ALL.iter().filter(|k| k.dry_kind().is_some()).count(), 6);
     }
 
     #[test]
@@ -380,6 +395,22 @@ mod tests {
                 assert_eq!(k.default_flow(), 1.0, "{}", k.name());
             }
         }
+    }
+
+    #[test]
+    fn la_salpicadura_es_de_medio_seco_con_los_valores_de_photocraft() {
+        let b = BrushType::Spatter;
+        assert_eq!(b.name(), "Salpicadura");
+        assert_eq!(b.group(), BrushGroup::Dry);
+        assert_eq!(b.dry_kind(), Some(DryKind::Spatter));
+        // 60 de diametro en photocraft = radio 30; espaciado 0.6 del diametro = 1.2 del radio.
+        assert_eq!(b.default_radius(), 30.0);
+        assert!((b.spacing() - 1.2).abs() < 1e-6);
+        // Dispersion 1.5 del radio en cada eje: la esquina esta a 1.5 * raiz de 2.
+        assert!((b.scatter() - 1.5 * 2f32.sqrt()).abs() < 1e-6);
+        assert!(b.scatter() > BrushType::Foliage.scatter());
+        // Flujo 1 (sin efecto).
+        assert_eq!(b.default_flow(), 1.0);
     }
 
     #[test]

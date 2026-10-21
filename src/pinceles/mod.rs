@@ -8,6 +8,7 @@
 //! - `follaje.rs`: el FOLLAJE (hojas de tamano, giro y color al azar, 1 o 2 por toque, que se dispersan en los dos ejes).
 //! - `dual_grain.rs`: el DOBLE GRANO (disco con borde ruidoso multiplicado por una segunda punta de gotas sueltas).
 //! - `esponja.rs`: la ESPONJA DE TINTA (punta de esponja con poros que gira en cada toque, con bordes mojados).
+//! - `salpicadura.rs`: la SALPICADURA (racimos de gotas, 1 o 2 por toque, con tamano, giro, volteo y dispersion al azar).
 //!
 //! Lo compartido esta aparte:
 //!
@@ -28,6 +29,7 @@ mod papel;
 mod pastel;
 mod punta;
 mod punteado;
+mod salpicadura;
 mod tiza;
 
 pub use dual_grain::{DUAL_GRAIN_REACH, DualDab};
@@ -37,4 +39,5 @@ pub use medio_seco::{DryDab, DryKind, dry_subtract};
 pub use papel::paper_mask;
 pub use pastel::PASTEL_SCATTER;
 pub use punteado::STIPPLE_REACH;
+pub use salpicadura::SPATTER_REACH;
 pub use tiza::{ChalkDab, PREVIEW_UNITS_PER_PX};
