@@ -7,7 +7,7 @@
 
 use glam::Vec3;
 
-use super::{carboncillo, esponja, follaje, pastel, punteado, salpicadura};
+use super::{carboncillo, esponja, follaje, pastel, pasto, punteado, salpicadura};
 
 /// Los pinceles de medio seco portados de photocraft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -24,6 +24,9 @@ pub enum DryKind {
     /// Salpicadura: racimos de gotas que giran, se voltean y se dispersan en los dos ejes (1 o 2 por toque), sin papel
     /// ni lienzo (`salpicadura.rs`).
     Spatter,
+    /// Pasto: un manojo de hojas finas que sube hacia arriba del modelo (1 por toque), con tamano, giro leve, volteo y
+    /// dispersion de lado al azar, sin papel ni lienzo (`pasto.rs`).
+    Grass,
 }
 
 /// Cuanta cobertura RESTA el papel (carboncillo) o el lienzo (pastel) en un texel: `profundidad * t`, con `t` el patron
@@ -35,7 +38,7 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
         DryKind::Pastel => pastel::subtract(tx, ty),
         // El punteado no lleva textura: su preset de photocraft no activa ninguna. La esponja tampoco (sus bordes mojados
         // no restan: multiplican, en `paint.rs`).
-        DryKind::Stipple | DryKind::Foliage | DryKind::Sponge | DryKind::Spatter => 0.0,
+        DryKind::Stipple | DryKind::Foliage | DryKind::Sponge | DryKind::Spatter | DryKind::Grass => 0.0,
     }
 }
 
@@ -46,6 +49,8 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
 /// - Punteado: la punta de gotas gira, se voltea y el centro se dispersa en los dos ejes del plano.
 /// - Follaje: una o dos hojas, cada una con su tamano, giro, redondez, dispersion y color (`follaje.rs`).
 /// - Salpicadura: uno o dos racimos de gotas, cada uno con su tamano, giro, volteo y dispersion (`salpicadura.rs`).
+/// - Pasto: un manojo de hojas que sube hacia arriba del modelo, con tamano, giro leve, volteo y dispersion de lado
+///   (`pasto.rs`).
 pub struct DryDab {
     pub(super) kind: DryKind,
     /// Ejes de la punta sobre la superficie.
@@ -80,6 +85,7 @@ impl DryDab {
             DryKind::Foliage => follaje::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Sponge => esponja::nuevo(dab, inv_radius, t0, b0),
             DryKind::Spatter => salpicadura::nuevo(dab, inv_radius, radius, t0, b0),
+            DryKind::Grass => pasto::nuevo(dab, inv_radius, radius, t0, b0, n, along),
         }
     }
 
@@ -88,10 +94,12 @@ impl DryDab {
         self.follaje.as_ref().and_then(|f| f.otra.as_ref())
     }
 
-    /// Cuanto se aleja el centro de la punta del punto tocado (para ampliar la zona que se revisa). Con dos hojas, la
-    /// que mas se aleja.
+    /// Cuanto se aleja el centro de la punta del punto tocado (para ampliar la zona que se revisa). Con dos hojas (o dos
+    /// racimos), la que mas se aleja. El pasto suma ademas lo que sus hojas se salen del circulo de su radio (llegan
+    /// hasta la esquina del cuadrado de la punta).
     pub fn reach(&self) -> f32 {
-        let own = self.shift.length();
+        let exceso = if self.kind == DryKind::Grass { pasto::GRASS_OVERSHOOT / self.inv_radius } else { 0.0 };
+        let own = self.shift.length() + exceso;
         self.otra().map_or(own, |o| own.max(o.reach()))
     }
 
@@ -106,6 +114,7 @@ impl DryDab {
             DryKind::Foliage => follaje::punta(),
             DryKind::Sponge => esponja::punta(),
             DryKind::Spatter => salpicadura::punta(),
+            DryKind::Grass => pasto::punta(),
         };
         tip.sample(u * 0.5 + 0.5, v * 0.5 + 0.5)
     }

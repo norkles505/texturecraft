@@ -137,6 +137,11 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     let (x0, x1) = (margin, w as f32 - margin);
     let pos = |t: f32| (x0 + (x1 - x0) * t, h as f32 * 0.5 - amp * (t * std::f32::consts::TAU * 0.95).sin());
     let mut chalk_n = 0u32;
+    // El pasto sube hacia arriba del modelo (+Z, como en `pinceles/pasto.rs`): su muestra se arma en una pared de cara al
+    // ojo (normal -Y, arriba de la imagen = +Z, derecha = +X). Los demas pinceles se arman en el plano de la imagen.
+    let pared = kind == BrushType::Grass;
+    let a3 = |x: f32, y: f32| if pared { Vec3::new(x, 0.0, -y) } else { Vec3::new(x, y, 0.0) };
+    let normal = if pared { -Vec3::Y } else { Vec3::Z };
     let mut dab = |cx: f32, cy: f32, dir: (f32, f32)| {
         // La tiza gira y cambia de tamano en cada toque, como la de verdad (chalk.rs).
         let chalk = (kind == BrushType::Chalk).then(|| {
@@ -146,7 +151,7 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
         // Medio seco: la punta de verdad de ese pincel, orientada segun el trazo (el carboncillo la sigue).
         let dry = kind.dry_kind().map(|k| {
             chalk_n += 1;
-            DryDab::new(k, chalk_n, Vec3::Z, Vec3::new(dir.0, dir.1, 0.0).normalize_or_zero(), r)
+            DryDab::new(k, chalk_n, normal, a3(dir.0, dir.1).normalize_or_zero(), r)
         });
         // Doble grano: el disco ruidoso y las gotas de la segunda punta.
         let dual = (kind == BrushType::DualGrain).then(|| {
@@ -173,7 +178,7 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
                         let (fx, fy) = (x as f32, y as f32);
                         c.alpha(Vec3::new(fx - cx, fy - cy, 0.0), Vec3::new(fx, fy, 0.0) * PREVIEW_UNITS_PER_PX, x as u32, y as u32)
                     }
-                    (_, Some(dd), _) => dd.alpha(Vec3::new(x as f32 - cx, y as f32 - cy, 0.0)),
+                    (_, Some(dd), _) => dd.alpha(a3(x as f32 - cx, y as f32 - cy)),
                     (_, _, Some(dd)) => {
                         let acc = &mut dual_acc[y * w + x];
                         *acc += dd.dual(Vec3::new(x as f32 - cx, y as f32 - cy, 0.0)) * (1.0 - *acc);

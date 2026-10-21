@@ -9,6 +9,8 @@
 //! - `dual_grain.rs`: el DOBLE GRANO (disco con borde ruidoso multiplicado por una segunda punta de gotas sueltas).
 //! - `esponja.rs`: la ESPONJA DE TINTA (punta de esponja con poros que gira en cada toque, con bordes mojados).
 //! - `salpicadura.rs`: la SALPICADURA (racimos de gotas, 1 o 2 por toque, con tamano, giro, volteo y dispersion al azar).
+//! - `pasto.rs`: el PASTO (un manojo de hojas finas que sube hacia arriba del modelo, con tamano, giro leve, volteo y
+//!   dispersion de lado al azar).
 //!
 //! Lo compartido esta aparte:
 //!
@@ -27,6 +29,7 @@ mod follaje;
 mod medio_seco;
 mod papel;
 mod pastel;
+mod pasto;
 mod punta;
 mod punteado;
 mod salpicadura;
@@ -38,6 +41,7 @@ pub use follaje::FOLIAGE_REACH;
 pub use medio_seco::{DryDab, DryKind, dry_subtract};
 pub use papel::paper_mask;
 pub use pastel::PASTEL_SCATTER;
+pub use pasto::GRASS_REACH;
 pub use punteado::STIPPLE_REACH;
 pub use salpicadura::SPATTER_REACH;
 pub use tiza::{ChalkDab, PREVIEW_UNITS_PER_PX};
