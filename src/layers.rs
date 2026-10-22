@@ -2,7 +2,7 @@
 //! de abajo hacia arriba, con visibilidad, opacidad, bloqueos, modo de mezcla y recorte. Las carpetas, mover,
 //! clonar, combinar y el modo Solo vienen despues.
 
-use crate::blend::{over, BlendMode};
+use crate::blend::{BlendMode, over};
 use crate::paint::Rect;
 
 /// Capas con pixeles por pieza (4 MB cada una).
@@ -56,6 +56,16 @@ pub enum Background {
 }
 
 impl Background {
+    /// Lo contrario de `{:?}` (asi se guarda en el proyecto). Un nombre desconocido cae en `Checker`.
+    pub fn from_name(name: &str) -> Background {
+        match name {
+            "White" => Background::White,
+            "CheckerDark" => Background::CheckerDark,
+            "None" => Background::None,
+            _ => Background::Checker,
+        }
+    }
+
     fn pixel(self, x: u32, y: u32) -> [u8; 4] {
         let even = (x / 32 + y / 32) % 2 == 0;
         let c = match self {
@@ -101,6 +111,38 @@ impl LayerStack {
             composite: vec![0; (size * size * 4) as usize],
             next_name: 2,
             next_id: 1,
+        };
+        s.composite_all();
+        s
+    }
+
+    /// Pila armada con capas ya cargadas de un proyecto guardado. Los contadores de id y de nombre siguen despues de
+    /// los mayores que haya, y la capa elegida se ajusta al rango. Si no hay ninguna capa, se pone una vacia.
+    pub fn from_saved(
+        size: u32,
+        mut layers: Vec<PaintLayer>,
+        selected: usize,
+        background: Background,
+    ) -> LayerStack {
+        if layers.is_empty() {
+            layers.push(PaintLayer::new(0, "1".to_string(), size));
+        }
+        let next_id = layers.iter().map(|l| l.id).max().unwrap_or(0) + 1;
+        let next_name = layers
+            .iter()
+            .filter_map(|l| l.name.parse::<u32>().ok())
+            .max()
+            .map_or(layers.len() as u32, |m| m.max(layers.len() as u32))
+            + 1;
+        let selected = selected.min(layers.len() - 1);
+        let mut s = LayerStack {
+            size,
+            layers,
+            selected,
+            background,
+            composite: vec![0; (size * size * 4) as usize],
+            next_name,
+            next_id,
         };
         s.composite_all();
         s
@@ -185,7 +227,9 @@ impl LayerStack {
         let threads = if area < 65_536 {
             1
         } else {
-            std::thread::available_parallelism().map_or(1, |n| n.get()).min(rows)
+            std::thread::available_parallelism()
+                .map_or(1, |n| n.get())
+                .min(rows)
         };
         if threads <= 1 {
             composite_rows(layers, bg, size, y0, out, x0, x1);
@@ -209,7 +253,11 @@ impl LayerStack {
         for y in 0..size {
             for x in 0..size {
                 let i = ((y * size + x) * 4) as usize;
-                let bg = if opaque_bg { self.background.pixel(x, y) } else { [0, 0, 0, 0] };
+                let bg = if opaque_bg {
+                    self.background.pixel(x, y)
+                } else {
+                    [0, 0, 0, 0]
+                };
                 out[i..i + 4].copy_from_slice(&Self::blend_texel(&self.layers, i, bg));
             }
         }
@@ -230,7 +278,15 @@ impl LayerStack {
 
 /// Compone las columnas `x0..=x1` de un grupo de filas de la textura. `rows` son las filas completas (RGBA) de la
 /// textura compuesta a partir de la fila `y_start`; cada hilo recibe su propia franja, asi que no se pisan.
-fn composite_rows(layers: &[PaintLayer], bg: Background, size: u32, y_start: u32, rows: &mut [u8], x0: u32, x1: u32) {
+fn composite_rows(
+    layers: &[PaintLayer],
+    bg: Background,
+    size: u32,
+    y_start: u32,
+    rows: &mut [u8],
+    x0: u32,
+    x1: u32,
+) {
     let stride = (size * 4) as usize;
     for (k, row) in rows.chunks_mut(stride).enumerate() {
         let y = y_start + k as u32;
@@ -254,7 +310,12 @@ mod tests {
 
     fn px(stack: &LayerStack, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * stack.size + x) * 4) as usize;
-        [stack.composite[i], stack.composite[i + 1], stack.composite[i + 2], stack.composite[i + 3]]
+        [
+            stack.composite[i],
+            stack.composite[i + 1],
+            stack.composite[i + 2],
+            stack.composite[i + 3],
+        ]
     }
 
     #[test]

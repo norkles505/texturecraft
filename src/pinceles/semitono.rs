@@ -80,7 +80,11 @@ fn construir() -> Punta {
             let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
             // 1 = el alcance de la punta.
             let rn = (dx * dx + dy * dy).sqrt() / c;
-            data.push(if rn >= 1.0 { 0.0 } else { perfil(rn * TIP_REACH) });
+            data.push(if rn >= 1.0 {
+                0.0
+            } else {
+                perfil(rn * TIP_REACH)
+            });
         }
     }
     Punta::new(data)
@@ -116,7 +120,10 @@ pub(super) fn exceso(inv_radius: f32) -> f32 {
 /// (el texel `(3, 4)` esta en `(3.5, 4.5)`). 0 en el centro de cada punto y 1 fuera de el: es `1 - suavizado` del
 /// borde de un circulo de `DOT_RADIUS` celdas. Se repite cada `DOT_PERIOD` texeles.
 pub fn dots_at(fx: f32, fy: f32) -> f32 {
-    let (u, v) = ((fx / DOT_PERIOD).fract() - 0.5, (fy / DOT_PERIOD).fract() - 0.5);
+    let (u, v) = (
+        (fx / DOT_PERIOD).fract() - 0.5,
+        (fy / DOT_PERIOD).fract() - 0.5,
+    );
     let d = (u * u + v * v).sqrt();
     1.0 - smooth(((DOT_RADIUS - d) / DOT_SOFT + 0.5).clamp(0.0, 1.0))
 }
@@ -170,11 +177,22 @@ mod tests {
                 .collect();
             v.iter().sum::<f32>() / v.len() as f32
         };
-        let medias = [anillo(0.0, 0.3), anillo(0.5, 0.6), anillo(0.7, 0.8), anillo(0.9, 1.0)];
-        assert!(medias.windows(2).all(|w| w[0] > w[1]), "no baja hacia afuera: {medias:?}");
+        let medias = [
+            anillo(0.0, 0.3),
+            anillo(0.5, 0.6),
+            anillo(0.7, 0.8),
+            anillo(0.9, 1.0),
+        ];
+        assert!(
+            medias.windows(2).all(|w| w[0] > w[1]),
+            "no baja hacia afuera: {medias:?}"
+        );
         // En el radio del pincel (1 / TIP_REACH del alcance) vale `exp(-(0.37 / 0.29)^2)` = 0.196.
         let en_radio = a.sample(0.5 + 0.5 / TIP_REACH, 0.5);
-        assert!((en_radio - 0.196).abs() < 0.03, "en el radio vale {en_radio}");
+        assert!(
+            (en_radio - 0.196).abs() < 0.03,
+            "en el radio vale {en_radio}"
+        );
     }
 
     #[test]
@@ -241,7 +259,11 @@ mod tests {
             assert_eq!(d.roundness, 1.0);
             assert!(d.follaje.is_none());
             // Llega HALFTONE_REACH radios mas alla del radio.
-            assert!((d.reach() - HALFTONE_REACH * radio).abs() < 1e-4, "alcance {}", d.reach());
+            assert!(
+                (d.reach() - HALFTONE_REACH * radio).abs() < 1e-4,
+                "alcance {}",
+                d.reach()
+            );
             // Todos los toques son iguales (no hay azar).
             assert_eq!(d.alpha(p), uno.alpha(p));
         }
@@ -250,15 +272,29 @@ mod tests {
         assert!(uno.alpha(Vec3::new(0.5 * radio, 0.0, 0.0)) > 0.999);
         // En el radio vale 0.196 y pasado el alcance, nada.
         assert!((uno.alpha(Vec3::new(radio, 0.0, 0.0)) - 0.196).abs() < 0.03);
-        assert_eq!(uno.alpha(Vec3::new(radio * TIP_REACH * 1.01, 0.0, 0.0)), 0.0);
+        assert_eq!(
+            uno.alpha(Vec3::new(radio * TIP_REACH * 1.01, 0.0, 0.0)),
+            0.0
+        );
         // Es redondo: lo mismo en cualquier direccion.
-        let (a, b) = (uno.alpha(Vec3::new(0.9 * radio, 0.0, 0.0)), uno.alpha(Vec3::new(0.0, 0.9 * radio, 0.0)));
+        let (a, b) = (
+            uno.alpha(Vec3::new(0.9 * radio, 0.0, 0.0)),
+            uno.alpha(Vec3::new(0.0, 0.9 * radio, 0.0)),
+        );
         assert!((a - b).abs() < 0.03, "{a} y {b}");
         // No resta papel; solo este pincel tiene mezcla HardMix.
         assert_eq!(dry_subtract(DryKind::Halftone, Vec3::ONE, 5, 9), 0.0);
         assert_eq!(dry_hardmix(DryKind::Halftone, 3, 3), Some(0.0));
         assert_eq!(dry_hardmix(DryKind::Halftone, 0, 0), Some(1.0));
-        for k in [DryKind::Charcoal, DryKind::Pastel, DryKind::Stipple, DryKind::Foliage, DryKind::Sponge, DryKind::Spatter, DryKind::Grass] {
+        for k in [
+            DryKind::Charcoal,
+            DryKind::Pastel,
+            DryKind::Stipple,
+            DryKind::Foliage,
+            DryKind::Sponge,
+            DryKind::Spatter,
+            DryKind::Grass,
+        ] {
             assert_eq!(dry_hardmix(k, 3, 3), None, "{k:?}");
         }
     }
@@ -266,11 +302,22 @@ mod tests {
     /// Cuadrado de 4 x 4 unidades que cubre toda la textura de 256 (64 texeles por unidad: un periodo de la trama mide
     /// 0.125 unidades).
     fn cuadrado() -> [SurfTri; 2] {
-        let p = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(4.0, 0.0, 0.0), Vec3::new(4.0, 4.0, 0.0), Vec3::new(0.0, 4.0, 0.0)];
+        let p = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(4.0, 4.0, 0.0),
+            Vec3::new(0.0, 4.0, 0.0),
+        ];
         let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         [
-            SurfTri { p: [p[0], p[1], p[2]], uv: [uv[0], uv[1], uv[2]] },
-            SurfTri { p: [p[0], p[2], p[3]], uv: [uv[0], uv[2], uv[3]] },
+            SurfTri {
+                p: [p[0], p[1], p[2]],
+                uv: [uv[0], uv[1], uv[2]],
+            },
+            SurfTri {
+                p: [p[0], p[2], p[3]],
+                uv: [uv[0], uv[2], uv[3]],
+            },
         ]
     }
 
@@ -281,7 +328,14 @@ mod tests {
     /// Pinta toques en los `centros` y devuelve los pixeles de la capa.
     fn pintar(ceiling: bool, flow: f32, centros: &[Vec3]) -> Vec<u8> {
         let tris = cuadrado();
-        let opts = DabOptions { brush: BrushType::Halftone, normal: Vec3::Z, dir: Vec3::X, ceiling, flow, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Halftone,
+            normal: Vec3::Z,
+            dir: Vec3::X,
+            ceiling,
+            flow,
+            ..Default::default()
+        };
         let mut s = StrokeState::new(256);
         let mut pixels = vec![0u8; 256 * 256 * 4];
         s.begin_stroke();
@@ -296,7 +350,10 @@ mod tests {
         (0..256u32 * 256).map(move |i| {
             let (tx, ty) = (i % 256, i / 256);
             let pos = Vec3::new(tx as f32 / 255.0 * 4.0, ty as f32 / 255.0 * 4.0, 0.0);
-            (pos.distance(centro), &pixels[i as usize * 4..i as usize * 4 + 4])
+            (
+                pos.distance(centro),
+                &pixels[i as usize * 4..i as usize * 4 + 4],
+            )
         })
     }
 
@@ -311,8 +368,15 @@ mod tests {
                 if pintado {
                     // Pinta del todo o nada, y siempre con el color del pincel.
                     assert_eq!(q[3], 255, "ceiling {ceiling}: alfa {}", q[3]);
-                    assert_eq!(&q[..3], &BASE, "ceiling {ceiling}: el color no es el del pincel");
-                    assert!(d < alcance + 0.02, "ceiling {ceiling}: pinto a {d}, mas alla del alcance {alcance}");
+                    assert_eq!(
+                        &q[..3],
+                        &BASE,
+                        "ceiling {ceiling}: el color no es el del pincel"
+                    );
+                    assert!(
+                        d < alcance + 0.02,
+                        "ceiling {ceiling}: pinto a {d}, mas alla del alcance {alcance}"
+                    );
                 }
                 if d < 0.4 * RADIO {
                     nucleo = (nucleo.0 + 1, nucleo.1 + u32::from(pintado));
@@ -320,12 +384,24 @@ mod tests {
                     anillo = (anillo.0 + 1, anillo.1 + u32::from(pintado));
                 }
             }
-            let (fn_, fa) = (nucleo.1 as f32 / nucleo.0 as f32, anillo.1 as f32 / anillo.0 as f32);
+            let (fn_, fa) = (
+                nucleo.1 as f32 / nucleo.0 as f32,
+                anillo.1 as f32 / anillo.0 as f32,
+            );
             // En el centro la cobertura es 1: solo quedan sin pintar los puntos (alrededor del 25 %).
-            assert!((0.68..0.82).contains(&fn_), "ceiling {ceiling}: en el nucleo se pinta el {fn_}");
+            assert!(
+                (0.68..0.82).contains(&fn_),
+                "ceiling {ceiling}: en el nucleo se pinta el {fn_}"
+            );
             // Hacia el borde la cobertura baja y los agujeros crecen: se pinta menos.
-            assert!((0.40..0.62).contains(&fa), "ceiling {ceiling}: en el anillo se pinta el {fa}");
-            assert!(fn_ > fa + 0.1, "ceiling {ceiling}: los agujeros no crecen hacia el borde ({fn_} y {fa})");
+            assert!(
+                (0.40..0.62).contains(&fa),
+                "ceiling {ceiling}: en el anillo se pinta el {fa}"
+            );
+            assert!(
+                fn_ > fa + 0.1,
+                "ceiling {ceiling}: los agujeros no crecen hacia el borde ({fn_} y {fa})"
+            );
         }
     }
 
@@ -333,34 +409,62 @@ mod tests {
     fn con_flujo_bajo_y_techo_cada_toque_sube_la_cobertura_y_se_repinta() {
         // Con flujo 0.4, un toque deja la cobertura en 0.4 y seis en 0.95: donde la cobertura sube y pasa el umbral del
         // patron, el texel se pinta (la regla de `apply_texel` solo repinta si la cobertura acumulada sube).
-        let contar = |p: &[u8]| texeles(p, CENTRO).filter(|(d, q)| *d < 0.4 * RADIO && q[3] > 0).count();
-        let (uno, seis) = (pintar(true, 0.4, &[CENTRO]), pintar(true, 0.4, &[CENTRO; 6]));
+        let contar = |p: &[u8]| {
+            texeles(p, CENTRO)
+                .filter(|(d, q)| *d < 0.4 * RADIO && q[3] > 0)
+                .count()
+        };
+        let (uno, seis) = (
+            pintar(true, 0.4, &[CENTRO]),
+            pintar(true, 0.4, &[CENTRO; 6]),
+        );
         let (menos, mas) = (contar(&uno), contar(&seis));
         assert!(menos > 0, "con un toque no pinta nada");
-        assert!(mas > menos + menos / 20, "mas toques no pintan mas: {mas} contra {menos}");
+        assert!(
+            mas > menos + menos / 20,
+            "mas toques no pintan mas: {mas} contra {menos}"
+        );
         // Con flujo 1 un toque ya deja el nucleo con la cobertura entera: repetirlo no cambia lo pintado ahi (en el
         // hombro si sube, `c + v * (1 - c)`, y los agujeros se achican).
-        let (uno, cuatro) = (pintar(true, 1.0, &[CENTRO]), pintar(true, 1.0, &[CENTRO; 4]));
+        let (uno, cuatro) = (
+            pintar(true, 1.0, &[CENTRO]),
+            pintar(true, 1.0, &[CENTRO; 4]),
+        );
         assert_eq!(contar(&uno), contar(&cuatro));
         let todo = |p: &[u8]| p.chunks(4).filter(|q| q[3] > 0).count();
-        assert!(todo(&cuatro) > todo(&uno), "repetir el toque no achica los agujeros del hombro");
+        assert!(
+            todo(&cuatro) > todo(&uno),
+            "repetir el toque no achica los agujeros del hombro"
+        );
     }
 
     #[test]
     fn un_trazo_pinta_dos_veces_igual_y_la_trama_no_depende_del_toque() {
         // Una linea de toques separados 0.5 del radio.
-        let linea: Vec<Vec3> = (0..16).map(|i| Vec3::new(1.0 + i as f32 * 0.5 * RADIO, 2.0, 0.0)).collect();
+        let linea: Vec<Vec3> = (0..16)
+            .map(|i| Vec3::new(1.0 + i as f32 * 0.5 * RADIO, 2.0, 0.0))
+            .collect();
         for ceiling in [false, true] {
             let a = pintar(ceiling, 1.0, &linea);
-            assert_eq!(a, pintar(ceiling, 1.0, &linea), "ceiling {ceiling}: no es determinista");
+            assert_eq!(
+                a,
+                pintar(ceiling, 1.0, &linea),
+                "ceiling {ceiling}: no es determinista"
+            );
             let pintados = a.chunks(4).filter(|q| q[3] > 0).count();
-            assert!(pintados > 500, "ceiling {ceiling}: pinto pocos texeles: {pintados}");
+            assert!(
+                pintados > 500,
+                "ceiling {ceiling}: pinto pocos texeles: {pintados}"
+            );
             // La trama esta anclada a la textura: un texel pintado por el trazo coincide con la trama de ese texel (donde
             // el punto vale 0 nunca se pinta: ni con la cobertura entera).
             for (i, q) in a.chunks(4).enumerate() {
                 let (tx, ty) = (i as u32 % 256, i as u32 / 256);
                 if patron(tx, ty) == 0.0 {
-                    assert_eq!(q[3], 0, "ceiling {ceiling}: pinto el centro de un punto en ({tx}, {ty})");
+                    assert_eq!(
+                        q[3], 0,
+                        "ceiling {ceiling}: pinto el centro de un punto en ({tx}, {ty})"
+                    );
                 }
             }
         }

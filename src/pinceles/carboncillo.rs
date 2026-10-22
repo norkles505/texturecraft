@@ -61,7 +61,15 @@ pub(super) fn subtract(pos: Vec3, tx: u32, ty: u32) -> f32 {
 /// `t0`.
 pub(super) fn nuevo(inv_radius: f32, t0: Vec3, n: Vec3, along: Option<Vec3>) -> DryDab {
     let t = along.unwrap_or(t0);
-    DryDab { kind: DryKind::Charcoal, t, b: n.cross(t), inv_radius, roundness: 1.0, shift: Vec3::ZERO, follaje: None }
+    DryDab {
+        kind: DryKind::Charcoal,
+        t,
+        b: n.cross(t),
+        inv_radius,
+        roundness: 1.0,
+        shift: Vec3::ZERO,
+        follaje: None,
+    }
 }
 
 #[cfg(test)]
@@ -81,8 +89,17 @@ mod tests {
     fn el_carboncillo_sigue_la_direccion_del_trazo() {
         // El trazo va por Y: la punta es larga a lo largo de Y y corta de lado.
         let d = DryDab::new(DryKind::Charcoal, 1, Vec3::Z, Vec3::Y, 1.0);
-        let suma = |dir: Vec3| (-9..=9).map(|k| d.alpha(dir * (k as f32 / 10.0))).sum::<f32>();
-        assert!(suma(Vec3::Y) > suma(Vec3::X) * 1.2, "{} no pasa de {}", suma(Vec3::Y), suma(Vec3::X));
+        let suma = |dir: Vec3| {
+            (-9..=9)
+                .map(|k| d.alpha(dir * (k as f32 / 10.0)))
+                .sum::<f32>()
+        };
+        assert!(
+            suma(Vec3::Y) > suma(Vec3::X) * 1.2,
+            "{} no pasa de {}",
+            suma(Vec3::Y),
+            suma(Vec3::X)
+        );
         // Sin direccion (primer toque) usa una base fija y no falla.
         let sin = DryDab::new(DryKind::Charcoal, 1, Vec3::Z, Vec3::ZERO, 1.0);
         assert!((0.0..=1.0).contains(&sin.alpha(Vec3::new(0.1, 0.1, 0.0))));

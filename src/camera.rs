@@ -25,8 +25,14 @@ pub enum ViewAxis {
 }
 
 impl ViewAxis {
-    pub const ALL: [ViewAxis; 6] =
-        [ViewAxis::PosX, ViewAxis::NegX, ViewAxis::PosY, ViewAxis::NegY, ViewAxis::PosZ, ViewAxis::NegZ];
+    pub const ALL: [ViewAxis; 6] = [
+        ViewAxis::PosX,
+        ViewAxis::NegX,
+        ViewAxis::PosY,
+        ViewAxis::NegY,
+        ViewAxis::PosZ,
+        ViewAxis::NegZ,
+    ];
 
     /// Direccion del eje en el mundo.
     pub fn dir(self) -> Vec3 {
@@ -102,7 +108,15 @@ pub struct Camera {
 
 impl Default for Camera {
     fn default() -> Self {
-        Camera { angle_x: 19.8, angle_y: -137.0, distance: 7.47, pan_x: 0.05, pan_z: 0.24, orthographic: false, anim: None }
+        Camera {
+            angle_x: 19.8,
+            angle_y: -137.0,
+            distance: 7.47,
+            pan_x: 0.05,
+            pan_z: 0.24,
+            orthographic: false,
+            anim: None,
+        }
     }
 }
 
@@ -193,7 +207,8 @@ impl Camera {
     }
 
     fn rotation(&self) -> Mat4 {
-        Mat4::from_rotation_x(self.angle_x.to_radians()) * Mat4::from_rotation_z(self.angle_y.to_radians())
+        Mat4::from_rotation_x(self.angle_x.to_radians())
+            * Mat4::from_rotation_z(self.angle_y.to_radians())
     }
 
     fn projection(&self, aspect: f32) -> Mat4 {

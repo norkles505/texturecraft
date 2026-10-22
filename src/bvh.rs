@@ -46,17 +46,33 @@ impl TriBvh {
     /// Construye el BVH de una malla sin indices (cada 3 vertices = un triangulo).
     pub fn new(mesh: &ObjMesh) -> TriBvh {
         let n = mesh.vertex_count() / 3;
-        let pos = |i: usize| Vec3::new(mesh.positions[i * 3], mesh.positions[i * 3 + 1], mesh.positions[i * 3 + 2]);
+        let pos = |i: usize| {
+            Vec3::new(
+                mesh.positions[i * 3],
+                mesh.positions[i * 3 + 1],
+                mesh.positions[i * 3 + 2],
+            )
+        };
         let uv = |i: usize| [mesh.uvs[i * 2], mesh.uvs[i * 2 + 1]];
-        let tris: Vec<[Vec3; 3]> = (0..n).map(|t| [pos(t * 3), pos(t * 3 + 1), pos(t * 3 + 2)]).collect();
-        let uvs: Vec<[[f32; 2]; 3]> = (0..n).map(|t| [uv(t * 3), uv(t * 3 + 1), uv(t * 3 + 2)]).collect();
+        let tris: Vec<[Vec3; 3]> = (0..n)
+            .map(|t| [pos(t * 3), pos(t * 3 + 1), pos(t * 3 + 2)])
+            .collect();
+        let uvs: Vec<[[f32; 2]; 3]> = (0..n)
+            .map(|t| [uv(t * 3), uv(t * 3 + 1), uv(t * 3 + 2)])
+            .collect();
         let cent: Vec<Vec3> = tris.iter().map(|t| (t[0] + t[1] + t[2]) / 3.0).collect();
         let mut order: Vec<u32> = (0..n as u32).collect();
         let mut nodes = Vec::new();
         if n > 0 {
             build(&tris, &cent, &mut order, 0, &mut nodes);
         }
-        TriBvh { tris, uvs, order, nodes, visible: vec![true; n] }
+        TriBvh {
+            tris,
+            uvs,
+            order,
+            nodes,
+            visible: vec![true; n],
+        }
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -133,10 +149,17 @@ impl TriBvh {
                     if !self.visible[ti as usize] {
                         continue;
                     }
-                    if let Some(h) = hit_tri(&self.tris[ti as usize], &self.uvs[ti as usize], origin, dir) {
+                    if let Some(h) =
+                        hit_tri(&self.tris[ti as usize], &self.uvs[ti as usize], origin, dir)
+                    {
                         if h.0 < best_t {
                             best_t = h.0;
-                            best = Some(Hit { t: h.0, u: h.1, v: h.2, tri: ti as usize });
+                            best = Some(Hit {
+                                t: h.0,
+                                u: h.1,
+                                v: h.2,
+                                tri: ti as usize,
+                            });
                         }
                     }
                 }
@@ -173,7 +196,12 @@ impl TriBvh {
             }
             if let Some(h) = hit_tri(t, uv, origin, dir) {
                 if best.is_none_or(|b| h.0 < b.t) {
-                    best = Some(Hit { t: h.0, u: h.1, v: h.2, tri: i });
+                    best = Some(Hit {
+                        t: h.0,
+                        u: h.1,
+                        v: h.2,
+                        tri: i,
+                    });
                 }
             }
         }
@@ -181,7 +209,13 @@ impl TriBvh {
     }
 }
 
-fn build(tris: &[[Vec3; 3]], cent: &[Vec3], order: &mut [u32], base: usize, nodes: &mut Vec<Node>) -> usize {
+fn build(
+    tris: &[[Vec3; 3]],
+    cent: &[Vec3],
+    order: &mut [u32],
+    base: usize,
+    nodes: &mut Vec<Node>,
+) -> usize {
     let (mut mn, mut mx) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
     let (mut cmn, mut cmx) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
     for &i in order.iter() {
@@ -193,16 +227,31 @@ fn build(tris: &[[Vec3; 3]], cent: &[Vec3], order: &mut [u32], base: usize, node
         cmx = cmx.max(cent[i as usize]);
     }
     let idx = nodes.len();
-    nodes.push(Node { min: mn - Vec3::splat(PAD), max: mx + Vec3::splat(PAD), left: 0, right: 0, start: base, count: order.len() });
+    nodes.push(Node {
+        min: mn - Vec3::splat(PAD),
+        max: mx + Vec3::splat(PAD),
+        left: 0,
+        right: 0,
+        start: base,
+        count: order.len(),
+    });
     let ext = cmx - cmn;
-    let axis = if ext.x >= ext.y && ext.x >= ext.z { 0 } else if ext.y >= ext.z { 1 } else { 2 };
+    let axis = if ext.x >= ext.y && ext.x >= ext.z {
+        0
+    } else if ext.y >= ext.z {
+        1
+    } else {
+        2
+    };
     // Pocos triangulos, o todos con el mismo centro (no se pueden separar): queda como hoja.
     if order.len() <= LEAF || ext[axis] <= 0.0 {
         return idx;
     }
     let mid = order.len() / 2;
     order.select_nth_unstable_by(mid, |&a, &b| {
-        cent[a as usize][axis].partial_cmp(&cent[b as usize][axis]).unwrap_or(std::cmp::Ordering::Equal)
+        cent[a as usize][axis]
+            .partial_cmp(&cent[b as usize][axis])
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     let (l, r) = order.split_at_mut(mid);
     let left = build(tris, cent, l, base, nodes);
@@ -224,7 +273,11 @@ fn hit_box(n: &Node, origin: Vec3, inv: Vec3) -> Option<f32> {
     let t2 = (n.max - origin) * inv;
     let t_near = t1.min(t2).max_element();
     let t_far = t1.max(t2).min_element();
-    if t_far >= t_near.max(0.0) { Some(t_near.max(0.0)) } else { None }
+    if t_far >= t_near.max(0.0) {
+        Some(t_near.max(0.0))
+    } else {
+        None
+    }
 }
 
 /// Möller–Trumbore. Devuelve `(t, u, v)` con la UV interpolada.
@@ -252,7 +305,11 @@ fn hit_tri(t: &[Vec3; 3], uv: &[[f32; 2]; 3], o: Vec3, d: Vec3) -> Option<(f32, 
         return None;
     }
     let w0 = 1.0 - bu - bv;
-    Some((dist, w0 * uv[0][0] + bu * uv[1][0] + bv * uv[2][0], w0 * uv[0][1] + bu * uv[1][1] + bv * uv[2][1]))
+    Some((
+        dist,
+        w0 * uv[0][0] + bu * uv[1][0] + bv * uv[2][0],
+        w0 * uv[0][1] + bu * uv[1][1] + bv * uv[2][1],
+    ))
 }
 
 #[cfg(test)]
@@ -285,7 +342,10 @@ mod tests {
                 _ => panic!("uno acierta y el otro no"),
             }
         }
-        assert!(aciertos > 100 && fallos > 100, "la prueba no cubre aciertos y fallos ({aciertos}/{fallos})");
+        assert!(
+            aciertos > 100 && fallos > 100,
+            "la prueba no cubre aciertos y fallos ({aciertos}/{fallos})"
+        );
     }
 
     /// La consulta por esfera tiene que dar los mismos triangulos que recorrerlos todos con la misma prueba de cajas.
@@ -294,7 +354,11 @@ mod tests {
         let mesh = ObjMesh::uv_sphere(32, 16);
         let bvh = TriBvh::new(&mesh);
         let mut out = Vec::new();
-        for (c, r) in [(Vec3::new(0.0, -0.5, 0.0), 0.1), (Vec3::new(0.2, 0.1, 0.3), 0.25), (Vec3::new(5.0, 5.0, 5.0), 0.5)] {
+        for (c, r) in [
+            (Vec3::new(0.0, -0.5, 0.0), 0.1),
+            (Vec3::new(0.2, 0.1, 0.3), 0.25),
+            (Vec3::new(5.0, 5.0, 5.0), 0.5),
+        ] {
             bvh.query_sphere(c, r, &mut out);
             out.sort_unstable();
             let mut brute: Vec<usize> = (0..bvh.triangle_count())

@@ -76,16 +76,29 @@ pub(super) fn tool_buttons() -> [ToolButton; 7] {
 
 /// Dibuja un boton (icono arriba, nombre abajo) y devuelve true si se hizo clic.
 pub(super) fn tool_button(ui: &mut egui::Ui, b: &ToolButton, active: bool) -> bool {
-    icon_button(ui, b.icon.clone(), b.label, &format!("{} ({})", b.label, b.key), active)
+    icon_button(
+        ui,
+        b.icon.clone(),
+        b.label,
+        &format!("{} ({})", b.label, b.key),
+        active,
+    )
 }
 
 /// Boton generico de la barra (icono arriba, nombre abajo, tooltip). Lo usan las herramientas y el candado de la vista.
-pub(super) fn icon_button(ui: &mut egui::Ui, icon: egui::ImageSource<'static>, label: &str, tooltip: &str, active: bool) -> bool {
+pub(super) fn icon_button(
+    ui: &mut egui::Ui,
+    icon: egui::ImageSource<'static>,
+    label: &str,
+    tooltip: &str,
+    active: bool,
+) -> bool {
     let (rect, response) = ui.allocate_exact_size(vec2(BTN_W, BTN_H), Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
         if hovered && !active {
-            ui.painter().rect_filled(rect, CornerRadius::same(8), Color32::from_white_alpha(14));
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(8), Color32::from_white_alpha(14));
         }
         let color = if active {
             ACCENT
@@ -140,11 +153,19 @@ pub(super) fn brush_button(ui: &mut egui::Ui, size: f32, active: bool) -> bool {
             vec2(-1.0, 1.0),
             vec2(1.0, 1.0),
         ] {
-            p.text(pos + off, Align2::CENTER_CENTER, &label, font.clone(), Color32::WHITE);
+            p.text(
+                pos + off,
+                Align2::CENTER_CENTER,
+                &label,
+                font.clone(),
+                Color32::WHITE,
+            );
         }
         p.text(pos, Align2::CENTER_CENTER, &label, font, Color32::BLACK);
     }
-    response.on_hover_text("Pinceles (clic para abrir el panel)").clicked()
+    response
+        .on_hover_text("Pinceles (clic para abrir el panel)")
+        .clicked()
 }
 
 /// Cuadrito de color al pie de la barra: muestra el color del pincel y, al hacer clic, abre o cierra el panel de color.
@@ -159,9 +180,21 @@ pub(super) fn color_swatch(ui: &mut egui::Ui, color: [u8; 3], panel: &mut ColorP
     } else {
         Color32::from_gray(205)
     };
-    ui.painter().rect_filled(swatch, CornerRadius::same(4), Color32::from_rgb(color[0], color[1], color[2]));
-    ui.painter().rect_stroke(swatch, CornerRadius::same(4), Stroke::new(2.0, ring), StrokeKind::Inside);
-    if response.on_hover_text("Color (clic para abrir el panel)").clicked() {
+    ui.painter().rect_filled(
+        swatch,
+        CornerRadius::same(4),
+        Color32::from_rgb(color[0], color[1], color[2]),
+    );
+    ui.painter().rect_stroke(
+        swatch,
+        CornerRadius::same(4),
+        Stroke::new(2.0, ring),
+        StrokeKind::Inside,
+    );
+    if response
+        .on_hover_text("Color (clic para abrir el panel)")
+        .clicked()
+    {
         panel.open = !panel.open;
     }
 }
@@ -184,7 +217,12 @@ pub(super) fn toolbar(
                 .fill(bar_fill())
                 .stroke(Stroke::new(1.0, Color32::from_white_alpha(16)))
                 // Pegada al borde izquierdo: solo se redondean las esquinas de la derecha.
-                .corner_radius(CornerRadius { nw: 0, ne: BAR_RADIUS, sw: 0, se: BAR_RADIUS })
+                .corner_radius(CornerRadius {
+                    nw: 0,
+                    ne: BAR_RADIUS,
+                    sw: 0,
+                    se: BAR_RADIUS,
+                })
                 .inner_margin(Margin::symmetric(0, 6))
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
@@ -196,7 +234,13 @@ pub(super) fn toolbar(
                     }
                     // Candado: mientras esta encendido (azul) la vista no se puede girar, mover ni acercar.
                     let lock_tip = "Bloquear vista (no gira, no se mueve y no hace zoom)";
-                    if icon_button(ui, egui::include_image!("../../assets/icons/lock.svg"), "Bloquear", lock_tip, *view_locked) {
+                    if icon_button(
+                        ui,
+                        egui::include_image!("../../assets/icons/lock.svg"),
+                        "Bloquear",
+                        lock_tip,
+                        *view_locked,
+                    ) {
                         *view_locked = !*view_locked;
                     }
                     if brush_button(ui, brush.radius, brush_panel.open) {

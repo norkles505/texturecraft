@@ -8,6 +8,7 @@
 //! - `follaje.rs`: el FOLLAJE (hojas de tamano, giro y color al azar, 1 o 2 por toque, que se dispersan en los dos ejes).
 //! - `dual_grain.rs`: el DOBLE GRANO (disco con borde ruidoso multiplicado por una segunda punta de gotas sueltas).
 //! - `esponja.rs`: la ESPONJA DE TINTA (punta de esponja con poros que gira en cada toque, con bordes mojados).
+//! - `cincel.rs`: el CINCEL PLANO (paralelogramo aplastado que sigue el trazo; deducido de una imagen, no de photocraft).
 //! - `salpicadura.rs`: la SALPICADURA (racimos de gotas, 1 o 2 por toque, con tamano, giro, volteo y dispersion al azar).
 //! - `pasto.rs`: el PASTO (un manojo de hojas finas que sube hacia arriba del modelo, con tamano, giro leve, volteo y
 //!   dispersion de lado al azar).
@@ -27,6 +28,7 @@
 
 mod azar;
 mod carboncillo;
+mod cincel;
 mod crayon;
 mod dual_grain;
 mod esponja;

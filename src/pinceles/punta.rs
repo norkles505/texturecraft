@@ -26,7 +26,13 @@ impl Punta {
         let (x0, y0) = (fx.floor(), fy.floor());
         let (tx, ty) = (fx - x0, fy - y0);
         let (x0, y0) = (x0 as i32, y0 as i32);
-        let at = |x: i32, y: i32| if x < 0 || y < 0 || x >= n || y >= n { 0.0 } else { self.data[(y * n + x) as usize] };
+        let at = |x: i32, y: i32| {
+            if x < 0 || y < 0 || x >= n || y >= n {
+                0.0
+            } else {
+                self.data[(y * n + x) as usize]
+            }
+        };
         let a = lerp(at(x0, y0), at(x0 + 1, y0), tx);
         let b = lerp(at(x0, y0 + 1), at(x0 + 1, y0 + 1), tx);
         lerp(a, b, ty)

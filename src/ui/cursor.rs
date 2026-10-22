@@ -21,7 +21,10 @@ pub struct BrushRing {
 pub(super) fn eyedropper_pin(ctx: &egui::Context, tip: egui::Pos2, fill: Option<[u8; 3]>) {
     let r = 14.0;
     let center = tip + vec2(0.0, -(r + 9.0));
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("eyedropper_pin")));
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("eyedropper_pin"),
+    ));
     let light = Color32::from_gray(235);
     let dark = Color32::from_black_alpha(170);
     // La punta es un triangulo (se dibuja con bordes suavizados, a diferencia de una malla suelta). Su lado de arriba
@@ -38,13 +41,21 @@ pub(super) fn eyedropper_pin(ctx: &egui::Context, tip: egui::Pos2, fill: Option<
     // Contorno oscuro (para que se vea sobre colores claros), solo por FUERA del aro y de la punta. Va primero; luego
     // el relleno de color y al final lo claro encima.
     painter.circle_stroke(center, r + 1.4, Stroke::new(2.2, dark));
-    painter.add(egui::Shape::convex_polygon(tri(0.6, 1.5), dark, Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(
+        tri(0.6, 1.5),
+        dark,
+        Stroke::NONE,
+    ));
     // Relleno del aro con el color de abajo.
     if let Some(c) = fill {
         painter.circle_filled(center, r, Color32::from_rgb(c[0], c[1], c[2]));
     }
     painter.circle_stroke(center, r, Stroke::new(2.4, light));
-    painter.add(egui::Shape::convex_polygon(tri(0.0, 0.0), light, Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(
+        tri(0.0, 0.0),
+        light,
+        Stroke::NONE,
+    ));
     ctx.set_cursor_icon(egui::CursorIcon::None);
 }
 
@@ -63,9 +74,20 @@ pub(super) fn brush_ring(ctx: &egui::Context, ring: BrushRing) {
     }
     let radius = ring.radius / ppp;
     let alpha = if ring.on_model { 255 } else { 110 };
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("brush_ring")));
-    painter.circle_stroke(center, radius, Stroke::new(3.0, Color32::from_black_alpha(alpha / 2)));
-    painter.circle_stroke(center, radius, Stroke::new(1.5, Color32::from_white_alpha(alpha)));
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("brush_ring"),
+    ));
+    painter.circle_stroke(
+        center,
+        radius,
+        Stroke::new(3.0, Color32::from_black_alpha(alpha / 2)),
+    );
+    painter.circle_stroke(
+        center,
+        radius,
+        Stroke::new(1.5, Color32::from_white_alpha(alpha)),
+    );
     // Puntito en el centro, para saber exactamente donde cae el toque.
     painter.circle_filled(center, 2.0, Color32::from_black_alpha(alpha / 2));
     painter.circle_filled(center, 1.0, Color32::from_white_alpha(alpha));

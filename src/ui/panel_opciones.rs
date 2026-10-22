@@ -18,7 +18,10 @@ pub(super) fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) {
     let track = Color32::from_gray(150).lerp_to_gamma(ACCENT, t);
     p.rect_filled(rect, CornerRadius::same((TOGGLE_H / 2.0) as u8), track);
     let r = TOGGLE_H / 2.0 - 3.0;
-    let x = egui::lerp((rect.left() + TOGGLE_H / 2.0)..=(rect.right() - TOGGLE_H / 2.0), t);
+    let x = egui::lerp(
+        (rect.left() + TOGGLE_H / 2.0)..=(rect.right() - TOGGLE_H / 2.0),
+        t,
+    );
     p.circle_filled(egui::pos2(x, rect.center().y), r, Color32::WHITE);
 }
 
@@ -30,7 +33,13 @@ fn option_row(ui: &mut egui::Ui, label: &str, on: &mut bool) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 28.0;
         let (rect, _) = ui.allocate_exact_size(vec2(OPTION_LABEL_W, TOGGLE_H), Sense::hover());
-        ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, label, FontId::proportional(15.0), Color32::WHITE);
+        ui.painter().text(
+            rect.left_center(),
+            Align2::LEFT_CENTER,
+            label,
+            FontId::proportional(15.0),
+            Color32::WHITE,
+        );
         toggle_switch(ui, on);
     });
 }
@@ -64,7 +73,9 @@ pub(super) fn options_panel(ctx: &egui::Context, options: &mut OptionsPanel, but
     // Un clic fuera del panel (y fuera del boton, que ya lo abre/cierra) lo cierra.
     let panel = out.response.rect;
     let pressed_outside = ctx.input(|i| i.pointer.primary_pressed())
-        && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !panel.contains(p) && !button.contains(p));
+        && ctx
+            .input(|i| i.pointer.interact_pos())
+            .is_some_and(|p| !panel.contains(p) && !button.contains(p));
     if pressed_outside {
         options.open = false;
     }

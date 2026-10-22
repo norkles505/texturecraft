@@ -66,7 +66,11 @@ pub(super) fn nuevo(dab: u32, inv_radius: f32, radius: f32, t0: Vec3, b0: Vec3) 
     // Giro al azar (jitter 1.0 de photocraft), volteo horizontal en la mitad de los toques y dispersion en los dos
     // ejes del plano de la superficie (no solo de lado): cada eje se aleja hasta el 60 % del radio.
     let (sn, cs) = dab_angle(dab).sin_cos();
-    let flip = if unit(DAB_FLIP_SALT.wrapping_add(u64::from(dab))) < 0.5 { -1.0 } else { 1.0 };
+    let flip = if unit(DAB_FLIP_SALT.wrapping_add(u64::from(dab))) < 0.5 {
+        -1.0
+    } else {
+        1.0
+    };
     let k = STIPPLE_SCATTER * radius;
     let kx = (unit(DAB_SCATTER_SALT.wrapping_add(u64::from(dab))) * 2.0 - 1.0) * k;
     let ky = (unit(DAB_SCATTER_Y_SALT.wrapping_add(u64::from(dab))) * 2.0 - 1.0) * k;
@@ -94,7 +98,10 @@ mod tests {
         let n = TIP_SIZE;
         let pintados = a.data.iter().filter(|v| **v > 0.0).count();
         // Tiene pintura, pero mucha menos que un disco entero: son gotas con huecos entre ellas.
-        assert!(pintados > 300 && pintados < n * n * 6 / 10, "pintados {pintados}");
+        assert!(
+            pintados > 300 && pintados < n * n * 6 / 10,
+            "pintados {pintados}"
+        );
         // Dentro de la zona donde caen las gotas (a menos de 24 texeles del centro) hay huecos.
         let c = n as f32 / 2.0;
         let huecos = (0..n * n)
@@ -114,9 +121,16 @@ mod tests {
         let (mut en_x, mut en_y, mut volteos) = (false, false, [false, false]);
         for dab in 1..200 {
             let d = DryDab::new(DryKind::Stipple, dab, Vec3::Z, Vec3::X, radio);
-            assert!(d.reach() <= STIPPLE_REACH * radio + 1e-5, "reach {}", d.reach());
+            assert!(
+                d.reach() <= STIPPLE_REACH * radio + 1e-5,
+                "reach {}",
+                d.reach()
+            );
             // Cada eje se aleja a lo sumo el 60 % del radio.
-            assert!(d.shift.x.abs() <= STIPPLE_SCATTER * radio + 1e-5 && d.shift.y.abs() <= STIPPLE_SCATTER * radio + 1e-5);
+            assert!(
+                d.shift.x.abs() <= STIPPLE_SCATTER * radio + 1e-5
+                    && d.shift.y.abs() <= STIPPLE_SCATTER * radio + 1e-5
+            );
             en_x |= d.shift.x.abs() > 0.1;
             en_y |= d.shift.y.abs() > 0.1;
             assert_eq!(d.roundness, 1.0);
@@ -124,12 +138,18 @@ mod tests {
             volteos[(d.t.cross(d.b).dot(Vec3::Z) > 0.0) as usize] = true;
         }
         assert!(en_x && en_y, "no se dispersa en los dos ejes");
-        assert!(volteos[0] && volteos[1], "no se voltea en ningun toque o en todos");
+        assert!(
+            volteos[0] && volteos[1],
+            "no se voltea en ningun toque o en todos"
+        );
         // Sin papel ni lienzo: no resta nada.
         assert_eq!(dry_subtract(DryKind::Stipple, Vec3::ONE, 5, 9), 0.0);
         // Mismo toque, misma forma.
         let a = DryDab::new(DryKind::Stipple, 9, Vec3::Z, Vec3::X, 1.0);
         let b = DryDab::new(DryKind::Stipple, 9, Vec3::Z, Vec3::X, 1.0);
-        assert_eq!(a.alpha(Vec3::new(0.2, -0.1, 0.0)), b.alpha(Vec3::new(0.2, -0.1, 0.0)));
+        assert_eq!(
+            a.alpha(Vec3::new(0.2, -0.1, 0.0)),
+            b.alpha(Vec3::new(0.2, -0.1, 0.0))
+        );
     }
 }

@@ -43,7 +43,12 @@ impl ObjMesh {
         if !self.parts.is_empty() {
             return self.parts.clone();
         }
-        vec![MeshPart { name: fallback_name.to_string(), first_vertex: 0, vertex_count: self.vertex_count(), visible: true }]
+        vec![MeshPart {
+            name: fallback_name.to_string(),
+            first_vertex: 0,
+            vertex_count: self.vertex_count(),
+            visible: true,
+        }]
     }
 
     /// Vertices entrelazados para la GPU: x y z nx ny nz u v (8 floats = 32 bytes por vertice).
@@ -89,7 +94,13 @@ impl ObjMesh {
                 push(seg + 1, ring + 1);
             }
         }
-        ObjMesh { positions, normals, uvs, has_uvs: true, parts: Vec::new() }
+        ObjMesh {
+            positions,
+            normals,
+            uvs,
+            has_uvs: true,
+            parts: Vec::new(),
+        }
     }
 }
 
@@ -153,7 +164,11 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
                 if parts.len() < 4 {
                     return err(line_no, "vertice incompleto");
                 }
-                let (vx, vy, vz) = (num(parts[1], line_no)?, num(parts[2], line_no)?, num(parts[3], line_no)?);
+                let (vx, vy, vz) = (
+                    num(parts[1], line_no)?,
+                    num(parts[2], line_no)?,
+                    num(parts[3], line_no)?,
+                );
                 if y_up {
                     pos.extend_from_slice(&[vx, -vz, vy]);
                 } else {
@@ -171,7 +186,11 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
                 if parts.len() < 4 {
                     return err(line_no, "normal incompleta");
                 }
-                let (nx, ny, nz) = (num(parts[1], line_no)?, num(parts[2], line_no)?, num(parts[3], line_no)?);
+                let (nx, ny, nz) = (
+                    num(parts[1], line_no)?,
+                    num(parts[2], line_no)?,
+                    num(parts[3], line_no)?,
+                );
                 if y_up {
                     nor.extend_from_slice(&[nx, -nz, ny]);
                 } else {
@@ -203,9 +222,18 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
                     let a = vi[c[0]] * 3;
                     let b = vi[c[1]] * 3;
                     let e = vi[c[2]] * 3;
-                    let (ux, uy, uz) = (pos[b] - pos[a], pos[b + 1] - pos[a + 1], pos[b + 2] - pos[a + 2]);
-                    let (wx, wy, wz) = (pos[e] - pos[a], pos[e + 1] - pos[a + 1], pos[e + 2] - pos[a + 2]);
-                    let (mut fx, mut fy, mut fz) = (uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx);
+                    let (ux, uy, uz) = (
+                        pos[b] - pos[a],
+                        pos[b + 1] - pos[a + 1],
+                        pos[b + 2] - pos[a + 2],
+                    );
+                    let (wx, wy, wz) = (
+                        pos[e] - pos[a],
+                        pos[e + 1] - pos[a + 1],
+                        pos[e + 2] - pos[a + 2],
+                    );
+                    let (mut fx, mut fy, mut fz) =
+                        (uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx);
                     let len = (fx * fx + fy * fy + fz * fz).sqrt();
                     if len > 0.0 {
                         fx /= len;
@@ -249,7 +277,11 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
                 max[k] = max[k].max(v[k]);
             }
         }
-        let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0, (min[2] + max[2]) / 2.0];
+        let center = [
+            (min[0] + max[0]) / 2.0,
+            (min[1] + max[1]) / 2.0,
+            (min[2] + max[2]) / 2.0,
+        ];
         let extent = (max[0] - min[0]).max(max[1] - min[1]).max(max[2] - min[2]);
         let s = if extent > 0.0 { fit_size / extent } else { 1.0 };
         for v in out_p.chunks_exact_mut(3) {
@@ -274,7 +306,11 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
         }
         for k in 0..part_starts.len() {
             let from = part_starts[k];
-            let to = if k + 1 < part_starts.len() { part_starts[k + 1] } else { total_vertices };
+            let to = if k + 1 < part_starts.len() {
+                part_starts[k + 1]
+            } else {
+                total_vertices
+            };
             if to > from {
                 mesh_parts.push(MeshPart {
                     name: part_names[k].clone(),
@@ -286,17 +322,29 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
         }
     }
     // Con una sola parte no hay nada que separar.
-    let parts = if mesh_parts.len() >= 2 { mesh_parts } else { Vec::new() };
+    let parts = if mesh_parts.len() >= 2 {
+        mesh_parts
+    } else {
+        Vec::new()
+    };
 
-    Ok(ObjMesh { positions: out_p, normals: out_n, uvs: out_t, has_uvs: any_uv, parts })
+    Ok(ObjMesh {
+        positions: out_p,
+        normals: out_n,
+        uvs: out_t,
+        has_uvs: any_uv,
+        parts,
+    })
 }
 
 fn num(s: &str, line_no: usize) -> Result<f32, ObjError> {
-    s.parse::<f32>().map_err(|_| ObjError(format!("Linea {line_no}: numero invalido '{s}'")))
+    s.parse::<f32>()
+        .map_err(|_| ObjError(format!("Linea {line_no}: numero invalido '{s}'")))
 }
 
 fn int(s: &str, line_no: usize) -> Result<i64, ObjError> {
-    s.parse::<i64>().map_err(|_| ObjError(format!("Linea {line_no}: indice invalido '{s}'")))
+    s.parse::<i64>()
+        .map_err(|_| ObjError(format!("Linea {line_no}: indice invalido '{s}'")))
 }
 
 /// Tramos de vertices que hay que dibujar: las partes visibles, juntando las que quedan seguidas en una sola llamada
@@ -304,7 +352,10 @@ fn int(s: &str, line_no: usize) -> Result<i64, ObjError> {
 pub fn visible_ranges(parts: &[MeshPart]) -> Vec<std::ops::Range<u32>> {
     let mut out: Vec<std::ops::Range<u32>> = Vec::new();
     for p in parts.iter().filter(|p| p.visible) {
-        let (a, b) = (p.first_vertex as u32, (p.first_vertex + p.vertex_count) as u32);
+        let (a, b) = (
+            p.first_vertex as u32,
+            (p.first_vertex + p.vertex_count) as u32,
+        );
         match out.last_mut() {
             Some(last) if last.end == a => last.end = b,
             _ => out.push(a..b),
@@ -333,7 +384,10 @@ pub const MAX_PIECES: usize = 12;
 /// no, una sola pieza que cubre todo el modelo.
 pub fn piece_ranges(parts: &[MeshPart]) -> Vec<(usize, usize)> {
     if (2..=MAX_PIECES).contains(&parts.len()) {
-        return parts.iter().map(|p| (p.first_vertex, p.vertex_count)).collect();
+        return parts
+            .iter()
+            .map(|p| (p.first_vertex, p.vertex_count))
+            .collect();
     }
     let total = parts.last().map_or(0, |p| p.first_vertex + p.vertex_count);
     vec![(0, total)]
@@ -342,7 +396,10 @@ pub fn piece_ranges(parts: &[MeshPart]) -> Vec<(usize, usize)> {
 /// Posicion en `parts` de la parte a la que pertenece el triangulo `tri`.
 pub fn part_of_triangle(parts: &[MeshPart], tri: usize) -> usize {
     let v = tri * 3;
-    parts.iter().position(|p| v >= p.first_vertex && v < p.first_vertex + p.vertex_count).unwrap_or(0)
+    parts
+        .iter()
+        .position(|p| v >= p.first_vertex && v < p.first_vertex + p.vertex_count)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -350,12 +407,22 @@ mod tests {
     use super::*;
 
     fn part(name: &str, first_tri: usize, tris: usize, visible: bool) -> MeshPart {
-        MeshPart { name: name.to_string(), first_vertex: first_tri * 3, vertex_count: tris * 3, visible }
+        MeshPart {
+            name: name.to_string(),
+            first_vertex: first_tri * 3,
+            vertex_count: tris * 3,
+            visible,
+        }
     }
 
     #[test]
     fn los_tramos_visibles_seguidos_se_juntan() {
-        let parts = [part("a", 0, 2, true), part("b", 2, 3, true), part("c", 5, 1, false), part("d", 6, 4, true)];
+        let parts = [
+            part("a", 0, 2, true),
+            part("b", 2, 3, true),
+            part("c", 5, 1, false),
+            part("d", 6, 4, true),
+        ];
         assert_eq!(visible_ranges(&parts), vec![0..15, 18..30]);
     }
 
@@ -368,8 +435,15 @@ mod tests {
 
     #[test]
     fn la_visibilidad_por_triangulo_sigue_a_las_partes() {
-        let parts = [part("a", 0, 2, true), part("b", 2, 1, false), part("c", 3, 2, true)];
-        assert_eq!(triangle_visibility(&parts, 5), vec![true, true, false, true, true]);
+        let parts = [
+            part("a", 0, 2, true),
+            part("b", 2, 1, false),
+            part("c", 3, 2, true),
+        ];
+        assert_eq!(
+            triangle_visibility(&parts, 5),
+            vec![true, true, false, true, true]
+        );
     }
 
     #[test]
@@ -377,7 +451,10 @@ mod tests {
         let mesh = ObjMesh::uv_sphere(8, 4);
         let parts = mesh.scene_parts("Esfera");
         assert_eq!(parts.len(), 1);
-        assert_eq!((parts[0].first_vertex, parts[0].vertex_count), (0, mesh.vertex_count()));
+        assert_eq!(
+            (parts[0].first_vertex, parts[0].vertex_count),
+            (0, mesh.vertex_count())
+        );
         assert_eq!(parts[0].name, "Esfera");
         assert!(parts[0].visible);
     }
@@ -408,7 +485,11 @@ mod tests {
 
     #[test]
     fn cada_triangulo_sabe_de_que_parte_es() {
-        let parts = [part("a", 0, 2, true), part("b", 2, 1, true), part("c", 3, 2, true)];
+        let parts = [
+            part("a", 0, 2, true),
+            part("b", 2, 1, true),
+            part("c", 3, 2, true),
+        ];
         let of: Vec<usize> = (0..5).map(|t| part_of_triangle(&parts, t)).collect();
         assert_eq!(of, vec![0, 0, 1, 2, 2]);
     }

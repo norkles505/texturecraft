@@ -6,7 +6,10 @@
 
 use std::f32::consts::TAU;
 
-use egui::{Align2, Color32, CornerRadius, FontId, Frame, Margin, Mesh, Painter, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{
+    Align2, Color32, CornerRadius, FontId, Frame, Margin, Mesh, Painter, Rect, Sense, Shape,
+    Stroke, StrokeKind, Ui, pos2, vec2,
+};
 
 /// Ancho del contenido del panel.
 const W: f32 = 232.0;
@@ -41,6 +44,7 @@ enum WheelDrag {
     Diamond,
 }
 
+#[derive(Clone)]
 pub struct ColorPanel {
     pub open: bool,
     tab: Tab,
@@ -58,7 +62,16 @@ pub struct ColorPanel {
 
 impl Default for ColorPanel {
     fn default() -> Self {
-        ColorPanel { open: false, tab: Tab::Hsb, hsv: [0.0, 0.0, 0.0], prev: [0, 0, 0], last: None, recent: Vec::new(), drag: None, hex: String::new() }
+        ColorPanel {
+            open: false,
+            tab: Tab::Hsb,
+            hsv: [0.0, 0.0, 0.0],
+            prev: [0, 0, 0],
+            last: None,
+            recent: Vec::new(),
+            drag: None,
+            hex: String::new(),
+        }
     }
 }
 
@@ -88,7 +101,11 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
 
 /// RGB -> HSB. En un gris no hay tono: se conserva `prev_h`.
 fn rgb_to_hsv(c: [u8; 3], prev_h: f32) -> [f32; 3] {
-    let (r, g, b) = (c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0);
+    let (r, g, b) = (
+        c[0] as f32 / 255.0,
+        c[1] as f32 / 255.0,
+        c[2] as f32 / 255.0,
+    );
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let d = max - min;
@@ -134,7 +151,12 @@ fn palette_colors() -> Vec<[u8; 3]> {
     for k in 0..18 {
         v.push(hsv_to_rgb(k as f32 / 18.0, 1.0, 1.0));
     }
-    v.extend([[255, 245, 225], [253, 239, 196], [254, 231, 180], [255, 205, 165]]);
+    v.extend([
+        [255, 245, 225],
+        [253, 239, 196],
+        [254, 231, 180],
+        [255, 205, 165],
+    ]);
     v
 }
 
@@ -147,8 +169,15 @@ fn checker(p: &Painter, rect: Rect, cell: f32) {
     for j in 0..ny {
         for i in 0..nx {
             if (i + j) % 2 == 1 {
-                let r = Rect::from_min_size(pos2(rect.left() + i as f32 * cell, rect.top() + j as f32 * cell), vec2(cell, cell));
-                p.rect_filled(r.intersect(rect), CornerRadius::ZERO, Color32::from_gray(195));
+                let r = Rect::from_min_size(
+                    pos2(rect.left() + i as f32 * cell, rect.top() + j as f32 * cell),
+                    vec2(cell, cell),
+                );
+                p.rect_filled(
+                    r.intersect(rect),
+                    CornerRadius::ZERO,
+                    Color32::from_gray(195),
+                );
             }
         }
     }
@@ -206,12 +235,22 @@ pub(crate) fn pill_gradient(p: &Painter, rect: Rect, stops: &[Color32]) {
         let bot = pos2(x, cy + h);
         let normal = |pt: egui::Pos2, fallback: egui::Vec2| {
             let v = pt - center;
-            if v.length() > 1e-4 { v.normalized() } else { fallback }
+            if v.length() > 1e-4 {
+                v.normalized()
+            } else {
+                fallback
+            }
         };
-        mesh.colored_vertex(top + normal(top, vec2(0.0, -1.0)) * FEATHER, Color32::TRANSPARENT);
+        mesh.colored_vertex(
+            top + normal(top, vec2(0.0, -1.0)) * FEATHER,
+            Color32::TRANSPARENT,
+        );
         mesh.colored_vertex(top, col);
         mesh.colored_vertex(bot, col);
-        mesh.colored_vertex(bot + normal(bot, vec2(0.0, 1.0)) * FEATHER, Color32::TRANSPARENT);
+        mesh.colored_vertex(
+            bot + normal(bot, vec2(0.0, 1.0)) * FEATHER,
+            Color32::TRANSPARENT,
+        );
     }
     for k in 0..(xs.len() as u32 - 1) {
         let (a, b) = (k * 4, (k + 1) * 4);
@@ -237,8 +276,11 @@ pub(crate) fn pill_checker(p: &Painter, rect: Rect, cell: f32) {
                 let x1 = (x0 + cell).min(rect.right());
                 let h = pill_half_height(rect, x0).min(pill_half_height(rect, x1));
                 let inner = Rect::from_min_max(pos2(x0, cy - h), pos2(x1, cy + h));
-                let r = Rect::from_min_max(pos2(x0, rect.top() + j as f32 * cell), pos2(x1, rect.top() + (j + 1) as f32 * cell))
-                    .intersect(inner);
+                let r = Rect::from_min_max(
+                    pos2(x0, rect.top() + j as f32 * cell),
+                    pos2(x1, rect.top() + (j + 1) as f32 * cell),
+                )
+                .intersect(inner);
                 if r.width() > 0.0 && r.height() > 0.0 {
                     p.rect_filled(r, CornerRadius::ZERO, Color32::from_gray(195));
                 }
@@ -374,22 +416,44 @@ pub(crate) fn slider_row_with(
         // la escala de pantalla no sea 1.0.
         let snap = |v: f32| (v * ppp).round() / ppp;
         let half = snap(3.0);
-        Rect::from_min_max(pos2(minus_c.x + btn_r + 12.0, cy - half), pos2(plus_c.x - btn_r - 12.0, cy + half))
+        Rect::from_min_max(
+            pos2(minus_c.x + btn_r + 12.0, cy - half),
+            pos2(plus_c.x - btn_r - 12.0, cy + half),
+        )
     };
-    let mut edit = Edit { changed: false, done: false };
+    let mut edit = Edit {
+        changed: false,
+        done: false,
+    };
 
-    p.text(pos2(rect.left() + label_w - 6.0, cy), Align2::RIGHT_CENTER, label, FontId::proportional(11.0), Color32::WHITE);
+    p.text(
+        pos2(rect.left() + label_w - 6.0, cy),
+        Align2::RIGHT_CENTER,
+        label,
+        FontId::proportional(11.0),
+        Color32::WHITE,
+    );
 
     paint_track(&p, track);
 
     // Botones - y +.
     for (c, sign, name) in [(minus_c, -1.0_f32, "minus"), (plus_c, 1.0_f32, "plus")] {
         p.circle_filled(c, btn_r, Color32::BLACK);
-        p.line_segment([c - vec2(4.0, 0.0), c + vec2(4.0, 0.0)], Stroke::new(1.5, Color32::WHITE));
+        p.line_segment(
+            [c - vec2(4.0, 0.0), c + vec2(4.0, 0.0)],
+            Stroke::new(1.5, Color32::WHITE),
+        );
         if sign > 0.0 {
-            p.line_segment([c - vec2(0.0, 4.0), c + vec2(0.0, 4.0)], Stroke::new(1.5, Color32::WHITE));
+            p.line_segment(
+                [c - vec2(0.0, 4.0), c + vec2(0.0, 4.0)],
+                Stroke::new(1.5, Color32::WHITE),
+            );
         }
-        let r = ui.interact(Rect::from_center_size(c, vec2(24.0, 24.0)), id.with(name), Sense::click());
+        let r = ui.interact(
+            Rect::from_center_size(c, vec2(24.0, 24.0)),
+            id.with(name),
+            Sense::click(),
+        );
         if r.clicked() {
             *frac = (*frac + sign * step).clamp(0.0, 1.0);
             edit.changed = true;
@@ -398,7 +462,11 @@ pub(crate) fn slider_row_with(
     }
 
     // Barra: arrastrar o hacer clic.
-    let rt = ui.interact(track.expand2(vec2(10.0, 8.0)), id.with("track"), Sense::click_and_drag());
+    let rt = ui.interact(
+        track.expand2(vec2(10.0, 8.0)),
+        id.with("track"),
+        Sense::click_and_drag(),
+    );
     if rt.is_pointer_button_down_on() {
         if let Some(pos) = rt.interact_pointer_pos() {
             *frac = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
@@ -420,6 +488,19 @@ pub(crate) fn slider_row_with(
 impl ColorPanel {
     /// Dibuja el panel si esta abierto. `color` y `opacity` (0..1) son los del pincel. Devuelve true si algo cambio.
     pub fn show(&mut self, ctx: &egui::Context, color: &mut [u8; 3], opacity: &mut f32) -> bool {
+        self.show_in(ctx, color, opacity, None)
+    }
+
+    /// Igual que `show`, pero en otro sitio y con otro identificador, para tener varios paneles a la vez (los de la
+    /// barra inferior en modo edición). `place` = (id del Area, punto, esquina del panel que va en ese punto). En ese
+    /// caso el panel no se cierra solo con un clic fuera: lo decide quien lo llama.
+    pub fn show_in(
+        &mut self,
+        ctx: &egui::Context,
+        color: &mut [u8; 3],
+        opacity: &mut f32,
+        place: Option<(egui::Id, egui::Pos2, Align2)>,
+    ) -> bool {
         if !self.open {
             return false;
         }
@@ -434,22 +515,29 @@ impl ColorPanel {
         let mut done = false;
         #[allow(deprecated)]
         let id = egui::Id::new("color_panel");
-        let out = egui::Area::new(id).anchor(Align2::LEFT_TOP, vec2(PANEL_LEFT, PANEL_TOP)).show(ctx, |ui| {
-            Frame::new()
-                .fill(PANEL_FILL)
-                .stroke(Stroke::new(1.0, Color32::from_white_alpha(16)))
-                .corner_radius(CornerRadius::same(14))
-                .inner_margin(Margin::same(10))
-                .show(ui, |ui| {
-                    self.contents(ui, color, opacity, &mut done);
-                });
-        });
+        let area = match place {
+            None => egui::Area::new(id).anchor(Align2::LEFT_TOP, vec2(PANEL_LEFT, PANEL_TOP)),
+            Some((pid, pos, pivot)) => egui::Area::new(pid)
+                .order(egui::Order::Foreground)
+                .pivot(pivot)
+                .fixed_pos(pos),
+        };
+        let out = area.show(ctx, |ui| {
+                Frame::new()
+                    .fill(PANEL_FILL)
+                    .stroke(Stroke::new(1.0, Color32::from_white_alpha(16)))
+                    .corner_radius(CornerRadius::same(14))
+                    .inner_margin(Margin::same(10))
+                    .show(ui, |ui| {
+                        self.contents(ui, color, opacity, &mut done);
+                    });
+            });
         if done {
             self.commit(*color);
         }
         // Un clic fuera del panel (y fuera de la barra de herramientas, cuyo cuadrito de color ya lo abre y cierra) lo
         // cierra, como el panel de capas.
-        if super::pressed_outside(ctx, out.response.rect) {
+        if place.is_none() && super::pressed_outside(ctx, out.response.rect) {
             self.open = false;
         }
         *color != start_color || *opacity != start_opacity
@@ -480,14 +568,49 @@ impl ColorPanel {
         // Encabezado: "Color" y los dos cuadros (actual | anterior).
         let (head, _) = ui.allocate_exact_size(vec2(W, 26.0), Sense::hover());
         let p = ui.painter().clone();
-        p.text(pos2(head.left() + 4.0, head.center().y), Align2::LEFT_CENTER, "Color", FontId::proportional(16.0), Color32::WHITE);
-        let sw = Rect::from_min_size(pos2(head.right() - 84.0, head.top() + 1.0), vec2(84.0, 24.0));
+        p.text(
+            pos2(head.left() + 4.0, head.center().y),
+            Align2::LEFT_CENTER,
+            "Color",
+            FontId::proportional(16.0),
+            Color32::WHITE,
+        );
+        let sw = Rect::from_min_size(
+            pos2(head.right() - 84.0, head.top() + 1.0),
+            vec2(84.0, 24.0),
+        );
         let left = Rect::from_min_max(sw.min, pos2(sw.center().x, sw.max.y));
         let right = Rect::from_min_max(pos2(sw.center().x, sw.min.y), sw.max);
-        p.rect_filled(left, CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, c32(*color));
-        p.rect_filled(right, CornerRadius { nw: 0, sw: 0, ne: 8, se: 8 }, c32(self.prev));
-        p.line_segment([pos2(sw.center().x, sw.top()), pos2(sw.center().x, sw.bottom())], Stroke::new(1.0, Color32::from_white_alpha(40)));
-        let r = ui.interact(right, base.with("prev"), Sense::click()).on_hover_text("Color anterior (clic para volver a el)");
+        p.rect_filled(
+            left,
+            CornerRadius {
+                nw: 8,
+                sw: 8,
+                ne: 0,
+                se: 0,
+            },
+            c32(*color),
+        );
+        p.rect_filled(
+            right,
+            CornerRadius {
+                nw: 0,
+                sw: 0,
+                ne: 8,
+                se: 8,
+            },
+            c32(self.prev),
+        );
+        p.line_segment(
+            [
+                pos2(sw.center().x, sw.top()),
+                pos2(sw.center().x, sw.bottom()),
+            ],
+            Stroke::new(1.0, Color32::from_white_alpha(40)),
+        );
+        let r = ui
+            .interact(right, base.with("prev"), Sense::click())
+            .on_hover_text("Color anterior (clic para volver a el)");
         if r.clicked() {
             let c = self.prev;
             self.set_color(c, color, done);
@@ -510,28 +633,56 @@ impl ColorPanel {
 
         // Opacidad.
         let sep_y = body.top() + ALPHA_TOP - 4.0;
-        p.line_segment([pos2(body.left(), sep_y), pos2(body.right(), sep_y)], Stroke::new(1.0, Color32::from_gray(110)));
-        let alpha_rect = Rect::from_min_size(pos2(body.left() + 8.0, body.top() + ALPHA_TOP), vec2(W - 16.0, ROW_H));
+        p.line_segment(
+            [pos2(body.left(), sep_y), pos2(body.right(), sep_y)],
+            Stroke::new(1.0, Color32::from_gray(110)),
+        );
+        let alpha_rect = Rect::from_min_size(
+            pos2(body.left() + 8.0, body.top() + ALPHA_TOP),
+            vec2(W - 16.0, ROW_H),
+        );
         let opaque = c32(*color);
         let label = format!("{}%", (*opacity * 100.0).round() as i32);
-        slider_row(ui, alpha_rect, base.with("alpha"), &label, opacity, 0.01, |p, r| {
-            pill_checker(p, r, 3.5);
-            pill_gradient(p, r, &[Color32::TRANSPARENT, opaque]);
-        });
+        slider_row(
+            ui,
+            alpha_rect,
+            base.with("alpha"),
+            &label,
+            opacity,
+            0.01,
+            |p, r| {
+                pill_checker(p, r, 3.5);
+                pill_gradient(p, r, &[Color32::TRANSPARENT, opaque]);
+            },
+        );
 
         // Pestanas.
         let (bar, _) = ui.allocate_exact_size(vec2(W, 38.0), Sense::hover());
         p.rect_filled(bar, CornerRadius::same(10), Color32::BLACK);
-        let tabs = [(Tab::Palette, "Paleta"), (Tab::Rgb, "RVA"), (Tab::Hsb, "HSB")];
+        let tabs = [
+            (Tab::Palette, "Paleta"),
+            (Tab::Rgb, "RVA"),
+            (Tab::Hsb, "HSB"),
+        ];
         for (i, (tab, name)) in tabs.into_iter().enumerate() {
-            let r = Rect::from_min_size(pos2(bar.left() + W / 3.0 * i as f32, bar.top()), vec2(W / 3.0, bar.height()));
-            let col = if self.tab == tab { BLUE } else { Color32::WHITE };
+            let r = Rect::from_min_size(
+                pos2(bar.left() + W / 3.0 * i as f32, bar.top()),
+                vec2(W / 3.0, bar.height()),
+            );
+            let col = if self.tab == tab {
+                BLUE
+            } else {
+                Color32::WHITE
+            };
             let c = pos2(r.center().x, r.top() + 12.0);
             match tab {
                 Tab::Palette => {
                     for gy in 0..3 {
                         for gx in 0..3 {
-                            let q = Rect::from_center_size(c + vec2((gx - 1) as f32 * 6.0, (gy - 1) as f32 * 6.0), vec2(4.0, 4.0));
+                            let q = Rect::from_center_size(
+                                c + vec2((gx - 1) as f32 * 6.0, (gy - 1) as f32 * 6.0),
+                                vec2(4.0, 4.0),
+                            );
                             p.rect_filled(q, CornerRadius::ZERO, col);
                         }
                     }
@@ -539,24 +690,48 @@ impl ColorPanel {
                 Tab::Rgb => {
                     // Icono SVG (assets/icons/rgb.svg), teñido de azul si la pestaña esta activa o de blanco si no.
                     let icon = Rect::from_center_size(c, vec2(20.0, 20.0));
-                    egui::Image::new(egui::include_image!("../../assets/icons/rgb.svg")).tint(col).paint_at(ui, icon);
+                    egui::Image::new(egui::include_image!("../../assets/icons/rgb.svg"))
+                        .tint(col)
+                        .paint_at(ui, icon);
                 }
                 Tab::Hsb => {
                     // Icono SVG (assets/icons/hsb.svg), teñido de azul si la pestaña esta activa o de blanco si no.
                     let icon = Rect::from_center_size(c, vec2(18.0, 18.0));
-                    egui::Image::new(egui::include_image!("../../assets/icons/hsb.svg")).tint(col).paint_at(ui, icon);
+                    egui::Image::new(egui::include_image!("../../assets/icons/hsb.svg"))
+                        .tint(col)
+                        .paint_at(ui, icon);
                 }
             }
-            p.text(pos2(r.center().x, r.bottom() - 3.0), Align2::CENTER_BOTTOM, name, FontId::proportional(10.0), col);
-            if ui.interact(r, base.with(("tab", i)), Sense::click()).clicked() {
+            p.text(
+                pos2(r.center().x, r.bottom() - 3.0),
+                Align2::CENTER_BOTTOM,
+                name,
+                FontId::proportional(10.0),
+                col,
+            );
+            if ui
+                .interact(r, base.with(("tab", i)), Sense::click())
+                .clicked()
+            {
                 self.tab = tab;
             }
         }
     }
 
     /// Rueda de tono + rombo de saturacion/brillo.
-    fn wheel(&mut self, ui: &mut Ui, p: &Painter, body: Rect, base: egui::Id, color: &mut [u8; 3], done: &mut bool) {
-        let wheel = Rect::from_min_size(pos2(body.center().x - WHEEL / 2.0, body.top() + 4.0), vec2(WHEEL, WHEEL));
+    fn wheel(
+        &mut self,
+        ui: &mut Ui,
+        p: &Painter,
+        body: Rect,
+        base: egui::Id,
+        color: &mut [u8; 3],
+        done: &mut bool,
+    ) {
+        let wheel = Rect::from_min_size(
+            pos2(body.center().x - WHEEL / 2.0, body.top() + 4.0),
+            vec2(WHEEL, WHEEL),
+        );
         let center = wheel.center();
         let r_out = WHEEL / 2.0 - 3.0;
         let r_in = r_out - RING_THICK;
@@ -565,7 +740,11 @@ impl ColorPanel {
 
         paint_ring(p, center, r_out, r_in);
         paint_diamond(p, center, d, h);
-        handle(p, on_circle(center, h * TAU, (r_out + r_in) / 2.0), c32(hsv_to_rgb(h, 1.0, 1.0)));
+        handle(
+            p,
+            on_circle(center, h * TAU, (r_out + r_in) / 2.0),
+            c32(hsv_to_rgb(h, 1.0, 1.0)),
+        );
         handle(p, diamond_pos(center, d, s, v), c32(*color));
 
         // Arrastrar: se decide al apoyar si se mueve el anillo (tono) o el rombo (saturacion y brillo).
@@ -574,7 +753,11 @@ impl ColorPanel {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let rel = pos - center;
                 if self.drag.is_none() {
-                    self.drag = Some(if rel.length() >= r_in - 2.0 { WheelDrag::Ring } else { WheelDrag::Diamond });
+                    self.drag = Some(if rel.length() >= r_in - 2.0 {
+                        WheelDrag::Ring
+                    } else {
+                        WheelDrag::Diamond
+                    });
                 }
                 match self.drag {
                     Some(WheelDrag::Ring) => {
@@ -597,7 +780,10 @@ impl ColorPanel {
         if !ui.ctx().memory(|m| m.has_focus(hex_id)) {
             self.hex = format!("#{:02X}{:02X}{:02X}", color[0], color[1], color[2]);
         }
-        let hex_rect = Rect::from_min_size(pos2(body.left() + 8.0, wheel.bottom() - 17.0), vec2(62.0, 15.0));
+        let hex_rect = Rect::from_min_size(
+            pos2(body.left() + 8.0, wheel.bottom() - 17.0),
+            vec2(62.0, 15.0),
+        );
         let edit = egui::TextEdit::singleline(&mut self.hex)
             .id(hex_id)
             .font(FontId::proportional(11.0))
@@ -610,8 +796,16 @@ impl ColorPanel {
         let mut hex_ui = ui.new_child(egui::UiBuilder::new().max_rect(hex_rect));
         let resp = hex_ui.add(edit);
         // Mientras se escribe se aplica en cuanto hay 6 digitos; al terminar (Enter o clic fuera) tambien vale el de 3.
-        let typed = if resp.changed() && self.hex.trim_start_matches('#').len() == 6 { parse_hex(&self.hex) } else { None };
-        let finished = if resp.lost_focus() { parse_hex(&self.hex) } else { None };
+        let typed = if resp.changed() && self.hex.trim_start_matches('#').len() == 6 {
+            parse_hex(&self.hex)
+        } else {
+            None
+        };
+        let finished = if resp.lost_focus() {
+            parse_hex(&self.hex)
+        } else {
+            None
+        };
         if let Some(c) = typed.or(finished) {
             if c != *color {
                 self.set_color(c, color, done);
@@ -619,16 +813,38 @@ impl ColorPanel {
         }
     }
 
-    fn hsb_sliders(&mut self, ui: &mut Ui, body: Rect, base: egui::Id, color: &mut [u8; 3], done: &mut bool) {
+    fn hsb_sliders(
+        &mut self,
+        ui: &mut Ui,
+        body: Rect,
+        base: egui::Id,
+        color: &mut [u8; 3],
+        done: &mut bool,
+    ) {
         let top = body.top() + WHEEL + 12.0;
-        let row = |i: usize| Rect::from_min_size(pos2(body.left() + 8.0, top + i as f32 * ROW_H), vec2(W - 16.0, ROW_H));
+        let row = |i: usize| {
+            Rect::from_min_size(
+                pos2(body.left() + 8.0, top + i as f32 * ROW_H),
+                vec2(W - 16.0, ROW_H),
+            )
+        };
         let [h, s, v] = self.hsv;
 
         let mut hf = h;
-        let e = slider_row(ui, row(0), base.with(("hsb", 0)), &format!("{}°", (h * 360.0).round() as i32), &mut hf, 1.0 / 360.0, |p, r| {
-            let stops: Vec<Color32> = (0..=6).map(|k| c32(hsv_to_rgb(k as f32 / 6.0, 1.0, 1.0))).collect();
-            pill_gradient(p, r, &stops);
-        });
+        let e = slider_row(
+            ui,
+            row(0),
+            base.with(("hsb", 0)),
+            &format!("{}°", (h * 360.0).round() as i32),
+            &mut hf,
+            1.0 / 360.0,
+            |p, r| {
+                let stops: Vec<Color32> = (0..=6)
+                    .map(|k| c32(hsv_to_rgb(k as f32 / 6.0, 1.0, 1.0)))
+                    .collect();
+                pill_gradient(p, r, &stops);
+            },
+        );
         if e.changed {
             self.hsv[0] = hf;
         }
@@ -636,9 +852,21 @@ impl ColorPanel {
         let mut changed = e.changed;
 
         let mut sf = s;
-        let e = slider_row(ui, row(1), base.with(("hsb", 1)), &format!("{}%", (s * 100.0).round() as i32), &mut sf, 0.01, |p, r| {
-            pill_gradient(p, r, &[c32(hsv_to_rgb(h, 0.0, v)), c32(hsv_to_rgb(h, 1.0, v))]);
-        });
+        let e = slider_row(
+            ui,
+            row(1),
+            base.with(("hsb", 1)),
+            &format!("{}%", (s * 100.0).round() as i32),
+            &mut sf,
+            0.01,
+            |p, r| {
+                pill_gradient(
+                    p,
+                    r,
+                    &[c32(hsv_to_rgb(h, 0.0, v)), c32(hsv_to_rgb(h, 1.0, v))],
+                );
+            },
+        );
         if e.changed {
             self.hsv[1] = sf;
         }
@@ -646,9 +874,21 @@ impl ColorPanel {
         changed |= e.changed;
 
         let mut vf = v;
-        let e = slider_row(ui, row(2), base.with(("hsb", 2)), &format!("{}%", (v * 100.0).round() as i32), &mut vf, 0.01, |p, r| {
-            pill_gradient(p, r, &[c32(hsv_to_rgb(h, s, 0.0)), c32(hsv_to_rgb(h, s, 1.0))]);
-        });
+        let e = slider_row(
+            ui,
+            row(2),
+            base.with(("hsb", 2)),
+            &format!("{}%", (v * 100.0).round() as i32),
+            &mut vf,
+            0.01,
+            |p, r| {
+                pill_gradient(
+                    p,
+                    r,
+                    &[c32(hsv_to_rgb(h, s, 0.0)), c32(hsv_to_rgb(h, s, 1.0))],
+                );
+            },
+        );
         if e.changed {
             self.hsv[2] = vf;
         }
@@ -660,18 +900,36 @@ impl ColorPanel {
         }
     }
 
-    fn rgb_sliders(&mut self, ui: &mut Ui, body: Rect, base: egui::Id, color: &mut [u8; 3], done: &mut bool) {
+    fn rgb_sliders(
+        &mut self,
+        ui: &mut Ui,
+        body: Rect,
+        base: egui::Id,
+        color: &mut [u8; 3],
+        done: &mut bool,
+    ) {
         let top = body.top() + WHEEL + 12.0;
         for k in 0..3 {
-            let rect = Rect::from_min_size(pos2(body.left() + 8.0, top + k as f32 * ROW_H), vec2(W - 16.0, ROW_H));
+            let rect = Rect::from_min_size(
+                pos2(body.left() + 8.0, top + k as f32 * ROW_H),
+                vec2(W - 16.0, ROW_H),
+            );
             let c0 = *color;
             let mut f = c0[k] as f32 / 255.0;
-            let e = slider_row(ui, rect, base.with(("rgb", k)), &c0[k].to_string(), &mut f, 1.0 / 255.0, move |p, r| {
-                let (mut a, mut b) = (c0, c0);
-                a[k] = 0;
-                b[k] = 255;
-                pill_gradient(p, r, &[c32(a), c32(b)]);
-            });
+            let e = slider_row(
+                ui,
+                rect,
+                base.with(("rgb", k)),
+                &c0[k].to_string(),
+                &mut f,
+                1.0 / 255.0,
+                move |p, r| {
+                    let (mut a, mut b) = (c0, c0);
+                    a[k] = 0;
+                    b[k] = 255;
+                    pill_gradient(p, r, &[c32(a), c32(b)]);
+                },
+            );
             if e.changed {
                 color[k] = (f * 255.0).round() as u8;
                 self.hsv = rgb_to_hsv(*color, self.hsv[0]);
@@ -681,30 +939,66 @@ impl ColorPanel {
     }
 
     /// Cuadricula de colores y, abajo, los usados hace poco.
-    fn palette_tab(&mut self, ui: &mut Ui, p: &Painter, body: Rect, base: egui::Id, color: &mut [u8; 3], done: &mut bool) {
+    fn palette_tab(
+        &mut self,
+        ui: &mut Ui,
+        p: &Painter,
+        body: Rect,
+        base: egui::Id,
+        color: &mut [u8; 3],
+        done: &mut bool,
+    ) {
         let cell = W / 8.0;
         let colors = palette_colors();
         let rows = colors.len().div_ceil(8);
         for (i, c) in colors.iter().enumerate() {
-            let r = Rect::from_min_size(pos2(body.left() + (i % 8) as f32 * cell, body.top() + (i / 8) as f32 * cell), vec2(cell, cell));
+            let r = Rect::from_min_size(
+                pos2(
+                    body.left() + (i % 8) as f32 * cell,
+                    body.top() + (i / 8) as f32 * cell,
+                ),
+                vec2(cell, cell),
+            );
             p.rect_filled(r, CornerRadius::ZERO, c32(*c));
-            p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_white_alpha(200)), StrokeKind::Inside);
-            if ui.interact(r, base.with(("pal", i)), Sense::click()).clicked() {
+            p.rect_stroke(
+                r,
+                CornerRadius::ZERO,
+                Stroke::new(1.0, Color32::from_white_alpha(200)),
+                StrokeKind::Inside,
+            );
+            if ui
+                .interact(r, base.with(("pal", i)), Sense::click())
+                .clicked()
+            {
                 self.set_color(*c, color, done);
             }
         }
         let recent_top = body.top() + ALPHA_TOP - 4.0 - cell;
-        let empty = Rect::from_min_max(pos2(body.left(), body.top() + rows as f32 * cell), pos2(body.right(), recent_top));
+        let empty = Rect::from_min_max(
+            pos2(body.left(), body.top() + rows as f32 * cell),
+            pos2(body.right(), recent_top),
+        );
         if empty.height() > 0.0 {
             checker(p, empty, 12.0);
         }
         for i in 0..RECENT_MAX {
-            let r = Rect::from_min_size(pos2(body.left() + i as f32 * cell, recent_top), vec2(cell, cell));
+            let r = Rect::from_min_size(
+                pos2(body.left() + i as f32 * cell, recent_top),
+                vec2(cell, cell),
+            );
             match self.recent.get(i).copied() {
                 Some(c) => {
                     p.rect_filled(r, CornerRadius::ZERO, c32(c));
-                    p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_white_alpha(120)), StrokeKind::Inside);
-                    if ui.interact(r, base.with(("recent", i)), Sense::click()).clicked() {
+                    p.rect_stroke(
+                        r,
+                        CornerRadius::ZERO,
+                        Stroke::new(1.0, Color32::from_white_alpha(120)),
+                        StrokeKind::Inside,
+                    );
+                    if ui
+                        .interact(r, base.with(("recent", i)), Sense::click())
+                        .clicked()
+                    {
                         self.set_color(c, color, done);
                     }
                 }

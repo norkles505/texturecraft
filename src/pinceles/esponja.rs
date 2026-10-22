@@ -14,6 +14,17 @@
 //!
 //! Diferencia con photocraft: la punta se genera de 64 x 64 (el lado que usan todas las puntas de texturecraft) y no
 //! de 96 x 96; los poros se calculan sobre el tamano de la punta, asi que la forma es la misma, solo menos fina.
+//!
+//! TEXTURA DE ESPONJA (Sponge Texture de photocraft; `DryKind::SpongeTexture`): la misma esponja con otra semilla
+//! (`sponge_tip(64, 19)`) y otros ajustes del preset:
+//!
+//! - Tamano: 60 de diametro (radio 30), sin variacion de tamano entre toques. Espaciado 0.45 del diametro (0.9 del radio).
+//! - Giro libre (jitter 1.0), igual que la esponja de tinta. Flujo 1 y SIN bordes mojados.
+//! - Opacidad distinta en cada toque (`transfer.opacity` con jitter 0.3): cada toque pinta con `1 - 0.3 * azar`, de 0.7 a
+//!   1 de su cobertura (`opacidad_toque`; se aplica con `dry_mezcla_toque` en `paint.rs` y en la miniatura).
+//! - Diferencia: photocraft acumula cada toque hacia su propio techo de opacidad. Aqui la cobertura del toque se
+//!   multiplica por esa opacidad y se acumula con la regla de texturecraft (maximo por pasada, o `c + v * (1 - c)` con
+//!   "Acumular pasada"), asi que con "Acumular pasada" encendido los toques solapados superan ese techo.
 
 use std::f32::consts::PI;
 use std::sync::OnceLock;
@@ -29,13 +40,23 @@ const SPONGE_TIP_SEED: u32 = 8;
 /// Variacion del tamano de cada toque: se reduce hasta `SIZE_JITTER` (el minimo de photocraft es 0).
 const SIZE_JITTER: f32 = 0.2;
 const SIZE_SALT: u64 = 0x4953_495A;
+/// Semilla de la punta de la Textura de esponja (`sponge_tip(64, 19)`).
+const SPONGE_TEXTURE_SEED: u32 = 19;
+/// Variacion de la opacidad de cada toque de la Textura de esponja: baja hasta `OPACITY_JITTER` (0.3 en photocraft).
+const OPACITY_JITTER: f32 = 0.3;
+const OPACITY_SALT: u64 = 0x4F50_4143;
 
 /// Ruido fractal 2D entre 0 y 1: varias octavas, cada una al doble de frecuencia y la mitad de fuerza (el `fbm` de
 /// photocraft; `cells` es la cantidad de celdas del ruido base a lo ancho de `size`).
 fn fbm(x: f32, y: f32, size: f32, cells: i32, octaves: u32, salt: u64) -> f32 {
     let (mut sum, mut amp, mut norm, mut c) = (0.0f32, 1.0f32, 0.0f32, cells);
     for o in 0..octaves {
-        sum += value_noise2(x / size * c as f32, y / size * c as f32, c, salt.wrapping_add(u64::from(o) * 7919)) * amp;
+        sum += value_noise2(
+            x / size * c as f32,
+            y / size * c as f32,
+            c,
+            salt.wrapping_add(u64::from(o) * 7919),
+        ) * amp;
         norm += amp;
         amp *= 0.5;
         c *= 2;
@@ -70,13 +91,30 @@ pub(super) fn punta() -> &'static Punta {
     TIP.get_or_init(|| construir(SPONGE_TIP_SEED))
 }
 
-/// Un toque de esponja: la punta gira al azar (cualquier angulo) y mide del 80 al 100 % del radio. No se dispersa ni
-/// se voltea.
+/// La punta de la Textura de esponja (se genera una sola vez).
+pub(super) fn punta_textura() -> &'static Punta {
+    static TIP: OnceLock<Punta> = OnceLock::new();
+    TIP.get_or_init(|| construir(SPONGE_TEXTURE_SEED))
+}
+
+/// Un toque de esponja de tinta: la punta gira al azar (cualquier angulo) y mide del 80 al 100 % del radio. No se
+/// dispersa ni se voltea.
 pub(super) fn nuevo(dab: u32, inv_radius: f32, t0: Vec3, b0: Vec3) -> DryDab {
-    let (sn, cs) = dab_angle(dab).sin_cos();
     let size = 1.0 - SIZE_JITTER * unit(SIZE_SALT.wrapping_add(u64::from(dab)));
+    toque(DryKind::Sponge, dab, inv_radius, t0, b0, size)
+}
+
+/// Un toque de Textura de esponja: la punta gira al azar y mide siempre el radio del pincel. No se dispersa ni se
+/// voltea (su opacidad cambia por toque: `opacidad_toque`).
+pub(super) fn nuevo_textura(dab: u32, inv_radius: f32, t0: Vec3, b0: Vec3) -> DryDab {
+    toque(DryKind::SpongeTexture, dab, inv_radius, t0, b0, 1.0)
+}
+
+/// El toque de esponja con giro libre y un tamano `size` (fraccion del radio).
+fn toque(kind: DryKind, dab: u32, inv_radius: f32, t0: Vec3, b0: Vec3, size: f32) -> DryDab {
+    let (sn, cs) = dab_angle(dab).sin_cos();
     DryDab {
-        kind: DryKind::Sponge,
+        kind,
         t: t0 * cs + b0 * sn,
         b: b0 * cs - t0 * sn,
         inv_radius: inv_radius / size,
@@ -84,6 +122,12 @@ pub(super) fn nuevo(dab: u32, inv_radius: f32, t0: Vec3, b0: Vec3) -> DryDab {
         shift: Vec3::ZERO,
         follaje: None,
     }
+}
+
+/// Opacidad del toque numero `dab` de la Textura de esponja: `1 - 0.3 * azar`, de 0.7 a 1 (en photocraft,
+/// `scalar(transfer.opacity)` con jitter 0.3, `dynamics.rs`).
+pub(super) fn opacidad_toque(dab: u32) -> f32 {
+    1.0 - OPACITY_JITTER * unit(OPACITY_SALT.wrapping_add(u64::from(dab)))
 }
 
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
@@ -129,8 +173,16 @@ mod tests {
             .collect();
         let llenos = dentro.iter().filter(|v| **v >= 0.999).count();
         let vacios = dentro.iter().filter(|v| **v <= 0.0).count();
-        assert!(llenos > dentro.len() / 10, "pocos texeles llenos: {llenos} de {}", dentro.len());
-        assert!(vacios > dentro.len() / 10, "pocos poros: {vacios} de {}", dentro.len());
+        assert!(
+            llenos > dentro.len() / 10,
+            "pocos texeles llenos: {llenos} de {}",
+            dentro.len()
+        );
+        assert!(
+            vacios > dentro.len() / 10,
+            "pocos poros: {vacios} de {}",
+            dentro.len()
+        );
         assert!(a.data.iter().filter(|v| **v > 0.0).count() > n * n / 8);
     }
 
@@ -153,8 +205,14 @@ mod tests {
             // El eje t barre todos los cuadrantes: el giro es libre.
             cuadrantes[(usize::from(d.t.x < 0.0)) * 2 + usize::from(d.t.y < 0.0)] = true;
         }
-        assert!(tam_max - tam_min > 0.15, "el tamano casi no varia: de {tam_min} a {tam_max}");
-        assert!(cuadrantes.iter().all(|c| *c), "el giro no cubre todas las direcciones");
+        assert!(
+            tam_max - tam_min > 0.15,
+            "el tamano casi no varia: de {tam_min} a {tam_max}"
+        );
+        assert!(
+            cuadrantes.iter().all(|c| *c),
+            "el giro no cubre todas las direcciones"
+        );
         assert_eq!(dry_subtract(DryKind::Sponge, Vec3::ONE, 5, 9), 0.0);
         let a = DryDab::new(DryKind::Sponge, 9, Vec3::Z, Vec3::X, 1.0);
         let b = DryDab::new(DryKind::Sponge, 9, Vec3::Z, Vec3::X, 1.0);
@@ -180,18 +238,35 @@ mod tests {
     }
 
     fn cuadrado() -> [SurfTri; 2] {
-        let p = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 2.0, 0.0), Vec3::new(0.0, 2.0, 0.0)];
+        let p = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ];
         let uv = [[0.25, 0.25], [0.5, 0.25], [0.5, 0.75], [0.25, 0.75]];
         [
-            SurfTri { p: [p[0], p[1], p[2]], uv: [uv[0], uv[1], uv[2]] },
-            SurfTri { p: [p[0], p[2], p[3]], uv: [uv[0], uv[2], uv[3]] },
+            SurfTri {
+                p: [p[0], p[1], p[2]],
+                uv: [uv[0], uv[1], uv[2]],
+            },
+            SurfTri {
+                p: [p[0], p[2], p[3]],
+                uv: [uv[0], uv[2], uv[3]],
+            },
         ]
     }
 
     /// Pinta una linea de toques de la esponja (separados 0.6 del radio) y devuelve los pixeles de la capa.
     fn pintar(brush: BrushType, ceiling: bool, flow: f32) -> Vec<u8> {
         let tris = cuadrado();
-        let opts = DabOptions { brush, normal: Vec3::Z, ceiling, flow, ..Default::default() };
+        let opts = DabOptions {
+            brush,
+            normal: Vec3::Z,
+            ceiling,
+            flow,
+            ..Default::default()
+        };
         let mut s = StrokeState::new(64);
         let mut pixels = vec![0u8; 64 * 64 * 4];
         s.begin_stroke();
@@ -217,7 +292,11 @@ mod tests {
                 }
             }
             assert!(pintados > 100, "pinto pocos texeles: {pintados}");
-            assert!(alfas.len() > 5, "la opacidad es casi pareja: {} valores", alfas.len());
+            assert!(
+                alfas.len() > 5,
+                "la opacidad es casi pareja: {} valores",
+                alfas.len()
+            );
             // La cobertura va de 0 a 1 y los bordes mojados dejan a lo sumo la mitad donde la punta pinta del todo.
             assert!(max <= 131, "ceiling {ceiling}: alfa maximo {max}");
             assert!(max >= 60, "ceiling {ceiling}: casi no pinta, maximo {max}");
@@ -227,8 +306,85 @@ mod tests {
     #[test]
     fn con_flujo_bajo_el_trazo_es_mas_tenue_y_el_mismo_trazo_da_lo_mismo() {
         let suma = |p: &[u8]| p.chunks(4).map(|q| u32::from(q[3])).sum::<u32>();
-        let (pleno, bajo) = (pintar(BrushType::InkSponge, true, 1.0), pintar(BrushType::InkSponge, true, 0.3));
-        assert!(suma(&bajo) < suma(&pleno), "{} no es menos que {}", suma(&bajo), suma(&pleno));
+        let (pleno, bajo) = (
+            pintar(BrushType::InkSponge, true, 1.0),
+            pintar(BrushType::InkSponge, true, 0.3),
+        );
+        assert!(
+            suma(&bajo) < suma(&pleno),
+            "{} no es menos que {}",
+            suma(&bajo),
+            suma(&pleno)
+        );
         assert_eq!(pleno, pintar(BrushType::InkSponge, true, 1.0));
+    }
+
+    #[test]
+    fn la_textura_de_esponja_usa_otra_punta_no_cambia_de_tamano_y_gira_libre() {
+        assert_ne!(
+            construir(SPONGE_TEXTURE_SEED).data,
+            construir(SPONGE_TIP_SEED).data
+        );
+        assert_eq!(punta_textura().data, construir(SPONGE_TEXTURE_SEED).data);
+        let radio = 2.0;
+        let mut cuadrantes = [false; 4];
+        for dab in 1..300 {
+            let d = DryDab::new(DryKind::SpongeTexture, dab, Vec3::Z, Vec3::X, radio);
+            assert!((d.inv_radius * radio - 1.0).abs() < 1e-5);
+            assert_eq!(d.shift, Vec3::ZERO);
+            assert_eq!(d.roundness, 1.0);
+            assert_eq!(d.reach(), 0.0);
+            assert!(d.t.cross(d.b).dot(Vec3::Z) > 0.0, "no deberia voltearse");
+            cuadrantes[(usize::from(d.t.x < 0.0)) * 2 + usize::from(d.t.y < 0.0)] = true;
+        }
+        assert!(cuadrantes.iter().all(|c| *c), "el giro no cubre todo");
+        assert_eq!(dry_subtract(DryKind::SpongeTexture, Vec3::ONE, 5, 9), 0.0);
+    }
+
+    #[test]
+    fn la_opacidad_de_cada_toque_va_de_07_a_1_y_solo_la_textura_de_esponja_la_usa() {
+        use crate::pinceles::dry_mezcla_toque;
+        let pos = Vec3::new(0.3, 0.2, 0.0);
+        let (mut lo, mut hi) = (f32::MAX, 0.0f32);
+        let mut distintas = HashSet::new();
+        for dab in 1..500 {
+            let o = opacidad_toque(dab);
+            assert!((0.7 - 1e-4..=1.0 + 1e-4).contains(&o), "opacidad {o}");
+            assert_eq!(o, opacidad_toque(dab));
+            lo = lo.min(o);
+            hi = hi.max(o);
+            distintas.insert((o * 10_000.0) as i32);
+            let m = dry_mezcla_toque(DryKind::SpongeTexture, 0.5, dab, pos, 3, 4);
+            assert!((m - 0.5 * o).abs() < 1e-6);
+            assert_eq!(dry_mezcla_toque(DryKind::Sponge, 0.5, dab, pos, 3, 4), 0.5);
+        }
+        assert!(lo < 0.73 && hi > 0.97, "casi no varia: de {lo} a {hi}");
+        assert!(distintas.len() > 300, "se repite: {}", distintas.len());
+    }
+
+    #[test]
+    fn la_textura_de_esponja_no_lleva_bordes_mojados_y_pinta_con_el_color_del_pincel() {
+        for ceiling in [false, true] {
+            let pixels = pintar(BrushType::SpongeTexture, ceiling, 1.0);
+            let (mut pintados, mut alfas, mut max) = (0, HashSet::new(), 0u8);
+            for q in pixels.chunks(4) {
+                if q[3] > 0 {
+                    pintados += 1;
+                    alfas.insert(q[3]);
+                    max = max.max(q[3]);
+                    assert_eq!(&q[..3], &[30, 60, 160], "el color no es el del pincel");
+                }
+            }
+            assert!(pintados > 100, "pinto pocos texeles: {pintados}");
+            assert!(alfas.len() > 5, "la opacidad es casi pareja");
+            assert!(max > 180, "ceiling {ceiling}: alfa maximo {max}");
+            let tinta = pintar(BrushType::InkSponge, ceiling, 1.0);
+            assert!(tinta.chunks(4).all(|q| q[3] <= 131));
+            assert_eq!(
+                pixels,
+                pintar(BrushType::SpongeTexture, ceiling, 1.0),
+                "no es determinista"
+            );
+        }
     }
 }

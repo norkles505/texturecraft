@@ -122,7 +122,10 @@ mod tests {
         let n = TIP_SIZE;
         let pintados = a.data.iter().filter(|v| **v > 0.0).count();
         // Tiene pintura, pero mucha menos que un disco entero: son 14 gotas con huecos entre ellas.
-        assert!(pintados > 200 && pintados < n * n / 3, "pintados {pintados}");
+        assert!(
+            pintados > 200 && pintados < n * n / 3,
+            "pintados {pintados}"
+        );
         // Dentro de la zona donde caen las gotas (a menos de 24 texeles del centro) hay huecos.
         let c = n as f32 / 2.0;
         let huecos = (0..n * n)
@@ -163,18 +166,32 @@ mod tests {
                 assert_eq!(h.roundness, 1.0);
                 // Cada eje se aleja a lo sumo 1.5 veces el radio del racimo (como mucho 1.5 radios del pincel).
                 let tope = SPATTER_SCATTER * radio * size + 1e-4;
-                assert!(h.shift.x.abs() <= tope && h.shift.y.abs() <= tope, "desplazamiento {:?}", h.shift);
+                assert!(
+                    h.shift.x.abs() <= tope && h.shift.y.abs() <= tope,
+                    "desplazamiento {:?}",
+                    h.shift
+                );
                 en_x |= h.shift.x.abs() > 0.3;
                 en_y |= h.shift.y.abs() > 0.3;
                 // El volteo cambia el sentido del eje t respecto al b (el determinante de la base).
                 volteos[(h.t.cross(h.b).dot(Vec3::Z) > 0.0) as usize] = true;
             }
-            assert!(d.reach() <= SPATTER_REACH * radio + 1e-4, "alcance {}", d.reach());
+            assert!(
+                d.reach() <= SPATTER_REACH * radio + 1e-4,
+                "alcance {}",
+                d.reach()
+            );
         }
         // Mas o menos la mitad de los toques lleva dos racimos.
-        assert!(con_uno > 100 && con_dos > 100, "uno {con_uno}, dos {con_dos}");
+        assert!(
+            con_uno > 100 && con_dos > 100,
+            "uno {con_uno}, dos {con_dos}"
+        );
         assert!(en_x && en_y, "no se dispersa en los dos ejes");
-        assert!(tam_min < 0.5 && tam_max > 0.9, "los tamanos casi no varian: de {tam_min} a {tam_max}");
+        assert!(
+            tam_min < 0.5 && tam_max > 0.9,
+            "los tamanos casi no varian: de {tam_min} a {tam_max}"
+        );
         assert!(volteos[0] && volteos[1], "el volteo no cambia nunca");
     }
 
@@ -182,10 +199,20 @@ mod tests {
     fn la_salpicadura_no_lleva_papel_ni_cambia_el_color_y_el_mismo_toque_da_lo_mismo() {
         assert_eq!(dry_subtract(DryKind::Spatter, Vec3::ONE, 5, 9), 0.0);
         // El segundo racimo guarda tono y brillo en 0: el color de cada texel es siempre el del pincel.
-        for base in [[60u8, 160, 60], [255, 0, 0], [10, 10, 10], [200, 180, 40], [255, 255, 255]] {
+        for base in [
+            [60u8, 160, 60],
+            [255, 0, 0],
+            [10, 10, 10],
+            [200, 180, 40],
+            [255, 255, 255],
+        ] {
             for dab in 1..60 {
                 let d = DryDab::new(DryKind::Spatter, dab, Vec3::Z, Vec3::X, 1.0).with_color(base);
-                for p in [Vec3::new(0.2, -0.1, 0.0), Vec3::new(-0.5, 0.4, 0.0), Vec3::ZERO] {
+                for p in [
+                    Vec3::new(0.2, -0.1, 0.0),
+                    Vec3::new(-0.5, 0.4, 0.0),
+                    Vec3::ZERO,
+                ] {
                     assert_eq!(d.alpha_color(p, base).1, base, "toque {dab}");
                 }
             }
@@ -200,13 +227,28 @@ mod tests {
     #[test]
     fn la_salpicadura_pinta_gotas_con_el_color_del_pincel_y_no_pasa_de_su_alcance() {
         // Cuadrado de 2x2 unidades; en la textura de 256 ocupa 64 texeles de ancho y 128 de alto.
-        let p = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 2.0, 0.0), Vec3::new(0.0, 2.0, 0.0)];
+        let p = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ];
         let uv = [[0.25, 0.25], [0.5, 0.25], [0.5, 0.75], [0.25, 0.75]];
         let tris = [
-            SurfTri { p: [p[0], p[1], p[2]], uv: [uv[0], uv[1], uv[2]] },
-            SurfTri { p: [p[0], p[2], p[3]], uv: [uv[0], uv[2], uv[3]] },
+            SurfTri {
+                p: [p[0], p[1], p[2]],
+                uv: [uv[0], uv[1], uv[2]],
+            },
+            SurfTri {
+                p: [p[0], p[2], p[3]],
+                uv: [uv[0], uv[2], uv[3]],
+            },
         ];
-        let opts = DabOptions { brush: BrushType::Spatter, normal: Vec3::Z, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Spatter,
+            normal: Vec3::Z,
+            ..Default::default()
+        };
         let (centro, radio) = (Vec3::new(1.0, 1.0, 0.0), 0.2);
         let base = [60u8, 160, 60];
         // Lo mas lejos que puede llegar un toque: su radio mas lo que se desplaza su centro.
@@ -251,12 +293,18 @@ mod tests {
         // Un toque: pinta gotas sueltas (quedan huecos), del color del pincel y sin pasar del alcance.
         let (pintados, en_zona, lejos, otro_color) = medir(&pintar(1));
         assert!(pintados > 5, "pinto pocos texeles: {pintados}");
-        assert!(pintados < en_zona, "pintados {pintados} de {en_zona}: sin huecos");
+        assert!(
+            pintados < en_zona,
+            "pintados {pintados} de {en_zona}: sin huecos"
+        );
         assert_eq!(lejos, 0, "pinto mas alla del alcance");
         assert_eq!(otro_color, 0, "pinto con un color que no es el del pincel");
         // Varios toques en el mismo sitio (cada uno con su azar): sigue sin pasar del alcance y con variacion.
         let (mas, _, lejos, otro_color) = medir(&pintar(20));
-        assert!(mas > pintados, "mas toques no pintan mas: {mas} contra {pintados}");
+        assert!(
+            mas > pintados,
+            "mas toques no pintan mas: {mas} contra {pintados}"
+        );
         assert_eq!(lejos, 0, "pinto mas alla del alcance con varios toques");
         assert_eq!(otro_color, 0);
         // Determinista.

@@ -99,11 +99,18 @@ impl DualDab {
         let gotas = (first..last)
             .map(|j| {
                 let r = |salt: u64| unit(salt.wrapping_add(j));
-                let shift = t * ((r(SCATTER_X_SALT) * 2.0 - 1.0) * k) + b * ((r(SCATTER_Y_SALT) * 2.0 - 1.0) * k);
+                let shift = t * ((r(SCATTER_X_SALT) * 2.0 - 1.0) * k)
+                    + b * ((r(SCATTER_Y_SALT) * 2.0 - 1.0) * k);
                 (shift, if r(FLIP_SALT) < 0.5 { -1.0 } else { 1.0 })
             })
             .collect();
-        DualDab { radius, dual_radius, t, b, gotas }
+        DualDab {
+            radius,
+            dual_radius,
+            t,
+            b,
+            gotas,
+        }
     }
 
     /// Cuantas gotas de la segunda punta pone este toque.
@@ -133,7 +140,11 @@ impl DualDab {
             return 0.0;
         }
         if v < 1.0 {
-            let hard = if hash2(tx as i32, ty as i32, NOISE_SALT) < v { 1.0 } else { 0.0 };
+            let hard = if hash2(tx as i32, ty as i32, NOISE_SALT) < v {
+                1.0
+            } else {
+                0.0
+            };
             v += (hard - v) * NOISE_MIX;
         }
         v
@@ -179,7 +190,10 @@ mod tests {
         let media = vals.iter().sum::<f32>() / vals.len() as f32;
         assert!((0.1..0.35).contains(&media), "media {media}");
         // El ruido depende del texel, no del toque.
-        assert_eq!(d.primary(1.0, 7, 9), DualDab::new(55, Vec3::Z, 1.0).primary(1.0, 7, 9));
+        assert_eq!(
+            d.primary(1.0, 7, 9),
+            DualDab::new(55, Vec3::Z, 1.0).primary(1.0, 7, 9)
+        );
     }
 
     #[test]
@@ -233,13 +247,28 @@ mod tests {
 
     #[test]
     fn el_trazo_sale_granulado_y_no_pasa_de_su_alcance() {
-        let p = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 2.0, 0.0), Vec3::new(0.0, 2.0, 0.0)];
+        let p = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ];
         let uv = [[0.25, 0.25], [0.5, 0.25], [0.5, 0.75], [0.25, 0.75]];
         let tris = [
-            SurfTri { p: [p[0], p[1], p[2]], uv: [uv[0], uv[1], uv[2]] },
-            SurfTri { p: [p[0], p[2], p[3]], uv: [uv[0], uv[2], uv[3]] },
+            SurfTri {
+                p: [p[0], p[1], p[2]],
+                uv: [uv[0], uv[1], uv[2]],
+            },
+            SurfTri {
+                p: [p[0], p[2], p[3]],
+                uv: [uv[0], uv[2], uv[3]],
+            },
         ];
-        let opts = DabOptions { brush: BrushType::DualGrain, normal: Vec3::Z, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::DualGrain,
+            normal: Vec3::Z,
+            ..Default::default()
+        };
         let pintar = || {
             let mut s = StrokeState::new(64);
             let mut pixels = vec![0u8; 64 * 64 * 4];
@@ -269,13 +298,21 @@ mod tests {
                     if (y - 1.0).abs() > 0.5 * DUAL_GRAIN_REACH + 0.15 {
                         lejos += 1;
                     }
-                    assert_eq!(&pixels[i..i + 3], &[200, 40, 40], "el color no es el del pincel");
+                    assert_eq!(
+                        &pixels[i..i + 3],
+                        &[200, 40, 40],
+                        "el color no es el del pincel"
+                    );
                 }
                 let _ = x;
             }
         }
         assert_eq!(lejos, 0, "pinto mas alla de su alcance");
         assert!(pintados > 50, "pinto pocos texeles: {pintados}");
-        assert!(alfas.len() > 3, "la opacidad es casi pareja: {} valores", alfas.len());
+        assert!(
+            alfas.len() > 3,
+            "la opacidad es casi pareja: {} valores",
+            alfas.len()
+        );
     }
 }

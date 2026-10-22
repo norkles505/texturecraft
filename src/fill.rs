@@ -39,7 +39,12 @@ pub fn plan(
         return None;
     }
     let isl = maps.island[seed];
-    let p0 = [pixels[seed * 4], pixels[seed * 4 + 1], pixels[seed * 4 + 2], pixels[seed * 4 + 3]];
+    let p0 = [
+        pixels[seed * 4],
+        pixels[seed * 4 + 1],
+        pixels[seed * 4 + 2],
+        pixels[seed * 4 + 3],
+    ];
     if p0[3] == 255 && p0[0] == color[0] && p0[1] == color[1] && p0[2] == color[2] {
         return None;
     }
@@ -54,14 +59,20 @@ pub fn plan(
             return false;
         }
         let q = &pixels[i * 4..i * 4 + 4];
-        near(q[3], p0[3]) && (p0[3] == 0 || (near(q[0], p0[0]) && near(q[1], p0[1]) && near(q[2], p0[2])))
+        near(q[3], p0[3])
+            && (p0[3] == 0 || (near(q[0], p0[0]) && near(q[1], p0[1]) && near(q[2], p0[2])))
     };
 
     let mut mask = vec![0u8; s * s];
     let mut bbox = (x, y, x, y);
     let grow = |bbox: &mut Rect, px: usize, py: usize| {
         let (px, py) = (px as u32, py as u32);
-        *bbox = (bbox.0.min(px), bbox.1.min(py), bbox.2.max(px), bbox.3.max(py));
+        *bbox = (
+            bbox.0.min(px),
+            bbox.1.min(py),
+            bbox.2.max(px),
+            bbox.3.max(py),
+        );
     };
 
     // Zona: relleno por franjas horizontales con pila de semillas.
@@ -128,7 +139,8 @@ pub fn plan(
                 neighbors[3] = cur + s;
             }
             for m in neighbors {
-                if m == usize::MAX || mask[m] != 0 || maps.coverage[m] == 0 || maps.island[m] != isl {
+                if m == usize::MAX || mask[m] != 0 || maps.coverage[m] == 0 || maps.island[m] != isl
+                {
                     continue;
                 }
                 let a = pixels[m * 4 + 3];
@@ -203,7 +215,11 @@ mod tests {
 
     fn maps_all_one() -> UvMaps {
         let n = (N * N) as usize;
-        UvMaps { size: N, island: vec![1; n], coverage: vec![1; n] }
+        UvMaps {
+            size: N,
+            island: vec![1; n],
+            coverage: vec![1; n],
+        }
     }
 
     fn blank() -> Vec<u8> {
@@ -270,7 +286,11 @@ mod tests {
     #[test]
     fn no_cruza_a_otra_isla_ni_sale_de_la_cobertura() {
         let n = (N * N) as usize;
-        let mut maps = UvMaps { size: N, island: vec![1; n], coverage: vec![1; n] };
+        let mut maps = UvMaps {
+            size: N,
+            island: vec![1; n],
+            coverage: vec![1; n],
+        };
         for y in 0..N {
             for x in 32..N {
                 maps.island[(y * N + x) as usize] = 2;
@@ -305,7 +325,10 @@ mod tests {
         let b = get(&p, 30, 5);
         // 50 % de rojo viejo + 50 % de azul nuevo, y ya opaco.
         assert_eq!(b[3], 255);
-        assert!((b[0] as i32 - 128).abs() <= 2 && (b[2] as i32 - 127).abs() <= 2, "borde = {b:?}");
+        assert!(
+            (b[0] as i32 - 128).abs() <= 2 && (b[2] as i32 - 127).abs() <= 2,
+            "borde = {b:?}"
+        );
         // Lo ya opaco no se toca y el otro lado de la barra queda como estaba.
         assert_eq!(get(&p, 31, 5), [255, 0, 0, 255]);
         assert_eq!(get(&p, 33, 5), [255, 0, 0, 128]);

@@ -100,15 +100,17 @@ fn construir() -> Punta {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
             // Altura sobre el borde de abajo.
             let arriba = s - py;
-            let v = hojas.iter().fold(0.0f32, |acc, &(base, alto, inclinacion, ancho)| {
-                if arriba < 0.0 || arriba > alto {
-                    return acc;
-                }
-                let t = arriba / alto;
-                let centro = base + inclinacion * alto * t * t;
-                let medio = ancho * (1.0 - t) + BLADE_EDGE;
-                acc.max((medio - (px - centro).abs()).clamp(0.0, 1.0))
-            });
+            let v = hojas
+                .iter()
+                .fold(0.0f32, |acc, &(base, alto, inclinacion, ancho)| {
+                    if arriba < 0.0 || arriba > alto {
+                        return acc;
+                    }
+                    let t = arriba / alto;
+                    let centro = base + inclinacion * alto * t * t;
+                    let medio = ancho * (1.0 - t) + BLADE_EDGE;
+                    acc.max((medio - (px - centro).abs()).clamp(0.0, 1.0))
+                });
             data.push(v);
         }
     }
@@ -125,7 +127,15 @@ pub(super) fn punta() -> &'static Punta {
 /// centro se desplaza de lado respecto al trazo hasta `GRASS_SCATTER` veces el radio del manojo. `t0` y `b0` son la
 /// base de la superficie, `n` su normal y `along` la direccion del trazo proyectada en el plano (si no se sabe hacia
 /// donde va, la dispersion va a lo ancho del manojo).
-pub(super) fn nuevo(dab: u32, inv_radius: f32, radius: f32, t0: Vec3, b0: Vec3, n: Vec3, along: Option<Vec3>) -> DryDab {
+pub(super) fn nuevo(
+    dab: u32,
+    inv_radius: f32,
+    radius: f32,
+    t0: Vec3,
+    b0: Vec3,
+    n: Vec3,
+    along: Option<Vec3>,
+) -> DryDab {
     let id = u64::from(dab);
     let r = |salt: u64| unit(salt.wrapping_add(id));
     let size = (1.0 - SIZE_JITTER * r(SIZE_SALT)).max(SIZE_MIN);
@@ -150,7 +160,12 @@ pub(super) fn nuevo(dab: u32, inv_radius: f32, radius: f32, t0: Vec3, b0: Vec3, 
         inv_radius: inv_radius / size,
         roundness: 1.0,
         shift: side * k,
-        follaje: Some(Box::new(Extras { hue: (r(HUE_SALT) * 2.0 - 1.0) * HUE_JITTER * 0.5, bright: 0.0, paint: None, otra: None })),
+        follaje: Some(Box::new(Extras {
+            hue: (r(HUE_SALT) * 2.0 - 1.0) * HUE_JITTER * 0.5,
+            bright: 0.0,
+            paint: None,
+            otra: None,
+        })),
     }
 }
 
@@ -172,20 +187,36 @@ mod tests {
         let n = TIP_SIZE;
         let pintados = a.data.iter().filter(|v| **v > 0.0).count();
         // Tiene pintura, pero mucha menos que un disco entero: son hojas finas con huecos entre ellas.
-        assert!(pintados > 150 && pintados < n * n / 2, "pintados {pintados}");
+        assert!(
+            pintados > 150 && pintados < n * n / 2,
+            "pintados {pintados}"
+        );
         // En la fila de la mitad quedan huecos entre las hojas.
         let huecos = (0..n).filter(|&x| a.data[(n / 2) * n + x] == 0.0).count();
         assert!(huecos > n / 3, "huecos {huecos}");
         // Las hojas nacen en el borde de abajo y no llegan al de arriba.
-        assert!((0..n).any(|x| a.data[(n - 1) * n + x] > 0.0), "nada pinta en la fila de abajo");
-        assert!((0..n).all(|x| a.data[x] == 0.0), "algo pinta en la fila de arriba");
+        assert!(
+            (0..n).any(|x| a.data[(n - 1) * n + x] > 0.0),
+            "nada pinta en la fila de abajo"
+        );
+        assert!(
+            (0..n).all(|x| a.data[x] == 0.0),
+            "algo pinta en la fila de arriba"
+        );
         // Las esquinas quedan vacias.
         for i in [0, n - 1, n * (n - 1), n * n - 1] {
             assert_eq!(a.data[i], 0.0, "esquina {i}");
         }
         // Se afinan hacia la punta: hay mas pintura en la mitad de abajo que en la de arriba.
-        let mitad = |desde: usize, hasta: usize| (desde * n..hasta * n).filter(|&i| a.data[i] > 0.0).count();
-        assert!(mitad(n / 2, n) > mitad(0, n / 2), "abajo {} y arriba {}", mitad(n / 2, n), mitad(0, n / 2));
+        let mitad = |desde: usize, hasta: usize| {
+            (desde * n..hasta * n).filter(|&i| a.data[i] > 0.0).count()
+        };
+        assert!(
+            mitad(n / 2, n) > mitad(0, n / 2),
+            "abajo {} y arriba {}",
+            mitad(n / 2, n),
+            mitad(0, n / 2)
+        );
         // No es la punta de otro pincel: la de la salpicadura tiene otra forma.
         assert_ne!(a.data, super::super::salpicadura::punta().data);
     }
@@ -211,16 +242,30 @@ mod tests {
             max_giro = max_giro.max(giro);
             assert!(giro <= ANGLE_JITTER * PI + 1e-3, "giro {giro}");
             // Se dispersa solo de lado: nada a lo largo del trazo (+X) y a lo sumo 0.3 del radio del manojo.
-            assert!(d.shift.dot(Vec3::X).abs() < 1e-4, "se desplaza a lo largo del trazo");
-            assert!(d.shift.length() <= GRASS_SCATTER * radio * size + 1e-4, "desplazamiento {:?}", d.shift);
+            assert!(
+                d.shift.dot(Vec3::X).abs() < 1e-4,
+                "se desplaza a lo largo del trazo"
+            );
+            assert!(
+                d.shift.length() <= GRASS_SCATTER * radio * size + 1e-4,
+                "desplazamiento {:?}",
+                d.shift
+            );
             lado_max = lado_max.max(d.shift.length());
             // El volteo cambia el sentido del eje t respecto al b (el determinante de la base).
             volteos[(d.t.cross(d.b).dot(normal) > 0.0) as usize] = true;
             // Un solo manojo por toque.
             assert!(d.follaje.as_ref().is_some_and(|f| f.otra.is_none()));
-            assert!(d.reach() <= GRASS_REACH * radio + 1e-4, "alcance {}", d.reach());
+            assert!(
+                d.reach() <= GRASS_REACH * radio + 1e-4,
+                "alcance {}",
+                d.reach()
+            );
         }
-        assert!(tam_min < 0.7 && tam_max > 0.95, "los tamanos casi no varian: de {tam_min} a {tam_max}");
+        assert!(
+            tam_min < 0.7 && tam_max > 0.95,
+            "los tamanos casi no varian: de {tam_min} a {tam_max}"
+        );
         assert!(max_giro > 0.1, "el giro casi no varia: {max_giro}");
         assert!(lado_max > 0.2, "casi no se dispersa: {lado_max}");
         assert!(volteos[0] && volteos[1], "el volteo no cambia nunca");
@@ -248,17 +293,28 @@ mod tests {
         let mut colores = HashSet::new();
         for dab in 1..200 {
             let d = DryDab::new(DryKind::Grass, dab, -Vec3::Y, Vec3::X, 1.0).with_color(base);
-            let c = d.follaje.as_ref().and_then(|f| f.paint).expect("el manojo no tiene color");
+            let c = d
+                .follaje
+                .as_ref()
+                .and_then(|f| f.paint)
+                .expect("el manojo no tiene color");
             colores.insert(c);
             // Solo cambia el tono: el brillo (el canal mas alto) se queda igual y los canales casi no se mueven.
             assert_eq!(*c.iter().max().unwrap(), 160, "color {c:?}");
             for k in 0..3 {
-                assert!((i32::from(c[k]) - i32::from(base[k])).abs() <= 15, "color {c:?} lejos de {base:?}");
+                assert!(
+                    (i32::from(c[k]) - i32::from(base[k])).abs() <= 15,
+                    "color {c:?} lejos de {base:?}"
+                );
             }
             // El color de cada texel es el del manojo.
             assert_eq!(d.alpha_color(Vec3::new(0.0, 0.0, -0.9), base).1, c);
         }
-        assert!(colores.len() > 5, "pocos colores distintos: {}", colores.len());
+        assert!(
+            colores.len() > 5,
+            "pocos colores distintos: {}",
+            colores.len()
+        );
         // Mismo toque, misma forma.
         let a = DryDab::new(DryKind::Grass, 9, -Vec3::Y, Vec3::X, 1.0);
         let b = DryDab::new(DryKind::Grass, 9, -Vec3::Y, Vec3::X, 1.0);
@@ -270,13 +326,29 @@ mod tests {
     fn el_pasto_pinta_hojas_del_color_del_pincel_sube_y_no_pasa_de_su_alcance() {
         // Pared de 2x2 unidades en el plano y = 0 (x a la derecha, z hacia arriba), de cara al ojo (normal -Y). En la
         // textura de 256 ocupa 64 texeles de ancho y 128 de alto.
-        let p = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 2.0), Vec3::new(0.0, 0.0, 2.0)];
+        let p = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 2.0),
+            Vec3::new(0.0, 0.0, 2.0),
+        ];
         let uv = [[0.25, 0.25], [0.5, 0.25], [0.5, 0.75], [0.25, 0.75]];
         let tris = [
-            SurfTri { p: [p[0], p[1], p[2]], uv: [uv[0], uv[1], uv[2]] },
-            SurfTri { p: [p[0], p[2], p[3]], uv: [uv[0], uv[2], uv[3]] },
+            SurfTri {
+                p: [p[0], p[1], p[2]],
+                uv: [uv[0], uv[1], uv[2]],
+            },
+            SurfTri {
+                p: [p[0], p[2], p[3]],
+                uv: [uv[0], uv[2], uv[3]],
+            },
         ];
-        let opts = DabOptions { brush: BrushType::Grass, normal: -Vec3::Y, dir: Vec3::X, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Grass,
+            normal: -Vec3::Y,
+            dir: Vec3::X,
+            ..Default::default()
+        };
         let (centro, radio) = (Vec3::new(1.0, 0.0, 1.0), 0.2);
         let base = [60u8, 160, 60];
         // Lo mas lejos que puede llegar un toque: su radio mas lo que se desplaza y se sale de la punta.
@@ -326,22 +398,40 @@ mod tests {
                     }
                 }
             }
-            (pintados, en_zona, lejos, otro_color, arriba, abajo, colores.len())
+            (
+                pintados,
+                en_zona,
+                lejos,
+                otro_color,
+                arriba,
+                abajo,
+                colores.len(),
+            )
         };
         // Un toque: pinta hojas sueltas (quedan huecos), de un color cercano al del pincel y sin pasar del alcance.
-        let (pintados, en_zona, lejos, otro_color, _, _, _) = medir(&pintar(1));
+        let (pintados, en_zona, lejos, otro_color, arriba_uno, abajo_uno, _) = medir(&pintar(1));
         assert!(pintados > 5, "pinto pocos texeles: {pintados}");
-        assert!(pintados < en_zona, "pintados {pintados} de {en_zona}: sin huecos");
+        assert!(
+            pintados < en_zona,
+            "pintados {pintados} de {en_zona}: sin huecos"
+        );
         assert_eq!(lejos, 0, "pinto mas alla del alcance");
         assert_eq!(otro_color, 0, "pinto con un color lejano al del pincel");
-        // Varios toques en el mismo sitio (cada uno con su azar): sigue sin pasar del alcance, con variacion de tono y
-        // con mas pintura abajo (donde nacen las hojas) que arriba.
-        let (mas, _, lejos, otro_color, arriba, abajo, colores) = medir(&pintar(20));
-        assert!(mas > pintados, "mas toques no pintan mas: {mas} contra {pintados}");
+        // Las hojas nacen abajo: en UN toque hay mas pintura abajo del centro que arriba (con muchos toques encimados las
+        // hojas inclinadas y de distinto tamano reparten la pintura y esa diferencia se pierde, por eso se mide aqui).
+        assert!(
+            abajo_uno > arriba_uno * 2,
+            "el pasto no nace abajo: abajo {abajo_uno}, arriba {arriba_uno}"
+        );
+        // Varios toques en el mismo sitio (cada uno con su azar): sigue sin pasar del alcance y con variacion de tono.
+        let (mas, _, lejos, otro_color, _, _, colores) = medir(&pintar(20));
+        assert!(
+            mas > pintados,
+            "mas toques no pintan mas: {mas} contra {pintados}"
+        );
         assert_eq!(lejos, 0, "pinto mas alla del alcance con varios toques");
         assert_eq!(otro_color, 0);
         assert!(colores > 1, "todos los manojos salen del mismo color");
-        assert!(abajo > arriba, "el pasto no nace abajo: abajo {abajo}, arriba {arriba}");
         // Determinista.
         assert_eq!(pintar(7), pintar(7));
     }

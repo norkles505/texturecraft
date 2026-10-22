@@ -15,7 +15,10 @@ use egui::pos2;
 
 use super::*;
 use crate::brush::{Brush, BrushGroup, BrushType, MAX_RADIUS, MIN_FLOW, MIN_RADIUS};
-use crate::pinceles::{ChalkDab, DryDab, DualDab, PREVIEW_UNITS_PER_PX, dots_at, dry_mezcla_toque, hard_mix, wet_factor};
+use crate::pinceles::{
+    ChalkDab, DryDab, DualDab, PREVIEW_UNITS_PER_PX, dots_at, dry_mezcla_toque, hard_mix,
+    wet_factor,
+};
 use glam::Vec3;
 
 /// Medidas del panel (en puntos de egui). `PB_LEFT`/`PB_TOP` = donde se ancla (justo a la derecha de la barra de
@@ -48,7 +51,10 @@ const PB_DARK: Color32 = Color32::from_gray(48);
 const PB_SLIDERS_FILL: Color32 = Color32::from_gray(70);
 const PB_BLUE: Color32 = Color32::from_rgb(100, 160, 255);
 /// UV de la textura completa.
-const FULL_UV: Rect = Rect { min: pos2(0.0, 0.0), max: pos2(1.0, 1.0) };
+const FULL_UV: Rect = Rect {
+    min: pos2(0.0, 0.0),
+    max: pos2(1.0, 1.0),
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum PbTab {
@@ -92,7 +98,9 @@ pub(super) struct BrushPanel {
 
 /// Radio (texeles) -> posicion del deslizador (0..1). La curva cuadratica da mas precision con los tamanos chicos.
 fn radius_to_frac(r: f32) -> f32 {
-    ((r - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS)).clamp(0.0, 1.0).sqrt()
+    ((r - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS))
+        .clamp(0.0, 1.0)
+        .sqrt()
 }
 
 fn frac_to_radius(f: f32) -> f32 {
@@ -107,7 +115,12 @@ fn sample_radius(radius: f32, max: f32) -> f32 {
 /// Texto negro con contorno blanco (como el numerito del boton del pincel), legible sobre cualquier fondo.
 fn outlined_text(p: &egui::Painter, pos: egui::Pos2, align: Align2, text: &str, size: f32) {
     let font = FontId::proportional(size);
-    for off in [vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0)] {
+    for off in [
+        vec2(-1.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, -1.0),
+        vec2(0.0, 1.0),
+    ] {
         p.text(pos + off, align, text, font.clone(), Color32::WHITE);
     }
     p.text(pos, align, text, font, Color32::BLACK);
@@ -116,17 +129,35 @@ fn outlined_text(p: &egui::Painter, pos: egui::Pos2, align: Align2, text: &str, 
 /// Trazo de muestra: una onda suave dibujada con toques espaciados como los del pincel real (mismo `falloff`, mismo
 /// espaciado y el maximo de opacidad por pasada, seccion 7.1). `r_pt` y `amp_pt` van en puntos; la imagen sale al
 /// `TEX_SCALE`.
-fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: egui::Vec2, amp_pt: f32) -> egui::ColorImage {
+fn stroke_image(
+    kind: BrushType,
+    r_pt: f32,
+    opacity: f32,
+    color: [u8; 3],
+    size: egui::Vec2,
+    amp_pt: f32,
+) -> egui::ColorImage {
     let w = (size.x * TEX_SCALE).round() as usize;
     let h = (size.y * TEX_SCALE).round() as usize;
     let r = r_pt * TEX_SCALE;
     // Carboncillo, pastel, punteado y follaje se dibujan con su punta de verdad. Como dispersan sus toques, el radio se
     // reduce para que el racimo quepa en la franja de la muestra.
-    let r = if kind.dry_kind().is_some() || kind == BrushType::DualGrain { r / (1.0 + 0.6 * kind.scatter()) } else { r };
+    let r = if kind.dry_kind().is_some() || kind == BrushType::DualGrain {
+        r / (1.0 + 0.6 * kind.scatter())
+    } else {
+        r
+    };
     let amp = amp_pt * TEX_SCALE;
     let mut alpha = vec![0.0f32; w * h];
     // Doble grano: las gotas de la segunda punta se acumulan en cada texel a lo largo del trazo (como en `paint.rs`).
-    let mut dual_acc = vec![0.0f32; if kind == BrushType::DualGrain { w * h } else { 0 }];
+    let mut dual_acc = vec![
+        0.0f32;
+        if kind == BrushType::DualGrain {
+            w * h
+        } else {
+            0
+        }
+    ];
     // Esponja de tinta: lo mas hondo que llego una punta a cada texel (el valor mas alto de la punta), para los bordes
     // mojados que se aplican al final (como en `paint.rs`).
     let sponge = kind == BrushType::InkSponge;
@@ -144,12 +175,23 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
     // Margen para que los extremos redondeados no se corten.
     let margin = (r + 6.0 * TEX_SCALE).min(w as f32 * 0.25);
     let (x0, x1) = (margin, w as f32 - margin);
-    let pos = |t: f32| (x0 + (x1 - x0) * t, h as f32 * 0.5 - amp * (t * std::f32::consts::TAU * 0.95).sin());
+    let pos = |t: f32| {
+        (
+            x0 + (x1 - x0) * t,
+            h as f32 * 0.5 - amp * (t * std::f32::consts::TAU * 0.95).sin(),
+        )
+    };
     let mut chalk_n = 0u32;
     // El pasto sube hacia arriba del modelo (+Z, como en `pinceles/pasto.rs`): su muestra se arma en una pared de cara al
     // ojo (normal -Y, arriba de la imagen = +Z, derecha = +X). Los demas pinceles se arman en el plano de la imagen.
     let pared = kind == BrushType::Grass;
-    let a3 = |x: f32, y: f32| if pared { Vec3::new(x, 0.0, -y) } else { Vec3::new(x, y, 0.0) };
+    let a3 = |x: f32, y: f32| {
+        if pared {
+            Vec3::new(x, 0.0, -y)
+        } else {
+            Vec3::new(x, y, 0.0)
+        }
+    };
     let normal = if pared { -Vec3::Y } else { Vec3::Z };
     let mut dab = |cx: f32, cy: f32, dir: (f32, f32)| {
         // La tiza gira y cambia de tamano en cada toque, como la de verdad (chalk.rs).
@@ -185,7 +227,12 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
                 let raw = match (&chalk, &dry, &dual) {
                     (Some(c), _, _) => {
                         let (fx, fy) = (x as f32, y as f32);
-                        c.alpha(Vec3::new(fx - cx, fy - cy, 0.0), Vec3::new(fx, fy, 0.0) * PREVIEW_UNITS_PER_PX, x as u32, y as u32)
+                        c.alpha(
+                            Vec3::new(fx - cx, fy - cy, 0.0),
+                            Vec3::new(fx, fy, 0.0) * PREVIEW_UNITS_PER_PX,
+                            x as u32,
+                            y as u32,
+                        )
                     }
                     (_, Some(dd), _) => {
                         let a = dd.alpha(a3(x as f32 - cx, y as f32 - cy));
@@ -201,7 +248,8 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
                     }
                     (_, _, Some(dd)) => {
                         let acc = &mut dual_acc[y * w + x];
-                        *acc += dd.dual(Vec3::new(x as f32 - cx, y as f32 - cy, 0.0)) * (1.0 - *acc);
+                        *acc +=
+                            dd.dual(Vec3::new(x as f32 - cx, y as f32 - cy, 0.0)) * (1.0 - *acc);
                         dd.primary(d, x as u32, y as u32) * *acc
                     }
                     _ => kind.falloff(1.0 - d / r),
@@ -242,7 +290,12 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
         } else {
             a
         };
-        rgba.extend_from_slice(&[color[0], color[1], color[2], (a.clamp(0.0, 1.0) * 255.0).round() as u8]);
+        rgba.extend_from_slice(&[
+            color[0],
+            color[1],
+            color[2],
+            (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+        ]);
     }
     egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba)
 }
@@ -250,26 +303,41 @@ fn stroke_image(kind: BrushType, r_pt: f32, opacity: f32, color: [u8; 3], size: 
 impl BrushPanel {
     /// Dibuja el panel si esta abierto. Cambia `brush` (pincel y tamano) y `opacity` (0..1); `color` solo se usa para
     /// pintar la vista previa y la barra de opacidad. Devuelve true si algo cambio.
-    pub(super) fn show(&mut self, ctx: &egui::Context, brush: &mut Brush, opacity: &mut f32, color: [u8; 3]) -> bool {
+    pub(super) fn show(
+        &mut self,
+        ctx: &egui::Context,
+        brush: &mut Brush,
+        opacity: &mut f32,
+        color: [u8; 3],
+    ) -> bool {
         if !self.open {
             return false;
         }
         let before = (brush.kind, brush.radius, brush.flow, *opacity);
         // La lista ocupa lo que sobre de la ventana (la de la referencia mide ~308 y muestra 7 filas).
-        let fixed = PB_TOP + 2.0 * PB_PAD + PB_TITLE_H + PB_PREVIEW_H + PB_TABS_H + PB_SLIDERS_H + 4.0 * PB_GAP + 12.0;
+        let fixed = PB_TOP
+            + 2.0 * PB_PAD
+            + PB_TITLE_H
+            + PB_PREVIEW_H
+            + PB_TABS_H
+            + PB_SLIDERS_H
+            + 4.0 * PB_GAP
+            + 12.0;
         let list_h = (ctx.content_rect().height() - fixed).clamp(PB_LIST_MIN_H, PB_LIST_MAX_H);
         #[allow(deprecated)]
         let id = egui::Id::new("brush_panel");
-        let out = egui::Area::new(id).anchor(Align2::LEFT_TOP, vec2(PB_LEFT, PB_TOP)).show(ctx, |ui| {
-            Frame::new()
-                .fill(bar_fill())
-                .stroke(Stroke::new(1.0, Color32::from_white_alpha(16)))
-                .corner_radius(CornerRadius::same(14))
-                .inner_margin(Margin::same(PB_PAD as i8))
-                .show(ui, |ui| {
-                    self.contents(ui, brush, opacity, color, list_h);
-                });
-        });
+        let out = egui::Area::new(id)
+            .anchor(Align2::LEFT_TOP, vec2(PB_LEFT, PB_TOP))
+            .show(ctx, |ui| {
+                Frame::new()
+                    .fill(bar_fill())
+                    .stroke(Stroke::new(1.0, Color32::from_white_alpha(16)))
+                    .corner_radius(CornerRadius::same(14))
+                    .inner_margin(Margin::same(PB_PAD as i8))
+                    .show(ui, |ui| {
+                        self.contents(ui, brush, opacity, color, list_h);
+                    });
+            });
         // Un clic fuera del panel (y fuera de la barra de herramientas, cuyo boton del pincel ya lo abre y cierra) lo
         // cierra, como el panel de capas.
         if pressed_outside(ctx, out.response.rect) {
@@ -278,7 +346,14 @@ impl BrushPanel {
         (brush.kind, brush.radius, brush.flow, *opacity) != before
     }
 
-    fn contents(&mut self, ui: &mut egui::Ui, brush: &mut Brush, opacity: &mut f32, color: [u8; 3], list_h: f32) {
+    fn contents(
+        &mut self,
+        ui: &mut egui::Ui,
+        brush: &mut Brush,
+        opacity: &mut f32,
+        color: [u8; 3],
+        list_h: f32,
+    ) {
         ui.spacing_mut().item_spacing = vec2(0.0, PB_GAP);
         let base = ui.scope_id().with("pinceles");
         let p = ui.painter().clone();
@@ -294,8 +369,16 @@ impl BrushPanel {
             Color32::WHITE,
         );
         let dots_c = pos2(title.right() - 14.0, title.center().y);
-        let dots = ui.interact(Rect::from_center_size(dots_c, vec2(26.0, 26.0)), base.with("dots"), Sense::click());
-        let dots_color = if dots.hovered() { Color32::WHITE } else { Color32::from_gray(205) };
+        let dots = ui.interact(
+            Rect::from_center_size(dots_c, vec2(26.0, 26.0)),
+            base.with("dots"),
+            Sense::click(),
+        );
+        let dots_color = if dots.hovered() {
+            Color32::WHITE
+        } else {
+            Color32::from_gray(205)
+        };
         for k in -1..=1 {
             p.circle_filled(dots_c + vec2(0.0, k as f32 * 6.0), 2.0, dots_color);
         }
@@ -303,8 +386,19 @@ impl BrushPanel {
 
         // ---- Vista previa: tablero, trazo del pincel elegido (con su tamano, opacidad y color), nombre y candado.
         let (prev, _) = ui.allocate_exact_size(vec2(PB_W, PB_PREVIEW_H), Sense::hover());
-        paint_checker(&p, prev, 8.0, Color32::from_gray(250), Color32::from_gray(222));
-        let key: PreviewKey = (brush.kind, (brush.radius * 10.0).round() as i32, (*opacity * 100.0).round() as u8, color);
+        paint_checker(
+            &p,
+            prev,
+            8.0,
+            Color32::from_gray(250),
+            Color32::from_gray(222),
+        );
+        let key: PreviewKey = (
+            brush.kind,
+            (brush.radius * 10.0).round() as i32,
+            (*opacity * 100.0).round() as u8,
+            color,
+        );
         if self.preview.as_ref().is_none_or(|(k, _)| *k != key) {
             let img = stroke_image(
                 brush.kind,
@@ -320,7 +414,8 @@ impl BrushPanel {
                     *k = key;
                 }
                 None => {
-                    let tex = ctx.load_texture("pincel_vista_previa", img, egui::TextureOptions::LINEAR);
+                    let tex =
+                        ctx.load_texture("pincel_vista_previa", img, egui::TextureOptions::LINEAR);
                     self.preview = Some((key, tex));
                 }
             }
@@ -328,10 +423,20 @@ impl BrushPanel {
         if let Some((_, tex)) = &self.preview {
             p.image(tex.id(), prev, FULL_UV, Color32::WHITE);
         }
-        outlined_text(&p, pos2(prev.left() + 8.0, prev.bottom() - 10.0), Align2::LEFT_CENTER, brush.kind.name(), 14.0);
+        outlined_text(
+            &p,
+            pos2(prev.left() + 8.0, prev.bottom() - 10.0),
+            Align2::LEFT_CENTER,
+            brush.kind.name(),
+            14.0,
+        );
         // Candado (el de la barra de herramientas): encendido, al cambiar de pincel se conservan tamano y opacidad.
         let lock_c = pos2(prev.right() - 17.0, prev.top() + 17.0);
-        let lock = ui.interact(Rect::from_center_size(lock_c, vec2(28.0, 28.0)), base.with("lock"), Sense::click());
+        let lock = ui.interact(
+            Rect::from_center_size(lock_c, vec2(28.0, 28.0)),
+            base.with("lock"),
+            Sense::click(),
+        );
         let lock_color = if self.lock {
             ACCENT
         } else if lock.hovered() {
@@ -343,7 +448,10 @@ impl BrushPanel {
         egui::Image::new(egui::include_image!("../../assets/icons/lock.svg"))
             .tint(lock_color)
             .paint_at(ui, Rect::from_center_size(lock_c, vec2(17.0, 17.0)));
-        if lock.on_hover_text("Conservar tamaño, opacidad y flujo al cambiar de pincel").clicked() {
+        if lock
+            .on_hover_text("Conservar tamaño, opacidad y flujo al cambiar de pincel")
+            .clicked()
+        {
             self.lock = !self.lock;
         }
 
@@ -358,7 +466,10 @@ impl BrushPanel {
         let seg_w = pill.width() / 3.0;
         let pr = (pill.height() / 2.0) as u8;
         for (i, tab) in PbTab::ALL.into_iter().enumerate() {
-            let seg = Rect::from_min_size(pos2(pill.left() + seg_w * i as f32, pill.top()), vec2(seg_w, pill.height()));
+            let seg = Rect::from_min_size(
+                pos2(pill.left() + seg_w * i as f32, pill.top()),
+                vec2(seg_w, pill.height()),
+            );
             let on = self.tab == tab;
             if on {
                 // Solo el segmento de la punta se redondea por fuera.
@@ -370,35 +481,74 @@ impl BrushPanel {
                 };
                 p.rect_filled(seg, corners, Color32::WHITE);
             }
-            let text_color = if on { Color32::from_gray(30) } else { Color32::WHITE };
-            p.text(seg.center(), Align2::CENTER_CENTER, tab.name(), FontId::proportional(12.0), text_color);
-            if ui.interact(seg, base.with(("tab", i)), Sense::click()).clicked() && self.tab != tab {
+            let text_color = if on {
+                Color32::from_gray(30)
+            } else {
+                Color32::WHITE
+            };
+            p.text(
+                seg.center(),
+                Align2::CENTER_CENTER,
+                tab.name(),
+                FontId::proportional(12.0),
+                text_color,
+            );
+            if ui
+                .interact(seg, base.with(("tab", i)), Sense::click())
+                .clicked()
+                && self.tab != tab
+            {
                 self.tab = tab;
                 self.scroll = 0.0;
             }
         }
-        p.rect_stroke(pill, CornerRadius::same(pr), Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+        p.rect_stroke(
+            pill,
+            CornerRadius::same(pr),
+            Stroke::new(1.5, Color32::WHITE),
+            StrokeKind::Inside,
+        );
         // Lupa (todavia sin funcion): circulo negro con la lupa dibujada.
         p.circle_filled(search_c, search_r, Color32::BLACK);
         let lens = search_c + vec2(-1.5, -1.5);
         p.circle_stroke(lens, 5.0, Stroke::new(1.8, Color32::WHITE));
-        p.line_segment([lens + vec2(3.6, 3.6), lens + vec2(8.0, 8.0)], Stroke::new(2.0, Color32::WHITE));
-        ui.interact(Rect::from_center_size(search_c, vec2(32.0, 32.0)), base.with("search"), Sense::click())
-            .on_hover_text("Buscar (todavía sin función)");
+        p.line_segment(
+            [lens + vec2(3.6, 3.6), lens + vec2(8.0, 8.0)],
+            Stroke::new(2.0, Color32::WHITE),
+        );
+        ui.interact(
+            Rect::from_center_size(search_c, vec2(32.0, 32.0)),
+            base.with("search"),
+            Sense::click(),
+        )
+        .on_hover_text("Buscar (todavía sin función)");
 
         // ---- Caja: columna de categorias | lista de pinceles.
         let (body, _) = ui.allocate_exact_size(vec2(PB_W, list_h), Sense::hover());
         p.rect_filled(body, CornerRadius::same(8), PB_DARK);
         let rail = Rect::from_min_size(body.min, vec2(PB_RAIL_W, list_h));
         let list = Rect::from_min_max(pos2(rail.right(), body.top()), body.max);
-        p.rect_filled(list, CornerRadius { nw: 0, sw: 0, ne: 8, se: 8 }, MENU_FILL);
+        p.rect_filled(
+            list,
+            CornerRadius {
+                nw: 0,
+                sw: 0,
+                ne: 8,
+                se: 8,
+            },
+            MENU_FILL,
+        );
 
         // Categorias: solo texto por ahora (en assets/icons todavia no hay iconos de categorias).
-        let groups: Vec<(Option<BrushGroup>, &str)> =
-            std::iter::once((None, "Todos")).chain(BrushGroup::ALL.iter().map(|g| (Some(*g), g.name()))).collect();
+        let groups: Vec<(Option<BrushGroup>, &str)> = std::iter::once((None, "Todos"))
+            .chain(BrushGroup::ALL.iter().map(|g| (Some(*g), g.name())))
+            .collect();
         let item_h = (list_h / groups.len() as f32).min(PB_RAIL_ITEM_H);
         for (i, (group, label)) in groups.iter().enumerate() {
-            let item = Rect::from_min_size(pos2(rail.left(), rail.top() + i as f32 * item_h), vec2(PB_RAIL_W, item_h));
+            let item = Rect::from_min_size(
+                pos2(rail.left(), rail.top() + i as f32 * item_h),
+                vec2(PB_RAIL_W, item_h),
+            );
             let on = self.group == *group;
             let r = ui.interact(item, base.with(("group", i)), Sense::click());
             if on {
@@ -411,7 +561,13 @@ impl BrushPanel {
             } else {
                 Color32::from_gray(205)
             };
-            p.text(item.center(), Align2::CENTER_CENTER, *label, FontId::proportional(11.0), c);
+            p.text(
+                item.center(),
+                Align2::CENTER_CENTER,
+                *label,
+                FontId::proportional(11.0),
+                c,
+            );
             if r.clicked() && !on {
                 self.group = *group;
                 self.scroll = 0.0;
@@ -420,7 +576,11 @@ impl BrushPanel {
 
         // Lista: los pinceles de la categoria elegida (solo la pestana Basico tiene; las otras salen vacias).
         let shown: Vec<BrushType> = if self.tab == PbTab::Basic {
-            BrushType::ALL.iter().copied().filter(|b| self.group.is_none_or(|g| b.group() == g)).collect()
+            BrushType::ALL
+                .iter()
+                .copied()
+                .filter(|b| self.group.is_none_or(|g| b.group() == g))
+                .collect()
         } else {
             Vec::new()
         };
@@ -430,10 +590,19 @@ impl BrushPanel {
                 PbTab::Online => "Los pinceles en línea\nllegarán más adelante",
                 PbTab::Basic => "No hay pinceles",
             };
-            p.text(list.center(), Align2::CENTER_CENTER, msg, FontId::proportional(13.0), Color32::from_gray(110));
+            p.text(
+                list.center(),
+                Align2::CENTER_CENTER,
+                msg,
+                FontId::proportional(13.0),
+                Color32::from_gray(110),
+            );
         }
         let max_scroll = (shown.len() as f32 * PB_ROW_H - list.height()).max(0.0);
-        if ctx.input(|i| i.pointer.hover_pos()).is_some_and(|m| list.contains(m)) {
+        if ctx
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|m| list.contains(m))
+        {
             self.scroll -= ctx.input(|i| i.smooth_scroll_delta.y);
         }
         self.scroll = self.scroll.clamp(0.0, max_scroll);
@@ -448,7 +617,11 @@ impl BrushPanel {
             if row.bottom() < list.top() || row.top() > list.bottom() {
                 continue;
             }
-            let rr = ui.interact(row.intersect(list), base.with(("row", kind as u8)), Sense::click());
+            let rr = ui.interact(
+                row.intersect(list),
+                base.with(("row", kind as u8)),
+                Sense::click(),
+            );
             let selected = brush.kind == kind;
             if selected {
                 pa.rect_filled(row, CornerRadius::same(0), LP_SELECTED);
@@ -456,7 +629,10 @@ impl BrushPanel {
                 pa.rect_filled(row, CornerRadius::same(0), Color32::from_black_alpha(10));
             }
             // Trazo de muestra (negro, al tamano inicial del pincel), dibujado una sola vez.
-            let thumb = Rect::from_min_size(pos2(row.left() + 8.0, row.top() + 2.0), vec2(THUMB_W, THUMB_H));
+            let thumb = Rect::from_min_size(
+                pos2(row.left() + 8.0, row.top() + 2.0),
+                vec2(THUMB_W, THUMB_H),
+            );
             let tex = self.thumbs.entry(kind).or_insert_with(|| {
                 let img = stroke_image(
                     kind,
@@ -466,7 +642,11 @@ impl BrushPanel {
                     vec2(THUMB_W, THUMB_H),
                     8.0,
                 );
-                ctx.load_texture(format!("pincel_{}", kind.name()), img, egui::TextureOptions::LINEAR)
+                ctx.load_texture(
+                    format!("pincel_{}", kind.name()),
+                    img,
+                    egui::TextureOptions::LINEAR,
+                )
             });
             pa.image(tex.id(), thumb, FULL_UV, Color32::WHITE);
             // Nombre abajo a la izquierda y tamano arriba a la derecha (el de la fila elegida es el actual).
@@ -477,7 +657,11 @@ impl BrushPanel {
                 FontId::proportional(11.0),
                 MENU_TEXT,
             );
-            let shown_size = if selected { brush.radius } else { kind.default_radius() };
+            let shown_size = if selected {
+                brush.radius
+            } else {
+                kind.default_radius()
+            };
             pa.text(
                 pos2(thumb.right(), row.top() + 9.0),
                 Align2::RIGHT_CENTER,
@@ -487,15 +671,27 @@ impl BrushPanel {
             );
             // Botones "+" y ">" (todavia sin funcion). Se crean despues de la fila para ganarle el clic.
             for (name, c, tip) in [
-                ("plus", pos2(row.right() - 46.0, row.center().y), "Añadir a mis pinceles (todavía sin función)"),
-                ("go", pos2(row.right() - 18.0, row.center().y), "Ajustes del pincel (todavía sin función)"),
+                (
+                    "plus",
+                    pos2(row.right() - 46.0, row.center().y),
+                    "Añadir a mis pinceles (todavía sin función)",
+                ),
+                (
+                    "go",
+                    pos2(row.right() - 18.0, row.center().y),
+                    "Ajustes del pincel (todavía sin función)",
+                ),
             ] {
                 let r = ui.interact(
                     Rect::from_center_size(c, vec2(26.0, 26.0)).intersect(list),
                     base.with((name, kind as u8)),
                     Sense::click(),
                 );
-                let col = if r.hovered() { Color32::from_gray(20) } else { Color32::from_gray(70) };
+                let col = if r.hovered() {
+                    Color32::from_gray(20)
+                } else {
+                    Color32::from_gray(70)
+                };
                 let line = Stroke::new(1.4, col);
                 pa.circle_stroke(c, 11.0, Stroke::new(1.3, col));
                 if name == "plus" {
@@ -507,7 +703,11 @@ impl BrushPanel {
                 }
                 r.on_hover_text(tip);
             }
-            pa.hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, MENU_LINE));
+            pa.hline(
+                row.x_range(),
+                row.bottom() - 0.5,
+                Stroke::new(1.0, MENU_LINE),
+            );
             if rr.clicked() {
                 picked = Some(kind);
             }
@@ -537,13 +737,28 @@ impl BrushPanel {
         let block_h = PB_SLIDERS_H / 3.0;
         let titles = [
             ("Grosor", format!("{:.1}px", brush.radius)),
-            ("Opacidad", format!("{}%", (*opacity * 100.0).round() as i32)),
+            (
+                "Opacidad",
+                format!("{}%", (*opacity * 100.0).round() as i32),
+            ),
             ("Flujo", format!("{}%", (brush.flow * 100.0).round() as i32)),
         ];
         for (k, (name, value)) in titles.iter().enumerate() {
             let top = sl.top() + block_h * k as f32;
-            p.text(pos2(sl.left() + 12.0, top + 16.0), Align2::LEFT_CENTER, *name, FontId::proportional(14.0), Color32::WHITE);
-            p.text(pos2(sl.right() - 12.0, top + 16.0), Align2::RIGHT_CENTER, value, FontId::proportional(13.0), Color32::WHITE);
+            p.text(
+                pos2(sl.left() + 12.0, top + 16.0),
+                Align2::LEFT_CENTER,
+                *name,
+                FontId::proportional(14.0),
+                Color32::WHITE,
+            );
+            p.text(
+                pos2(sl.right() - 12.0, top + 16.0),
+                Align2::RIGHT_CENTER,
+                value,
+                FontId::proportional(13.0),
+                Color32::WHITE,
+            );
         }
         let row = |k: usize| {
             Rect::from_min_size(
@@ -554,14 +769,27 @@ impl BrushPanel {
 
         let mut f = radius_to_frac(brush.radius);
         let f0 = f;
-        let e = slider_row_with(ui, row(0), base.with("size"), "", 0.0, &mut f, 0.02, move |p, r| {
-            pill_gradient(p, r, &[Color32::from_gray(205), Color32::from_gray(205)]);
-            // Parte llena (azul) hasta la perilla; si es mas corta que la barra de alta no se dibuja.
-            let w = r.width() * f0;
-            if w >= r.height() {
-                pill_gradient(p, Rect::from_min_max(r.min, pos2(r.left() + w, r.max.y)), &[PB_BLUE, PB_BLUE]);
-            }
-        });
+        let e = slider_row_with(
+            ui,
+            row(0),
+            base.with("size"),
+            "",
+            0.0,
+            &mut f,
+            0.02,
+            move |p, r| {
+                pill_gradient(p, r, &[Color32::from_gray(205), Color32::from_gray(205)]);
+                // Parte llena (azul) hasta la perilla; si es mas corta que la barra de alta no se dibuja.
+                let w = r.width() * f0;
+                if w >= r.height() {
+                    pill_gradient(
+                        p,
+                        Rect::from_min_max(r.min, pos2(r.left() + w, r.max.y)),
+                        &[PB_BLUE, PB_BLUE],
+                    );
+                }
+            },
+        );
         if e.changed {
             // Un decimal, como se muestra.
             brush.radius = (frac_to_radius(f) * 10.0).round() / 10.0;
@@ -569,10 +797,19 @@ impl BrushPanel {
 
         let opaque = Color32::from_rgb(color[0], color[1], color[2]);
         let mut o = *opacity;
-        let e = slider_row_with(ui, row(1), base.with("alpha"), "", 0.0, &mut o, 0.01, move |p, r| {
-            pill_checker(p, r, 3.5);
-            pill_gradient(p, r, &[Color32::TRANSPARENT, opaque]);
-        });
+        let e = slider_row_with(
+            ui,
+            row(1),
+            base.with("alpha"),
+            "",
+            0.0,
+            &mut o,
+            0.01,
+            move |p, r| {
+                pill_checker(p, r, 3.5);
+                pill_gradient(p, r, &[Color32::TRANSPARENT, opaque]);
+            },
+        );
         if e.changed {
             *opacity = o;
         }
@@ -580,13 +817,26 @@ impl BrushPanel {
         // Flujo: cuanta cobertura suma cada toque. Con un flujo bajo hacen falta varios toques para llegar a la opacidad.
         let mut fl = brush.flow;
         let fl0 = fl;
-        let e = slider_row_with(ui, row(2), base.with("flow"), "", 0.0, &mut fl, 0.01, move |p, r| {
-            pill_gradient(p, r, &[Color32::from_gray(205), Color32::from_gray(205)]);
-            let w = r.width() * fl0;
-            if w >= r.height() {
-                pill_gradient(p, Rect::from_min_max(r.min, pos2(r.left() + w, r.max.y)), &[PB_BLUE, PB_BLUE]);
-            }
-        });
+        let e = slider_row_with(
+            ui,
+            row(2),
+            base.with("flow"),
+            "",
+            0.0,
+            &mut fl,
+            0.01,
+            move |p, r| {
+                pill_gradient(p, r, &[Color32::from_gray(205), Color32::from_gray(205)]);
+                let w = r.width() * fl0;
+                if w >= r.height() {
+                    pill_gradient(
+                        p,
+                        Rect::from_min_max(r.min, pos2(r.left() + w, r.max.y)),
+                        &[PB_BLUE, PB_BLUE],
+                    );
+                }
+            },
+        );
         if e.changed {
             // Un entero por ciento, como se muestra.
             brush.flow = ((fl * 100.0).round() / 100.0).clamp(MIN_FLOW, 1.0);

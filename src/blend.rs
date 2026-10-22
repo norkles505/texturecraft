@@ -102,7 +102,11 @@ impl BlendMode {
 
     /// Un nombre desconocido cae en `Normal` (como al cargar un proyecto).
     pub fn from_name(name: &str) -> BlendMode {
-        BlendMode::ALL.iter().copied().find(|m| m.name() == name).unwrap_or(BlendMode::Normal)
+        BlendMode::ALL
+            .iter()
+            .copied()
+            .find(|m| m.name() == name)
+            .unwrap_or(BlendMode::Normal)
     }
 }
 
@@ -141,7 +145,11 @@ fn soft_light(b: i32, s: i32) -> i32 {
     let r = if cs <= 0.5 {
         cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
     } else {
-        let d = if cb <= 0.25 { ((16.0 * cb - 12.0) * cb + 4.0) * cb } else { cb.sqrt() };
+        let d = if cb <= 0.25 {
+            ((16.0 * cb - 12.0) * cb + 4.0) * cb
+        } else {
+            cb.sqrt()
+        };
         cb + (2.0 * cs - 1.0) * (d - cb)
     };
     ((r * 255.0 + 0.5) as i32).clamp(0, 255)
@@ -249,7 +257,11 @@ fn set_sat(c: [f32; 3], s: f32) -> [f32; 3] {
 }
 
 fn to_f(c: [u8; 3]) -> [f32; 3] {
-    [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0]
+    [
+        c[0] as f32 / 255.0,
+        c[1] as f32 / 255.0,
+        c[2] as f32 / 255.0,
+    ]
 }
 
 fn from_f(c: [f32; 3]) -> [u8; 3] {
@@ -264,8 +276,16 @@ fn from_f(c: [f32; 3]) -> [u8; 3] {
 pub fn mix(mode: BlendMode, dst: [u8; 3], src: [u8; 3]) -> [u8; 3] {
     let d = [dst[0] as i32, dst[1] as i32, dst[2] as i32];
     let s = [src[0] as i32, src[1] as i32, src[2] as i32];
-    if let (Some(r), Some(g), Some(b)) = (channel(mode, d[0], s[0]), channel(mode, d[1], s[1]), channel(mode, d[2], s[2])) {
-        return [r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8];
+    if let (Some(r), Some(g), Some(b)) = (
+        channel(mode, d[0], s[0]),
+        channel(mode, d[1], s[1]),
+        channel(mode, d[2], s[2]),
+    ) {
+        return [
+            r.clamp(0, 255) as u8,
+            g.clamp(0, 255) as u8,
+            b.clamp(0, 255) as u8,
+        ];
     }
     match mode {
         BlendMode::DarkerColor => {
@@ -283,7 +303,9 @@ pub fn mix(mode: BlendMode, dst: [u8; 3], src: [u8; 3]) -> [u8; 3] {
             }
         }
         BlendMode::Hue => from_f(set_lum(set_sat(to_f(src), sat(to_f(dst))), lum(to_f(dst)))),
-        BlendMode::Saturation => from_f(set_lum(set_sat(to_f(dst), sat(to_f(src))), lum(to_f(dst)))),
+        BlendMode::Saturation => {
+            from_f(set_lum(set_sat(to_f(dst), sat(to_f(src))), lum(to_f(dst))))
+        }
         BlendMode::Color => from_f(set_lum(to_f(src), lum(to_f(dst)))),
         BlendMode::Luminosity => from_f(set_lum(to_f(dst), lum(to_f(src)))),
         _ => src,
@@ -330,11 +352,26 @@ mod tests {
 
     #[test]
     fn multiplicar_y_trama() {
-        assert_eq!(mix(BlendMode::Multiply, [255, 128, 0], [128, 128, 128]), [128, 64, 0]);
-        assert_eq!(mix(BlendMode::Screen, [0, 0, 0], [10, 20, 30]), [10, 20, 30]);
-        assert_eq!(mix(BlendMode::Difference, [200, 50, 0], [50, 200, 0]), [150, 150, 0]);
-        assert_eq!(mix(BlendMode::HardMix, [200, 100, 0], [100, 100, 0]), [255, 0, 0]);
-        assert_eq!(mix(BlendMode::Invert, [10, 255, 0], [0, 0, 0]), [245, 0, 255]);
+        assert_eq!(
+            mix(BlendMode::Multiply, [255, 128, 0], [128, 128, 128]),
+            [128, 64, 0]
+        );
+        assert_eq!(
+            mix(BlendMode::Screen, [0, 0, 0], [10, 20, 30]),
+            [10, 20, 30]
+        );
+        assert_eq!(
+            mix(BlendMode::Difference, [200, 50, 0], [50, 200, 0]),
+            [150, 150, 0]
+        );
+        assert_eq!(
+            mix(BlendMode::HardMix, [200, 100, 0], [100, 100, 0]),
+            [255, 0, 0]
+        );
+        assert_eq!(
+            mix(BlendMode::Invert, [10, 255, 0], [0, 0, 0]),
+            [245, 0, 255]
+        );
     }
 
     #[test]
@@ -343,22 +380,37 @@ mod tests {
         let r = mix(BlendMode::Color, [255, 255, 255], [255, 0, 0]);
         assert_eq!(r, [255, 255, 255]);
         // Luminosidad de fuente negra sobre un gris da negro.
-        assert_eq!(mix(BlendMode::Luminosity, [128, 128, 128], [0, 0, 0]), [0, 0, 0]);
+        assert_eq!(
+            mix(BlendMode::Luminosity, [128, 128, 128], [0, 0, 0]),
+            [0, 0, 0]
+        );
     }
 
     #[test]
     fn over_normal() {
         // Fondo transparente: la capa queda tal cual.
-        assert_eq!(over([0, 0, 0, 0], [10, 20, 30], 200, BlendMode::Normal), [10, 20, 30, 200]);
+        assert_eq!(
+            over([0, 0, 0, 0], [10, 20, 30], 200, BlendMode::Normal),
+            [10, 20, 30, 200]
+        );
         // Fuente opaca tapa todo.
-        assert_eq!(over([5, 5, 5, 255], [100, 110, 120], 255, BlendMode::Normal), [100, 110, 120, 255]);
+        assert_eq!(
+            over([5, 5, 5, 255], [100, 110, 120], 255, BlendMode::Normal),
+            [100, 110, 120, 255]
+        );
         // Fuente transparente deja el fondo.
-        assert_eq!(over([5, 6, 7, 255], [100, 110, 120], 0, BlendMode::Normal), [5, 6, 7, 255]);
+        assert_eq!(
+            over([5, 6, 7, 255], [100, 110, 120], 0, BlendMode::Normal),
+            [5, 6, 7, 255]
+        );
     }
 
     #[test]
     fn over_con_modo_sobre_fondo_transparente_no_mezcla() {
         // Donde el fondo no tiene nada, Multiplicar no oscurece.
-        assert_eq!(over([0, 0, 0, 0], [200, 100, 50], 255, BlendMode::Multiply), [200, 100, 50, 255]);
+        assert_eq!(
+            over([0, 0, 0, 0], [200, 100, 50], 255, BlendMode::Multiply),
+            [200, 100, 50, 255]
+        );
     }
 }

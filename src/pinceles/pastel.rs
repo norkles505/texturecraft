@@ -43,7 +43,11 @@ fn canvas_value(tx: u32, ty: u32) -> f32 {
     let within = |v: u32| (v as f32 % CANVAS_PERIOD) / CANVAS_PERIOD;
     let over = (cell(x) + cell(y)) as u32 % 2 == 0;
     // Hilo horizontal (varia en y) o vertical (varia en x), segun quien este por encima en esta celda.
-    let thread = if over { (PI * within(y)).sin() } else { (PI * within(x)).sin() };
+    let thread = if over {
+        (PI * within(y)).sin()
+    } else {
+        (PI * within(x)).sin()
+    };
     let grain = hash2(x as i32, y as i32, CANVAS_SALT);
     ((0.2 + 0.8 * thread) * (0.85 + 0.15 * grain)).clamp(0.0, 1.0)
 }
@@ -57,11 +61,20 @@ pub(super) fn subtract(tx: u32, ty: u32) -> f32 {
 /// lado respecto al trazo hasta `PASTEL_SCATTER` del radio. `t0` y `b0` son la base de la superficie, `n` su normal y
 /// `along` la direccion del trazo proyectada en el plano (si no se sabe hacia donde va, la dispersion va a lo largo
 /// de un eje cualquiera).
-pub(super) fn nuevo(dab: u32, inv_radius: f32, radius: f32, t0: Vec3, b0: Vec3, n: Vec3, along: Option<Vec3>) -> DryDab {
+pub(super) fn nuevo(
+    dab: u32,
+    inv_radius: f32,
+    radius: f32,
+    t0: Vec3,
+    b0: Vec3,
+    n: Vec3,
+    along: Option<Vec3>,
+) -> DryDab {
     let (sn, cs) = dab_angle(dab).sin_cos();
     let roundness = 1.0 - ROUNDNESS_JITTER * unit(DAB_ROUND_SALT.wrapping_add(u64::from(dab)));
     let side = along.map_or(b0, |a| n.cross(a));
-    let k = (unit(DAB_SCATTER_SALT.wrapping_add(u64::from(dab))) * 2.0 - 1.0) * PASTEL_SCATTER * radius;
+    let k =
+        (unit(DAB_SCATTER_SALT.wrapping_add(u64::from(dab))) * 2.0 - 1.0) * PASTEL_SCATTER * radius;
     DryDab {
         kind: DryKind::Pastel,
         t: t0 * cs + b0 * sn,
@@ -82,14 +95,20 @@ mod tests {
         let mut algun_desvio = false;
         for dab in 1..100 {
             let d = DryDab::new(DryKind::Pastel, dab, Vec3::Z, Vec3::X, 2.0);
-            assert!(d.shift.dot(Vec3::X).abs() < 1e-4, "se desplaza a lo largo del trazo");
+            assert!(
+                d.shift.dot(Vec3::X).abs() < 1e-4,
+                "se desplaza a lo largo del trazo"
+            );
             assert!(d.reach() <= PASTEL_SCATTER * 2.0 + 1e-5);
             assert!((1.0 - ROUNDNESS_JITTER - 1e-6..=1.0).contains(&d.roundness));
             algun_desvio |= d.reach() > 0.05;
         }
         assert!(algun_desvio);
         // El carboncillo no se dispersa.
-        assert_eq!(DryDab::new(DryKind::Charcoal, 5, Vec3::Z, Vec3::X, 2.0).reach(), 0.0);
+        assert_eq!(
+            DryDab::new(DryKind::Charcoal, 5, Vec3::Z, Vec3::X, 2.0).reach(),
+            0.0
+        );
     }
 
     #[test]

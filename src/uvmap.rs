@@ -72,7 +72,10 @@ impl UvMaps {
             for k in 0..3 {
                 let u = uvs[t * 6 + k * 2];
                 let v = uvs[t * 6 + k * 2 + 1];
-                let key = ((u * 1_048_576.0).round() as i64, (v * 1_048_576.0).round() as i64);
+                let key = (
+                    (u * 1_048_576.0).round() as i64,
+                    (v * 1_048_576.0).round() as i64,
+                );
                 match first.get(&key) {
                     Some(&other) => union(&mut parent, other, t as u32),
                     None => {
@@ -105,7 +108,8 @@ impl UvMaps {
                 q[0] = (q[0] - cu) * max;
                 q[1] = (q[1] - cv) * max;
             }
-            let denom = (p[1][1] - p[2][1]) * (p[0][0] - p[2][0]) + (p[2][0] - p[1][0]) * (p[0][1] - p[2][1]);
+            let denom = (p[1][1] - p[2][1]) * (p[0][0] - p[2][0])
+                + (p[2][0] - p[1][0]) * (p[0][1] - p[2][1]);
             if denom.abs() < 1e-9 {
                 continue;
             }
@@ -116,8 +120,12 @@ impl UvMaps {
             for y in min_y..=max_y {
                 for x in min_x..=max_x {
                     let (fx, fy) = (x as f32, y as f32);
-                    let w0 = ((p[1][1] - p[2][1]) * (fx - p[2][0]) + (p[2][0] - p[1][0]) * (fy - p[2][1])) / denom;
-                    let w1 = ((p[2][1] - p[0][1]) * (fx - p[2][0]) + (p[0][0] - p[2][0]) * (fy - p[2][1])) / denom;
+                    let w0 = ((p[1][1] - p[2][1]) * (fx - p[2][0])
+                        + (p[2][0] - p[1][0]) * (fy - p[2][1]))
+                        / denom;
+                    let w1 = ((p[2][1] - p[0][1]) * (fx - p[2][0])
+                        + (p[0][0] - p[2][0]) * (fy - p[2][1]))
+                        / denom;
                     let w2 = 1.0 - w0 - w1;
                     if w0 >= -1e-4 && w1 >= -1e-4 && w2 >= -1e-4 {
                         island[(y as u32 * size + x as u32) as usize] = tri_island[t];
@@ -130,7 +138,11 @@ impl UvMaps {
         dilate(&mut island, size);
         let coverage = island.iter().map(|&i| (i != 0) as u8).collect();
         dilate(&mut island, size);
-        UvMaps { size, island, coverage }
+        UvMaps {
+            size,
+            island,
+            coverage,
+        }
     }
 }
 

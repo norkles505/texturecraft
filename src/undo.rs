@@ -77,13 +77,18 @@ fn apply(edit: &mut StrokeEdit, layers: &mut LayerStack) -> Option<Rect> {
 impl History {
     /// Al apoyar el boton: empieza el registro de un trazo en la capa dada.
     pub fn begin(&mut self, layer_id: u32) {
-        self.pending = Some(StrokeEdit { layer_id, tiles: Vec::new() });
+        self.pending = Some(StrokeEdit {
+            layer_id,
+            tiles: Vec::new(),
+        });
         self.saved.clear();
     }
 
     /// Guarda las baldosas que toca `rect` si aun no estan guardadas en este trazo. Hay que llamarla ANTES de pintar.
     pub fn save_tiles(&mut self, pixels: &[u8], size: u32, (x0, y0, x1, y1): Rect) {
-        let Some(edit) = self.pending.as_mut() else { return };
+        let Some(edit) = self.pending.as_mut() else {
+            return;
+        };
         for ty in y0 / TILE..=y1 / TILE {
             for tx in x0 / TILE..=x1 / TILE {
                 if !self.saved.insert((tx, ty)) {
@@ -115,7 +120,8 @@ impl History {
 
     fn trim(&mut self) {
         while !self.undo.is_empty()
-            && (self.undo.len() > MAX_STEPS || self.undo.iter().map(StrokeEdit::bytes).sum::<usize>() > MAX_BYTES)
+            && (self.undo.len() > MAX_STEPS
+                || self.undo.iter().map(StrokeEdit::bytes).sum::<usize>() > MAX_BYTES)
         {
             self.undo.remove(0);
         }

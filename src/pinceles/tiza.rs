@@ -81,7 +81,11 @@ impl ChalkDab {
         let t = n.cross(helper).normalize();
         let b = n.cross(t);
         let (sn, cs) = angle.sin_cos();
-        ChalkDab { t: t * cs + b * sn, b: b * cs - t * sn, inv_radius: 1.0 / (radius * size).max(1e-6) }
+        ChalkDab {
+            t: t * cs + b * sn,
+            b: b * cs - t * sn,
+            inv_radius: 1.0 / (radius * size).max(1e-6),
+        }
     }
 
     /// Cobertura (0..1) de un texel: `offset` es su posicion respecto al centro del toque, `paper_pos` el punto donde
@@ -99,7 +103,10 @@ impl ChalkDab {
     /// textura de photocraft (con `each_tip` apagado): si el papel multiplicara cada toque, al acumular los toques
     /// rellenarian los huecos y el papel desapareceria.
     pub fn tip(&self, offset: Vec3) -> f32 {
-        let (u, v) = (offset.dot(self.t) * self.inv_radius, offset.dot(self.b) * self.inv_radius);
+        let (u, v) = (
+            offset.dot(self.t) * self.inv_radius,
+            offset.dot(self.b) * self.inv_radius,
+        );
         chalk_tip().sample(u * 0.5 + 0.5, v * 0.5 + 0.5)
     }
 }
@@ -149,12 +156,22 @@ mod tests {
             // Determinista.
             assert_eq!(dab_params(d), (a, s));
         }
-        assert!(angulos.len() > 150, "los angulos se repiten: {}", angulos.len());
+        assert!(
+            angulos.len() > 150,
+            "los angulos se repiten: {}",
+            angulos.len()
+        );
     }
 
     #[test]
     fn la_base_de_la_punta_es_ortonormal_sea_cual_sea_la_normal() {
-        for n in [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(1.0, 2.0, 3.0), Vec3::ZERO] {
+        for n in [
+            Vec3::X,
+            Vec3::Y,
+            Vec3::Z,
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::ZERO,
+        ] {
             let d = ChalkDab::new(7, n, 1.0);
             assert!((d.t.length() - 1.0).abs() < 1e-4 && (d.b.length() - 1.0).abs() < 1e-4);
             assert!(d.t.dot(d.b).abs() < 1e-4);
@@ -183,7 +200,11 @@ mod tests {
     fn la_cobertura_nunca_pasa_de_1() {
         let d = ChalkDab::new(11, Vec3::Y, 1.0);
         for i in 0..400 {
-            let o = Vec3::new((i % 20) as f32 * 0.1 - 1.0, 0.0, (i / 20) as f32 * 0.1 - 1.0);
+            let o = Vec3::new(
+                (i % 20) as f32 * 0.1 - 1.0,
+                0.0,
+                (i / 20) as f32 * 0.1 - 1.0,
+            );
             let a = d.alpha(o, o, i, i);
             assert!((0.0..=1.0).contains(&a), "{a}");
         }

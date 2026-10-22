@@ -59,7 +59,13 @@ pub(super) const BLEND_GROUPS: [(&str, &[BlendMode]); 6] = [
     ("", &[BlendMode::Normal]),
     (
         "Oscurecer",
-        &[BlendMode::Darken, BlendMode::Multiply, BlendMode::ColorBurn, BlendMode::LinearBurn, BlendMode::DarkerColor],
+        &[
+            BlendMode::Darken,
+            BlendMode::Multiply,
+            BlendMode::ColorBurn,
+            BlendMode::LinearBurn,
+            BlendMode::DarkerColor,
+        ],
     ),
     (
         "Aclarar",
@@ -86,9 +92,23 @@ pub(super) const BLEND_GROUPS: [(&str, &[BlendMode]); 6] = [
     ),
     (
         "Diferencia",
-        &[BlendMode::Invert, BlendMode::Difference, BlendMode::Exclusion, BlendMode::Subtract, BlendMode::Divide],
+        &[
+            BlendMode::Invert,
+            BlendMode::Difference,
+            BlendMode::Exclusion,
+            BlendMode::Subtract,
+            BlendMode::Divide,
+        ],
     ),
-    ("Color", &[BlendMode::Hue, BlendMode::Saturation, BlendMode::Color, BlendMode::Luminosity]),
+    (
+        "Color",
+        &[
+            BlendMode::Hue,
+            BlendMode::Saturation,
+            BlendMode::Color,
+            BlendMode::Luminosity,
+        ],
+    ),
 ];
 
 /// Rellena `rect` con un tablero de ajedrez de casillas de lado `cell` (colores `a` y `b`).
@@ -99,7 +119,10 @@ pub(super) fn paint_checker(p: &egui::Painter, rect: Rect, cell: f32, a: Color32
     for y in 0..rows {
         for x in 0..cols {
             if (x + y) % 2 == 1 {
-                let r = Rect::from_min_size(rect.min + vec2(x as f32 * cell, y as f32 * cell), vec2(cell, cell));
+                let r = Rect::from_min_size(
+                    rect.min + vec2(x as f32 * cell, y as f32 * cell),
+                    vec2(cell, cell),
+                );
                 p.rect_filled(r.intersect(rect), CornerRadius::same(0), b);
             }
         }
@@ -108,15 +131,30 @@ pub(super) fn paint_checker(p: &egui::Painter, rect: Rect, cell: f32, a: Color32
 
 /// Degradado vertical de `top` a `bottom` sobre `rect` (insinua que la lista sigue fuera de la vista). Las esquinas de
 /// abajo (`round_bottom`) o las de arriba se redondean con radio `r`, para no salirse del marco redondeado.
-pub(super) fn paint_fade(p: &egui::Painter, rect: Rect, top: Color32, bottom: Color32, r: f32, round_bottom: bool) {
+pub(super) fn paint_fade(
+    p: &egui::Painter,
+    rect: Rect,
+    top: Color32,
+    bottom: Color32,
+    r: f32,
+    round_bottom: bool,
+) {
     const STEPS: usize = 24;
     let mut mesh = egui::Mesh::default();
     for i in 0..=STEPS {
         let t = i as f32 / STEPS as f32;
         let y = rect.top() + rect.height() * t;
         // Cuanto se mete el borde por la curva de la esquina a esta altura (0 si ya no hay curva).
-        let d = if round_bottom { rect.bottom() - y } else { y - rect.top() };
-        let inset = if d < r { r - (r * r - (r - d) * (r - d)).max(0.0).sqrt() } else { 0.0 };
+        let d = if round_bottom {
+            rect.bottom() - y
+        } else {
+            y - rect.top()
+        };
+        let inset = if d < r {
+            r - (r * r - (r - d) * (r - d)).max(0.0).sqrt()
+        } else {
+            0.0
+        };
         let col = top.lerp_to_gamma(bottom, t);
         mesh.colored_vertex(egui::pos2(rect.left() + inset, y), col);
         mesh.colored_vertex(egui::pos2(rect.right() - inset, y), col);
@@ -183,14 +221,21 @@ pub(super) fn panel_icon(
     } else {
         Color32::from_gray(205)
     };
-    egui::Image::new(icon).tint(color).paint_at(ui, Rect::from_center_size(center, vec2(size, size)));
+    egui::Image::new(icon)
+        .tint(color)
+        .paint_at(ui, Rect::from_center_size(center, vec2(size, size)));
     r
 }
 
 /// Panel flotante del boton de capas: aparece encima del boton, pegado a su borde derecho, y se cierra al hacer clic
 /// fuera de el. Lee y cambia las capas de `stack`; devuelve true si hay que recomponer la textura (ojo, opacidad,
 /// modo de mezcla, recorte o fondo).
-pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stack: &mut LayerStack, button: Rect) -> bool {
+pub(super) fn layers_panel(
+    ctx: &egui::Context,
+    options: &mut OptionsPanel,
+    stack: &mut LayerStack,
+    button: Rect,
+) -> bool {
     if !options.layers_open {
         options.more_open = false;
         return false;
@@ -230,7 +275,8 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                     let (bx, _) = ui.allocate_exact_size(vec2(LP_W, LP_BOX_H), Sense::hover());
                     p.rect_filled(bx, CornerRadius::same(8), Color32::BLACK);
                     let left = Rect::from_min_size(bx.min, vec2(LP_LEFT_W, LP_BOX_H));
-                    let right = Rect::from_min_max(egui::pos2(bx.right() - LP_RIGHT_W, bx.top()), bx.max);
+                    let right =
+                        Rect::from_min_max(egui::pos2(bx.right() - LP_RIGHT_W, bx.top()), bx.max);
                     let list = Rect::from_min_max(
                         egui::pos2(left.right(), bx.top()),
                         egui::pos2(right.left(), bx.bottom() - 1.0),
@@ -238,7 +284,12 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                     let gray_h = LP_BOX_H - 100.0;
                     p.rect_filled(
                         Rect::from_min_size(left.min, vec2(LP_LEFT_W, gray_h)),
-                        CornerRadius { nw: 8, ne: 0, sw: 0, se: 0 },
+                        CornerRadius {
+                            nw: 8,
+                            ne: 0,
+                            sw: 0,
+                            se: 0,
+                        },
                         LP_STRIP_GRAY,
                     );
                     p.rect_filled(list, CornerRadius::same(0), LP_LIST_EMPTY);
@@ -329,7 +380,11 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                         ui_id.with("lp_dots"),
                         Sense::click(),
                     );
-                    let dots_color = if dots.hovered() || options.more_open { Color32::WHITE } else { Color32::from_gray(205) };
+                    let dots_color = if dots.hovered() || options.more_open {
+                        Color32::WHITE
+                    } else {
+                        Color32::from_gray(205)
+                    };
                     for k in -1..=1 {
                         p.circle_filled(egui::pos2(rx, ry(0.0) + k as f32 * 6.5), 2.2, dots_color);
                     }
@@ -342,7 +397,10 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                     // Fila "Fondo" (abajo de la lista) y zona de la lista. Como en Ibis Paint, si todo cabe la pila de filas
                     // (capa de seleccion, capas y "Fondo") se pega abajo y arriba queda el fondo oscuro vacio; si no cabe,
                     // la capa de seleccion queda fija arriba y las capas se desplazan entre ella y "Fondo".
-                    let bg_row = Rect::from_min_max(egui::pos2(list.left(), list.bottom() - LP_BG_H), list.max);
+                    let bg_row = Rect::from_min_max(
+                        egui::pos2(list.left(), list.bottom() - LP_BG_H),
+                        list.max,
+                    );
                     let layers_h = stack.layers.len() as f32 * LP_ROW_H;
                     let fits = LP_ROW_H + layers_h + LP_BG_H <= list.height();
                     let (sel_top, area_top) = if fits {
@@ -350,7 +408,10 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                     } else {
                         (list.top(), list.top() + LP_ROW_H)
                     };
-                    let area = Rect::from_min_max(egui::pos2(list.left(), area_top), egui::pos2(list.right(), bg_row.top()));
+                    let area = Rect::from_min_max(
+                        egui::pos2(list.left(), area_top),
+                        egui::pos2(list.right(), bg_row.top()),
+                    );
                     // Fondo claro solo donde hay filas.
                     p.rect_filled(
                         Rect::from_min_max(egui::pos2(list.left(), sel_top), list.max),
@@ -359,13 +420,27 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                     );
 
                     // Capa de seleccion: arriba de las capas, todavia sin funcion (siempre "No seleccionado").
-                    let sel_row = Rect::from_min_size(egui::pos2(list.left(), sel_top), vec2(list.width(), LP_ROW_H));
+                    let sel_row = Rect::from_min_size(
+                        egui::pos2(list.left(), sel_top),
+                        vec2(list.width(), LP_ROW_H),
+                    );
                     let th = Rect::from_min_size(
                         egui::pos2(sel_row.left() + 6.0, sel_row.center().y - LP_THUMB_H * 0.5),
                         vec2(LP_THUMB_W, LP_THUMB_H),
                     );
-                    paint_checker(&p, th, 6.0, Color32::from_rgb(255, 205, 210), Color32::from_rgb(246, 176, 186));
-                    p.rect_stroke(th, CornerRadius::same(2), Stroke::new(1.0, Color32::from_gray(170)), StrokeKind::Inside);
+                    paint_checker(
+                        &p,
+                        th,
+                        6.0,
+                        Color32::from_rgb(255, 205, 210),
+                        Color32::from_rgb(246, 176, 186),
+                    );
+                    p.rect_stroke(
+                        th,
+                        CornerRadius::same(2),
+                        Stroke::new(1.0, Color32::from_gray(170)),
+                        StrokeKind::Inside,
+                    );
                     let tx = th.right() + 8.0;
                     p.text(
                         egui::pos2(tx, sel_row.top() + 13.0),
@@ -374,9 +449,21 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                         FontId::proportional(14.0),
                         MENU_TEXT,
                     );
-                    let dash = Rect::from_min_size(egui::pos2(tx, sel_row.top() + 27.0), vec2(20.0, 15.0));
-                    let pts = [dash.left_top(), dash.right_top(), dash.right_bottom(), dash.left_bottom(), dash.left_top()];
-                    p.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.0, Color32::from_gray(70)), 2.0, 2.0));
+                    let dash =
+                        Rect::from_min_size(egui::pos2(tx, sel_row.top() + 27.0), vec2(20.0, 15.0));
+                    let pts = [
+                        dash.left_top(),
+                        dash.right_top(),
+                        dash.right_bottom(),
+                        dash.left_bottom(),
+                        dash.left_top(),
+                    ];
+                    p.extend(egui::Shape::dashed_line(
+                        &pts,
+                        Stroke::new(1.0, Color32::from_gray(70)),
+                        2.0,
+                        2.0,
+                    ));
                     p.text(
                         egui::pos2(tx, sel_row.top() + LP_ROW_H - 13.0),
                         Align2::LEFT_CENTER,
@@ -384,12 +471,22 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                         FontId::proportional(13.0),
                         MENU_TEXT,
                     );
-                    p.hline(sel_row.x_range(), sel_row.bottom() - 0.5, Stroke::new(1.0, MENU_LINE));
+                    p.hline(
+                        sel_row.x_range(),
+                        sel_row.bottom() - 0.5,
+                        Stroke::new(1.0, MENU_LINE),
+                    );
 
                     // Lista de capas: la de mas arriba primero. La rueda la desplaza.
                     let n = stack.layers.len();
-                    let max_scroll = if fits { 0.0 } else { (n as f32 * LP_ROW_H - area.height()).max(0.0) };
-                    let hovering_list = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|m| area.contains(m));
+                    let max_scroll = if fits {
+                        0.0
+                    } else {
+                        (n as f32 * LP_ROW_H - area.height()).max(0.0)
+                    };
+                    let hovering_list = ctx
+                        .input(|i| i.pointer.hover_pos())
+                        .is_some_and(|m| area.contains(m));
                     if hovering_list && !options.blend_open {
                         options.layers_scroll -= ctx.input(|i| i.smooth_scroll_delta.y);
                     }
@@ -408,7 +505,11 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                         if row.bottom() < area.top() || row.top() > area.bottom() {
                             continue;
                         }
-                        let rr = ui.interact(row.intersect(area), ui_id.with(("lrow", d)), Sense::click());
+                        let rr = ui.interact(
+                            row.intersect(area),
+                            ui_id.with(("lrow", d)),
+                            Sense::click(),
+                        );
                         if rr.clicked() {
                             stack.selected = idx;
                         }
@@ -432,9 +533,19 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                         if selected {
                             pa.rect_filled(row, CornerRadius::same(0), LP_SELECTED);
                         } else if rr.hovered() {
-                            pa.rect_filled(row, CornerRadius::same(0), Color32::from_black_alpha(10));
+                            pa.rect_filled(
+                                row,
+                                CornerRadius::same(0),
+                                Color32::from_black_alpha(10),
+                            );
                         }
-                        paint_checker(&pa, th, 6.0, Color32::from_gray(250), Color32::from_gray(222));
+                        paint_checker(
+                            &pa,
+                            th,
+                            6.0,
+                            Color32::from_gray(250),
+                            Color32::from_gray(222),
+                        );
                         let border = if selected {
                             Stroke::new(2.0, ACCENT)
                         } else {
@@ -448,10 +559,16 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                             FontId::proportional(16.0),
                             MENU_TEXT,
                         );
-                        let eye_color = if l.visible { MENU_TEXT } else { Color32::from_gray(175) };
-                        egui::Image::new(egui::include_image!("../../assets/icons/layer_visible.svg"))
-                            .tint(eye_color)
-                            .paint_at(ui, Rect::from_center_size(eye_c, vec2(24.0, 24.0)));
+                        let eye_color = if l.visible {
+                            MENU_TEXT
+                        } else {
+                            Color32::from_gray(175)
+                        };
+                        egui::Image::new(egui::include_image!(
+                            "../../assets/icons/layer_visible.svg"
+                        ))
+                        .tint(eye_color)
+                        .paint_at(ui, Rect::from_center_size(eye_c, vec2(24.0, 24.0)));
                         // Porcentaje y modo de mezcla: centrados en la misma columna (el porcentaje a media altura de la
                         // fila y el modo abajo), como en Ibis Paint.
                         let col_x = row.right() - 62.0;
@@ -467,15 +584,33 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                             Align2::CENTER_CENTER,
                             blend_label(l.blend),
                             // Los nombres largos ("Sobreexposición lineal") llevan la letra mas chica para no pisar las rayas.
-                            FontId::proportional(if l.blend.eq(&BlendMode::Normal) || blend_label(l.blend).chars().count() <= 11 { 14.0 } else { 11.0 }),
+                            FontId::proportional(
+                                if l.blend.eq(&BlendMode::Normal)
+                                    || blend_label(l.blend).chars().count() <= 11
+                                {
+                                    14.0
+                                } else {
+                                    11.0
+                                },
+                            ),
                             MENU_TEXT,
                         );
                         // Icono de las tres rayas del extremo derecho (solo adorno por ahora: todavia no se reordena).
                         // Es `assets/icons/layer_drag.svg`; basta con reemplazar el archivo para cambiarlo.
                         egui::Image::new(egui::include_image!("../../assets/icons/layer_drag.svg"))
                             .tint(Color32::from_gray(150))
-                            .paint_at(ui, Rect::from_center_size(egui::pos2(row.right() - 20.0, row.center().y), vec2(16.0, 16.0)));
-                        pa.hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, MENU_LINE));
+                            .paint_at(
+                                ui,
+                                Rect::from_center_size(
+                                    egui::pos2(row.right() - 20.0, row.center().y),
+                                    vec2(16.0, 16.0),
+                                ),
+                            );
+                        pa.hline(
+                            row.x_range(),
+                            row.bottom() - 0.5,
+                            Stroke::new(1.0, MENU_LINE),
+                        );
                     }
                     ui.set_clip_rect(old_clip);
                     // Barrita de desplazamiento, solo si la lista no cabe.
@@ -483,7 +618,10 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                         let track_h = area.height() - 8.0;
                         let bar_h = (track_h * area.height() / (n as f32 * LP_ROW_H)).max(16.0);
                         let y = area.top() + 4.0 + (track_h - bar_h) * (scroll / max_scroll);
-                        let bar = Rect::from_min_size(egui::pos2(area.right() - 4.0, y), vec2(3.0, bar_h));
+                        let bar = Rect::from_min_size(
+                            egui::pos2(area.right() - 4.0, y),
+                            vec2(3.0, bar_h),
+                        );
                         p.rect_filled(bar, CornerRadius::same(2), Color32::from_black_alpha(70));
                     }
 
@@ -496,11 +634,19 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                         FontId::proportional(16.0),
                         MENU_TEXT,
                     );
-                    let kinds = [Background::White, Background::Checker, Background::CheckerDark, Background::None];
+                    let kinds = [
+                        Background::White,
+                        Background::Checker,
+                        Background::CheckerDark,
+                        Background::None,
+                    ];
                     let s = 21.0;
                     for (i, kind) in kinds.iter().copied().enumerate() {
                         let x = bg_row.right() - 6.0 - s - (3 - i) as f32 * (s + 4.0);
-                        let sw = Rect::from_min_size(egui::pos2(x, bg_row.center().y - s * 0.5), vec2(s, s));
+                        let sw = Rect::from_min_size(
+                            egui::pos2(x, bg_row.center().y - s * 0.5),
+                            vec2(s, s),
+                        );
                         let r = ui.interact(sw, ui_id.with(("lbg", i)), Sense::click());
                         if r.clicked() && stack.background != kind {
                             stack.background = kind;
@@ -514,11 +660,20 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                                 paint_checker(&p, sw, 5.0, Color32::WHITE, Color32::from_gray(222));
                             }
                             Background::CheckerDark => {
-                                paint_checker(&p, sw, 5.0, Color32::from_gray(90), Color32::from_gray(55));
+                                paint_checker(
+                                    &p,
+                                    sw,
+                                    5.0,
+                                    Color32::from_gray(90),
+                                    Color32::from_gray(55),
+                                );
                             }
                             Background::None => {
                                 p.rect_filled(sw, CornerRadius::same(2), Color32::WHITE);
-                                p.line_segment([sw.left_bottom(), sw.right_top()], Stroke::new(1.0, Color32::from_gray(60)));
+                                p.line_segment(
+                                    [sw.left_bottom(), sw.right_top()],
+                                    Stroke::new(1.0, Color32::from_gray(60)),
+                                );
                             }
                         }
                         let border = if stack.background == kind {
@@ -558,7 +713,9 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                         egui::include_image!("../../assets/icons/layer_alpha.svg"),
                         lock_on,
                     );
-                    if r.on_hover_text("Bloqueo alfa (solo se pinta donde ya hay pintura)").clicked() {
+                    if r.on_hover_text("Bloqueo alfa (solo se pinta donde ya hay pintura)")
+                        .clicked()
+                    {
                         stack.layers[sel].alpha_lock = !lock_on;
                     }
                     // Desplegable del modo de mezcla.
@@ -567,11 +724,19 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                         egui::pos2(ctrl.right() - 7.0, ctrl.center().y + 13.0),
                     );
                     let r = ui.interact(dd, ui_id.with("lp_blend"), Sense::click());
-                    let dd_fill = if r.hovered() { Color32::from_gray(245) } else { Color32::WHITE };
+                    let dd_fill = if r.hovered() {
+                        Color32::from_gray(245)
+                    } else {
+                        Color32::WHITE
+                    };
                     p.rect_filled(dd, CornerRadius::same(4), dd_fill);
                     // Los nombres largos ("Sobreexposición lineal") llevan la letra mas chica para no pisar la flechita.
                     let dd_label = blend_label(stack.layers[sel].blend);
-                    let dd_size = if dd_label.chars().count() > 16 { 11.0 } else { 13.0 };
+                    let dd_size = if dd_label.chars().count() > 16 {
+                        11.0
+                    } else {
+                        13.0
+                    };
                     p.text(
                         egui::pos2(dd.left() + 10.0, dd.center().y),
                         Align2::LEFT_CENTER,
@@ -628,7 +793,9 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
             let current = stack.layers[stack.selected].blend;
             let total_h: f32 = BLEND_GROUPS
                 .iter()
-                .map(|&(title, modes)| (if title.is_empty() { 0.0 } else { BP_HEAD_H }) + modes.len() as f32 * BP_ROW_H)
+                .map(|&(title, modes)| {
+                    (if title.is_empty() { 0.0 } else { BP_HEAD_H }) + modes.len() as f32 * BP_ROW_H
+                })
                 .sum();
             // Alto visible: lo que cabe encima de la caja del modo (hasta 500 puntos); si el contenido es mas alto, se desplaza.
             let view_h = total_h.min((dd.top() - 40.0).clamp(150.0, 500.0));
@@ -659,21 +826,36 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                                 .show(ui, |ui| {
                                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                                     let ui_id = ui.scope_id();
-                                    let (area, _) = ui.allocate_exact_size(vec2(pw, view_h), Sense::hover());
+                                    let (area, _) =
+                                        ui.allocate_exact_size(vec2(pw, view_h), Sense::hover());
                                     // La rueda desplaza la lista mientras el cursor esta sobre ella.
-                                    if ctx.input(|i| i.pointer.hover_pos()).is_some_and(|m| area.contains(m)) {
-                                        options.blend_scroll -= ctx.input(|i| i.smooth_scroll_delta.y);
+                                    if ctx
+                                        .input(|i| i.pointer.hover_pos())
+                                        .is_some_and(|m| area.contains(m))
+                                    {
+                                        options.blend_scroll -=
+                                            ctx.input(|i| i.smooth_scroll_delta.y);
                                     }
-                                    options.blend_scroll = options.blend_scroll.clamp(0.0, max_scroll);
+                                    options.blend_scroll =
+                                        options.blend_scroll.clamp(0.0, max_scroll);
                                     let scroll = options.blend_scroll;
                                     // Todo se dibuja recortado a la lista.
                                     let pa = ui.painter().with_clip_rect(area);
                                     let mut y = area.top() - scroll;
                                     for (title, modes) in BLEND_GROUPS {
                                         if !title.is_empty() {
-                                            let head = Rect::from_min_size(egui::pos2(area.left(), y), vec2(pw, BP_HEAD_H));
-                                            if head.bottom() >= area.top() && head.top() <= area.bottom() {
-                                                pa.rect_filled(head, CornerRadius::same(0), BP_HEAD_FILL);
+                                            let head = Rect::from_min_size(
+                                                egui::pos2(area.left(), y),
+                                                vec2(pw, BP_HEAD_H),
+                                            );
+                                            if head.bottom() >= area.top()
+                                                && head.top() <= area.bottom()
+                                            {
+                                                pa.rect_filled(
+                                                    head,
+                                                    CornerRadius::same(0),
+                                                    BP_HEAD_FILL,
+                                                );
                                                 pa.text(
                                                     egui::pos2(head.left() + 9.0, head.center().y),
                                                     Align2::LEFT_CENTER,
@@ -685,26 +867,49 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                                             y += BP_HEAD_H;
                                         }
                                         for (k, &m) in modes.iter().enumerate() {
-                                            let row = Rect::from_min_size(egui::pos2(area.left(), y), vec2(pw, BP_ROW_H));
+                                            let row = Rect::from_min_size(
+                                                egui::pos2(area.left(), y),
+                                                vec2(pw, BP_ROW_H),
+                                            );
                                             y += BP_ROW_H;
-                                            if row.bottom() < area.top() || row.top() > area.bottom() {
+                                            if row.bottom() < area.top()
+                                                || row.top() > area.bottom()
+                                            {
                                                 continue;
                                             }
-                                            let r =
-                                                ui.interact(row.intersect(area), ui_id.with(("lbm", m as u8)), Sense::click());
+                                            let r = ui.interact(
+                                                row.intersect(area),
+                                                ui_id.with(("lbm", m as u8)),
+                                                Sense::click(),
+                                            );
                                             if r.hovered() {
-                                                pa.rect_filled(row, CornerRadius::same(0), Color32::from_black_alpha(14));
+                                                pa.rect_filled(
+                                                    row,
+                                                    CornerRadius::same(0),
+                                                    Color32::from_black_alpha(14),
+                                                );
                                             }
                                             // Palomita azul en el modo que tiene la capa ahora.
                                             if m == current {
-                                                let c = egui::pos2(row.left() + 16.0, row.center().y);
+                                                let c =
+                                                    egui::pos2(row.left() + 16.0, row.center().y);
                                                 let tick = Stroke::new(2.4, ACCENT);
-                                                pa.line_segment([c + vec2(-7.0, 0.5), c + vec2(-2.5, 5.0)], tick);
-                                                pa.line_segment([c + vec2(-2.5, 5.0), c + vec2(7.5, -6.0)], tick);
+                                                pa.line_segment(
+                                                    [c + vec2(-7.0, 0.5), c + vec2(-2.5, 5.0)],
+                                                    tick,
+                                                );
+                                                pa.line_segment(
+                                                    [c + vec2(-2.5, 5.0), c + vec2(7.5, -6.0)],
+                                                    tick,
+                                                );
                                             }
                                             let label = blend_label(m);
                                             // Los nombres largos ("Sobreexposición lineal") llevan la letra un poco mas chica.
-                                            let size = if label.chars().count() > 19 { 12.5 } else { 14.0 };
+                                            let size = if label.chars().count() > 19 {
+                                                12.5
+                                            } else {
+                                                14.0
+                                            };
                                             pa.text(
                                                 egui::pos2(row.left() + BP_TEXT_X, row.center().y),
                                                 Align2::LEFT_CENTER,
@@ -735,33 +940,62 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                                             egui::pos2(area.left(), area.bottom() - 22.0),
                                             egui::pos2(area.right(), area.bottom() + 3.0),
                                         );
-                                        paint_fade(&painter, r, Color32::TRANSPARENT, fade, 8.0, true);
+                                        paint_fade(
+                                            &painter,
+                                            r,
+                                            Color32::TRANSPARENT,
+                                            fade,
+                                            8.0,
+                                            true,
+                                        );
                                     }
                                     if scroll > 0.5 {
                                         let r = Rect::from_min_max(
                                             egui::pos2(area.left(), area.top() - 3.0),
                                             egui::pos2(area.right(), area.top() + 22.0),
                                         );
-                                        paint_fade(&painter, r, fade, Color32::TRANSPARENT, 8.0, false);
+                                        paint_fade(
+                                            &painter,
+                                            r,
+                                            fade,
+                                            Color32::TRANSPARENT,
+                                            8.0,
+                                            false,
+                                        );
                                     }
                                     // Barrita de desplazamiento, solo si la lista no cabe.
                                     if max_scroll > 0.0 {
                                         let track_h = area.height() - 8.0;
                                         let bar_h = (track_h * view_h / total_h).max(16.0);
-                                        let by = area.top() + 4.0 + (track_h - bar_h) * (scroll / max_scroll);
-                                        let bar = Rect::from_min_size(egui::pos2(area.right() - 6.0, by), vec2(3.0, bar_h));
-                                        ui.painter().rect_filled(bar, CornerRadius::same(2), Color32::from_black_alpha(90));
+                                        let by = area.top()
+                                            + 4.0
+                                            + (track_h - bar_h) * (scroll / max_scroll);
+                                        let bar = Rect::from_min_size(
+                                            egui::pos2(area.right() - 6.0, by),
+                                            vec2(3.0, bar_h),
+                                        );
+                                        ui.painter().rect_filled(
+                                            bar,
+                                            CornerRadius::same(2),
+                                            Color32::from_black_alpha(90),
+                                        );
                                     }
                                 });
                         });
                     // Puntita del globo, apuntando al centro de la caja del modo.
                     let b = outer.response.rect.bottom();
                     let cx = dd.center().x;
-                    ui.painter().with_clip_rect(ui.ctx().content_rect()).add(egui::Shape::convex_polygon(
-                        vec![egui::pos2(cx - 8.0, b - 0.5), egui::pos2(cx + 8.0, b - 0.5), egui::pos2(cx, b + 9.0)],
-                        bar_fill(),
-                        Stroke::NONE,
-                    ));
+                    ui.painter().with_clip_rect(ui.ctx().content_rect()).add(
+                        egui::Shape::convex_polygon(
+                            vec![
+                                egui::pos2(cx - 8.0, b - 0.5),
+                                egui::pos2(cx + 8.0, b - 0.5),
+                                egui::pos2(cx, b + 9.0),
+                            ],
+                            bar_fill(),
+                            Stroke::NONE,
+                        ),
+                    );
                 });
             if let Some(m) = pick {
                 let s = stack.selected;
@@ -786,7 +1020,10 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                 // Igual que el desplegable de modos: siempre por encima del panel de capas.
                 .order(egui::Order::Foreground)
                 .pivot(Align2::RIGHT_BOTTOM)
-                .fixed_pos(egui::pos2(out.response.rect.right() - 2.0, dots.bottom() + 2.0))
+                .fixed_pos(egui::pos2(
+                    out.response.rect.right() - 2.0,
+                    dots.bottom() + 2.0,
+                ))
                 .sense(Sense::click())
                 .show(ctx, |ui| {
                     Frame::new()
@@ -802,8 +1039,13 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                                     let n = MORE_ITEMS.len();
                                     for (i, (label, enabled)) in MORE_ITEMS.iter().enumerate() {
-                                        let sense = if *enabled { Sense::click() } else { Sense::hover() };
-                                        let (rect, response) = ui.allocate_exact_size(vec2(MORE_W, MORE_ROW_H), sense);
+                                        let sense = if *enabled {
+                                            Sense::click()
+                                        } else {
+                                            Sense::hover()
+                                        };
+                                        let (rect, response) =
+                                            ui.allocate_exact_size(vec2(MORE_W, MORE_ROW_H), sense);
                                         let p = ui.painter();
                                         // Hover como el del desplegable de modos de mezcla: la fila entera, de borde a
                                         // borde y sin esquinas redondeadas. Solo la primera y la ultima redondean sus
@@ -816,9 +1058,17 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                                                 sw: if i + 1 == n { r } else { 0 },
                                                 se: if i + 1 == n { r } else { 0 },
                                             };
-                                            p.rect_filled(rect, corners, Color32::from_black_alpha(14));
+                                            p.rect_filled(
+                                                rect,
+                                                corners,
+                                                Color32::from_black_alpha(14),
+                                            );
                                         }
-                                        let color = if *enabled { MENU_TEXT } else { Color32::from_gray(150) };
+                                        let color = if *enabled {
+                                            MENU_TEXT
+                                        } else {
+                                            Color32::from_gray(150)
+                                        };
                                         p.text(
                                             egui::pos2(rect.left() + MENU_PAD, rect.center().y),
                                             Align2::LEFT_CENTER,
@@ -827,7 +1077,11 @@ pub(super) fn layers_panel(ctx: &egui::Context, options: &mut OptionsPanel, stac
                                             color,
                                         );
                                         if i + 1 < n {
-                                            p.hline(rect.left() + 2.0..=rect.right() - 2.0, rect.bottom() - 0.5, Stroke::new(1.0, MENU_LINE));
+                                            p.hline(
+                                                rect.left() + 2.0..=rect.right() - 2.0,
+                                                rect.bottom() - 0.5,
+                                                Stroke::new(1.0, MENU_LINE),
+                                            );
                                         }
                                         if *enabled && response.clicked() {
                                             close = true;

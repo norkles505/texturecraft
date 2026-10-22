@@ -18,7 +18,8 @@ use glam::Vec3;
 
 use crate::brush::BrushType;
 use crate::pinceles::{
-    ChalkDab, DryDab, DryKind, DualDab, dry_hardmix, dry_mezcla_toque, dry_subtract, hard_mix, paper_mask, wet_factor,
+    ChalkDab, DryDab, DryKind, DualDab, dry_hardmix, dry_mezcla_toque, dry_subtract, hard_mix,
+    paper_mask, wet_factor,
 };
 
 /// Lado de la textura de cada pieza (fijo en la app Android).
@@ -135,8 +136,14 @@ fn tri_box(size: u32, uv: &[[f32; 2]; 3]) -> Option<Rect> {
         lo_y = lo_y.min(p[1] * max);
         hi_y = hi_y.max(p[1] * max);
     }
-    let (x0, x1) = ((lo_x - PAD_TEXELS).floor().max(0.0), (hi_x + PAD_TEXELS).ceil().min(max));
-    let (y0, y1) = ((lo_y - PAD_TEXELS).floor().max(0.0), (hi_y + PAD_TEXELS).ceil().min(max));
+    let (x0, x1) = (
+        (lo_x - PAD_TEXELS).floor().max(0.0),
+        (hi_x + PAD_TEXELS).ceil().min(max),
+    );
+    let (y0, y1) = (
+        (lo_y - PAD_TEXELS).floor().max(0.0),
+        (hi_y + PAD_TEXELS).ceil().min(max),
+    );
     if x0 > x1 || y0 > y1 {
         return None;
     }
@@ -355,15 +362,19 @@ impl StrokeState {
         }
         self.stroke_dab += 1;
         // La tiza gira y cambia de tamano en cada toque; se prepara una vez por toque.
-        let chalk = (opts.brush == BrushType::Chalk).then(|| ChalkDab::new(self.stroke_dab, opts.normal, radius));
+        let chalk = (opts.brush == BrushType::Chalk)
+            .then(|| ChalkDab::new(self.stroke_dab, opts.normal, radius));
         // Carboncillo y pastel: punta de bitmap (el carboncillo sigue la direccion del trazo, el pastel gira y se
         // dispersa de lado) y papel o lienzo que resta cobertura al trazo acumulado.
-        let dry: Option<(DryKind, DryDab)> = opts
-            .brush
-            .dry_kind()
-            .map(|k| (k, DryDab::new(k, self.stroke_dab, opts.normal, opts.dir, radius).with_color(color)));
+        let dry: Option<(DryKind, DryDab)> = opts.brush.dry_kind().map(|k| {
+            (
+                k,
+                DryDab::new(k, self.stroke_dab, opts.normal, opts.dir, radius).with_color(color),
+            )
+        });
         // Doble grano: el disco ruidoso y las gotas de la segunda punta (que se acumulan en `stroke_dual`).
-        let dual = (opts.brush == BrushType::DualGrain).then(|| DualDab::new(self.stroke_dab, opts.normal, radius));
+        let dual = (opts.brush == BrushType::DualGrain)
+            .then(|| DualDab::new(self.stroke_dab, opts.normal, radius));
         // La dispersion del pastel desplaza el centro de la punta: los texeles se revisan un poco mas lejos. Las gotas
         // del Doble grano llegan todavia mas lejos (`DualDab::limit`).
         let limit = match &dual {
@@ -376,7 +387,9 @@ impl StrokeState {
         let mut rect: Option<Rect> = None;
         for t in tris {
             let uv = wrapped_uv(&t.uv);
-            let Some(bx) = tri_box(self.size, &uv) else { continue };
+            let Some(bx) = tri_box(self.size, &uv) else {
+                continue;
+            };
             let a = (uv[0][0] * max, uv[0][1] * max);
             let b = (uv[1][0] * max, uv[1][1] * max);
             let c = (uv[2][0] * max, uv[2][1] * max);
@@ -385,7 +398,9 @@ impl StrokeState {
             if det.abs() < 1e-6 {
                 continue;
             }
-            let len = |p: (f32, f32), q: (f32, f32)| ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2)).sqrt().max(1e-6);
+            let len = |p: (f32, f32), q: (f32, f32)| {
+                ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2)).sqrt().max(1e-6)
+            };
             let area2 = det.abs();
             let h = [area2 / len(b, c), area2 / len(c, a), area2 / len(a, b)];
             rect = Some(union(rect, bx));
@@ -394,7 +409,17 @@ impl StrokeState {
             let (k0x, k0y) = ((b.1 - c.1) / det, (c.0 - b.0) / det);
             let (k1x, k1y) = ((c.1 - a.1) / det, (a.0 - c.0) / det);
             let (gx, gy) = (e0 * k0x + e1 * k1x, e0 * k0y + e1 * k1y);
-            preps.push(Prep { p: t.p, a, b, c, det, h, bx, gx, gy });
+            preps.push(Prep {
+                p: t.p,
+                a,
+                b,
+                c,
+                det,
+                h,
+                bx,
+                gx,
+                gy,
+            });
         }
         let rect = rect?;
         // Rectangulo de los texeles que de verdad cambiaron (el que hay que recomponer y subir a la GPU).
@@ -407,7 +432,9 @@ impl StrokeState {
             for pr in &preps {
                 let (_, y0, _, y1) = pr.bx;
                 for y in y0..=y1 {
-                    let Some((xa, xb)) = row_span(pr, y, center, limit) else { continue };
+                    let Some((xa, xb)) = row_span(pr, y, center, limit) else {
+                        continue;
+                    };
                     for x in xa..=xb {
                         let idx = (y * self.size + x) as usize;
                         if pass == 1 && self.dab_mark[idx] == self.stroke_dab {
@@ -418,7 +445,9 @@ impl StrokeState {
                         let ok = if pass == 0 {
                             w0 >= -INSIDE_EPS && w1 >= -INSIDE_EPS && w2 >= -INSIDE_EPS
                         } else {
-                            w0 * pr.h[0] >= -PAD_TEXELS && w1 * pr.h[1] >= -PAD_TEXELS && w2 * pr.h[2] >= -PAD_TEXELS
+                            w0 * pr.h[0] >= -PAD_TEXELS
+                                && w1 * pr.h[1] >= -PAD_TEXELS
+                                && w2 * pr.h[2] >= -PAD_TEXELS
                         };
                         if !ok {
                             continue;
@@ -440,7 +469,9 @@ impl StrokeState {
                         let (cov, sub, mul, hard) = match (&chalk, &dry, &dual) {
                             // Tiza: punta de bitmap girada en el plano de la superficie; el papel (anclado al modelo)
                             // multiplica despues, sobre la cobertura acumulada.
-                            (Some(c), _, _) => (c.tip(pos - center), 0.0, paper_mask(pos, x, y), None),
+                            (Some(c), _, _) => {
+                                (c.tip(pos - center), 0.0, paper_mask(pos, x, y), None)
+                            }
                             // Medio seco: la punta da la cobertura; el papel o lienzo resta despues, al acumular.
                             (_, Some((kind, dd)), _) => {
                                 let (a, c) = dd.alpha_color(pos - center, color);
@@ -468,7 +499,12 @@ impl StrokeState {
                                 // Crayon de cera: su papel (modo HardMix, `each_tip`) se mezcla con la cobertura de ESTE
                                 // toque, antes de acumularla (`dry_mezcla_toque`); para los demas pinceles no cambia nada.
                                 let a = dry_mezcla_toque(*kind, a, self.stroke_dab, pos, x, y);
-                                (a, dry_subtract(*kind, pos, x, y), mul, dry_hardmix(*kind, x, y))
+                                (
+                                    a,
+                                    dry_subtract(*kind, pos, x, y),
+                                    mul,
+                                    dry_hardmix(*kind, x, y),
+                                )
                             }
                             // Doble grano: las gotas se acumulan en el trazo (`c + v * (1 - c)`, aunque el disco no
                             // llegue a este texel en este toque) y el disco ruidoso solo pinta donde ya hay gotas
@@ -484,7 +520,17 @@ impl StrokeState {
                         if cov * opacity <= 0.0 {
                             continue;
                         }
-                        if self.apply_texel(pixels, idx, cov, opacity, texel_color, sub, mul, hard, opts) {
+                        if self.apply_texel(
+                            pixels,
+                            idx,
+                            cov,
+                            opacity,
+                            texel_color,
+                            sub,
+                            mul,
+                            hard,
+                            opts,
+                        ) {
                             changed = Some(union(changed, (x, y, x, y)));
                         }
                     }
@@ -542,7 +588,11 @@ mod tests {
     use super::*;
 
     fn layer(size: u32, rgba: [u8; 4]) -> Vec<u8> {
-        rgba.iter().copied().cycle().take((size * size * 4) as usize).collect()
+        rgba.iter()
+            .copied()
+            .cycle()
+            .take((size * size * 4) as usize)
+            .collect()
     }
 
     fn px(p: &[u8], size: u32, x: u32, y: u32) -> [u8; 4] {
@@ -557,7 +607,18 @@ mod tests {
         s.begin_stroke();
         // Centro en el texel (32, 32): u = v = 32/63.
         let c = 32.0 / 63.0;
-        let r = s.dab(&mut pixels, c, c, 10.0, [0, 0, 0], 1.0, DabOptions { erase: true, ..Default::default() });
+        let r = s.dab(
+            &mut pixels,
+            c,
+            c,
+            10.0,
+            [0, 0, 0],
+            1.0,
+            DabOptions {
+                erase: true,
+                ..Default::default()
+            },
+        );
         assert!(r.is_some());
         assert_eq!(px(&pixels, 64, 32, 32), [200, 10, 10, 0]);
         // Fuera del radio no cambia nada.
@@ -570,7 +631,19 @@ mod tests {
         let mut pixels = layer(64, [200, 10, 10, 255]);
         s.begin_stroke();
         let c = 32.0 / 63.0;
-        s.dab(&mut pixels, c, c, 10.0, [0, 0, 0], 1.0, DabOptions { alpha_lock: true, erase: true, ..Default::default() });
+        s.dab(
+            &mut pixels,
+            c,
+            c,
+            10.0,
+            [0, 0, 0],
+            1.0,
+            DabOptions {
+                alpha_lock: true,
+                erase: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(px(&pixels, 64, 32, 32), [200, 10, 10, 255]);
     }
 
@@ -607,11 +680,22 @@ mod tests {
     /// Cuadrado de 2x2 unidades en el plano z = 0, cortado en dos triangulos. En la textura de 64 ocupa 0.25 de ancho
     /// y 0.5 de alto: el UV esta estirado (2 veces mas texeles por unidad en vertical que en horizontal).
     fn cuadrado() -> [SurfTri; 2] {
-        let p = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 2.0, 0.0), Vec3::new(0.0, 2.0, 0.0)];
+        let p = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ];
         let uv = [[0.25, 0.25], [0.5, 0.25], [0.5, 0.75], [0.25, 0.75]];
         [
-            SurfTri { p: [p[0], p[1], p[2]], uv: [uv[0], uv[1], uv[2]] },
-            SurfTri { p: [p[0], p[2], p[3]], uv: [uv[0], uv[2], uv[3]] },
+            SurfTri {
+                p: [p[0], p[1], p[2]],
+                uv: [uv[0], uv[1], uv[2]],
+            },
+            SurfTri {
+                p: [p[0], p[2], p[3]],
+                uv: [uv[0], uv[2], uv[3]],
+            },
         ]
     }
 
@@ -622,7 +706,18 @@ mod tests {
         s.begin_stroke();
         let (center, radius) = (Vec3::new(1.0, 1.0, 0.0), 0.5);
         let tris = cuadrado();
-        assert!(s.dab_surface(&mut pixels, &tris, center, radius, [255, 0, 0], 1.0, DabOptions::default()).is_some());
+        assert!(
+            s.dab_surface(
+                &mut pixels,
+                &tris,
+                center,
+                radius,
+                [255, 0, 0],
+                1.0,
+                DabOptions::default()
+            )
+            .is_some()
+        );
         let (mut pintados, mut revisados) = (0, 0);
         for ty in 0..64u32 {
             for tx in 0..64u32 {
@@ -638,7 +733,11 @@ mod tests {
                     continue;
                 }
                 let a = px(&pixels, 64, tx, ty)[3];
-                assert_eq!(a > 0, d < radius, "texel ({tx},{ty}) a distancia {d}: alfa {a}");
+                assert_eq!(
+                    a > 0,
+                    d < radius,
+                    "texel ({tx},{ty}) a distancia {d}: alfa {a}"
+                );
                 revisados += 1;
                 if a > 0 {
                     pintados += 1;
@@ -646,7 +745,10 @@ mod tests {
             }
         }
         // La prueba cubre texeles pintados y sin pintar.
-        assert!(pintados > 20 && revisados > pintados + 20, "pintados {pintados} de {revisados}");
+        assert!(
+            pintados > 20 && revisados > pintados + 20,
+            "pintados {pintados} de {revisados}"
+        );
     }
 
     #[test]
@@ -655,7 +757,15 @@ mod tests {
         let mut pixels = layer(64, [0, 0, 0, 0]);
         s.begin_stroke();
         // Toque pegado al borde izquierdo del cuadrado (x = 0 esta en el texel 15.75).
-        let r = s.dab_surface(&mut pixels, &cuadrado(), Vec3::new(0.1, 1.0, 0.0), 0.5, [255, 0, 0], 1.0, DabOptions::default());
+        let r = s.dab_surface(
+            &mut pixels,
+            &cuadrado(),
+            Vec3::new(0.1, 1.0, 0.0),
+            0.5,
+            [255, 0, 0],
+            1.0,
+            DabOptions::default(),
+        );
         assert!(r.is_some());
         // El texel 15 queda fuera de la isla por 0.75 texeles: se rellena. El 10 queda lejos: no.
         assert!(px(&pixels, 64, 15, 31)[3] > 0);
@@ -670,16 +780,33 @@ mod tests {
         let tris = cuadrado();
         let previo = surface_rect(64, &tris).unwrap();
         let r = s
-            .dab_surface(&mut pixels, &tris, Vec3::new(1.0, 1.0, 0.0), 0.5, [255, 0, 0], 1.0, DabOptions::default())
+            .dab_surface(
+                &mut pixels,
+                &tris,
+                Vec3::new(1.0, 1.0, 0.0),
+                0.5,
+                [255, 0, 0],
+                1.0,
+                DabOptions::default(),
+            )
             .unwrap();
         // Cabe en el rectangulo previo (el de las baldosas de deshacer) y es mas chico (el pincel no cubre toda la caja).
-        assert!(r.0 >= previo.0 && r.1 >= previo.1 && r.2 <= previo.2 && r.3 <= previo.3, "{r:?} no cabe en {previo:?}");
-        assert!((r.2 - r.0) < (previo.2 - previo.0) || (r.3 - r.1) < (previo.3 - previo.1), "{r:?} = {previo:?}");
+        assert!(
+            r.0 >= previo.0 && r.1 >= previo.1 && r.2 <= previo.2 && r.3 <= previo.3,
+            "{r:?} no cabe en {previo:?}"
+        );
+        assert!(
+            (r.2 - r.0) < (previo.2 - previo.0) || (r.3 - r.1) < (previo.3 - previo.1),
+            "{r:?} = {previo:?}"
+        );
         // Todo lo que se pinto esta dentro del rectangulo devuelto (es lo que se recompone y sube a la GPU).
         for y in 0..64u32 {
             for x in 0..64u32 {
                 if px(&pixels, 64, x, y)[3] > 0 {
-                    assert!(x >= r.0 && x <= r.2 && y >= r.1 && y <= r.3, "texel ({x},{y}) fuera de {r:?}");
+                    assert!(
+                        x >= r.0 && x <= r.2 && y >= r.1 && y <= r.3,
+                        "texel ({x},{y}) fuera de {r:?}"
+                    );
                 }
             }
         }
@@ -688,13 +815,28 @@ mod tests {
     #[test]
     fn un_triangulo_enorme_se_pinta_solo_donde_llega_el_pincel() {
         // Un triangulo que ocupa casi toda la textura de 1024: el toque de radio 0.1 solo toca una zona chica.
-        let p = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0)];
-        let tri = SurfTri { p, uv: [[0.05, 0.05], [0.95, 0.05], [0.05, 0.95]] };
+        let p = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ];
+        let tri = SurfTri {
+            p,
+            uv: [[0.05, 0.05], [0.95, 0.05], [0.05, 0.95]],
+        };
         let mut s = StrokeState::new(TEX_SIZE);
         let mut pixels = layer(TEX_SIZE, [0, 0, 0, 0]);
         s.begin_stroke();
         let r = s
-            .dab_surface(&mut pixels, &[tri], Vec3::new(0.5, 0.5, 0.0), 0.1, [255, 0, 0], 1.0, DabOptions::default())
+            .dab_surface(
+                &mut pixels,
+                &[tri],
+                Vec3::new(0.5, 0.5, 0.0),
+                0.1,
+                [255, 0, 0],
+                1.0,
+                DabOptions::default(),
+            )
             .unwrap();
         let (w, h) = (r.2 - r.0 + 1, r.3 - r.1 + 1);
         // El radio 0.1 de 2 unidades son ~46 texeles: la zona cambiada mide ~92 de lado, no ~900.
@@ -714,7 +856,15 @@ mod tests {
         let mut s = StrokeState::new(64);
         let mut pixels = layer(64, [0, 0, 0, 0]);
         s.begin_stroke();
-        s.dab_surface(&mut pixels, &tris, Vec3::new(1.0, 1.0, 0.0), 0.6, [255, 0, 0], 1.0, DabOptions::default());
+        s.dab_surface(
+            &mut pixels,
+            &tris,
+            Vec3::new(1.0, 1.0, 0.0),
+            0.6,
+            [255, 0, 0],
+            1.0,
+            DabOptions::default(),
+        );
         let pintado = |desde: u32, hasta: u32| {
             (0..64u32).any(|ty| (desde..hasta).any(|tx| px(&pixels, 64, tx, ty)[3] > 0))
         };
@@ -726,30 +876,67 @@ mod tests {
     #[test]
     fn el_borrador_funciona_en_la_superficie_y_respeta_el_bloqueo_alfa() {
         let tris = cuadrado();
-        let opts = DabOptions { erase: true, ..Default::default() };
+        let opts = DabOptions {
+            erase: true,
+            ..Default::default()
+        };
         let mut s = StrokeState::new(64);
         let mut pixels = layer(64, [200, 10, 10, 255]);
         s.begin_stroke();
-        s.dab_surface(&mut pixels, &tris, Vec3::new(1.0, 1.0, 0.0), 0.5, [0, 0, 0], 1.0, opts);
+        s.dab_surface(
+            &mut pixels,
+            &tris,
+            Vec3::new(1.0, 1.0, 0.0),
+            0.5,
+            [0, 0, 0],
+            1.0,
+            opts,
+        );
         // El texel del centro (23.6, 31.5) queda borrado.
         assert_eq!(px(&pixels, 64, 24, 31)[3], 0);
         // Con bloqueo alfa no se borra nada.
         let mut s = StrokeState::new(64);
         let mut pixels = layer(64, [200, 10, 10, 255]);
         s.begin_stroke();
-        s.dab_surface(&mut pixels, &tris, Vec3::new(1.0, 1.0, 0.0), 0.5, [0, 0, 0], 1.0, DabOptions { alpha_lock: true, ..opts });
+        s.dab_surface(
+            &mut pixels,
+            &tris,
+            Vec3::new(1.0, 1.0, 0.0),
+            0.5,
+            [0, 0, 0],
+            1.0,
+            DabOptions {
+                alpha_lock: true,
+                ..opts
+            },
+        );
         assert_eq!(px(&pixels, 64, 24, 31)[3], 255);
     }
 
     #[test]
     fn la_tiza_pinta_con_grano_y_solo_dentro_del_radio() {
         let tris = cuadrado();
-        let opts = DabOptions { brush: BrushType::Chalk, normal: Vec3::Z, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Chalk,
+            normal: Vec3::Z,
+            ..Default::default()
+        };
         let mut s = StrokeState::new(64);
         let mut pixels = layer(64, [0, 0, 0, 0]);
         s.begin_stroke();
         let (center, radius) = (Vec3::new(1.0, 1.0, 0.0), 0.8);
-        assert!(s.dab_surface(&mut pixels, &tris, center, radius, [255, 255, 255], 1.0, opts).is_some());
+        assert!(
+            s.dab_surface(
+                &mut pixels,
+                &tris,
+                center,
+                radius,
+                [255, 255, 255],
+                1.0,
+                opts
+            )
+            .is_some()
+        );
         let (mut alfas, mut lejos) = (Vec::new(), 0);
         for ty in 0..64u32 {
             for tx in 0..64u32 {
@@ -779,12 +966,24 @@ mod tests {
     #[test]
     fn la_tiza_con_el_mismo_toque_da_el_mismo_resultado() {
         let tris = cuadrado();
-        let opts = DabOptions { brush: BrushType::Chalk, normal: Vec3::Z, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Chalk,
+            normal: Vec3::Z,
+            ..Default::default()
+        };
         let pintar = || {
             let mut s = StrokeState::new(64);
             let mut pixels = layer(64, [0, 0, 0, 0]);
             s.begin_stroke();
-            s.dab_surface(&mut pixels, &tris, Vec3::new(1.0, 1.0, 0.0), 0.8, [255, 0, 0], 1.0, opts);
+            s.dab_surface(
+                &mut pixels,
+                &tris,
+                Vec3::new(1.0, 1.0, 0.0),
+                0.8,
+                [255, 0, 0],
+                1.0,
+                opts,
+            );
             pixels
         };
         assert_eq!(pintar(), pintar());
@@ -794,12 +993,27 @@ mod tests {
     fn el_punteado_pinta_gotas_sueltas_y_no_pasa_de_su_alcance() {
         use crate::pinceles::STIPPLE_REACH;
         let tris = cuadrado();
-        let opts = DabOptions { brush: BrushType::Stipple, normal: Vec3::Z, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Stipple,
+            normal: Vec3::Z,
+            ..Default::default()
+        };
         let mut s = StrokeState::new(64);
         let mut pixels = layer(64, [0, 0, 0, 0]);
         s.begin_stroke();
         let (center, radius) = (Vec3::new(1.0, 1.0, 0.0), 0.5);
-        assert!(s.dab_surface(&mut pixels, &tris, center, radius, [255, 255, 255], 1.0, opts).is_some());
+        assert!(
+            s.dab_surface(
+                &mut pixels,
+                &tris,
+                center,
+                radius,
+                [255, 255, 255],
+                1.0,
+                opts
+            )
+            .is_some()
+        );
         // Lo mas lejos que puede llegar un toque: su radio mas lo que se desplaza su centro.
         let alcance = radius * (1.0 + STIPPLE_REACH);
         let (mut pintados, mut en_zona, mut lejos) = (0, 0, 0);
@@ -826,18 +1040,33 @@ mod tests {
         assert_eq!(lejos, 0, "pinto mas alla del alcance");
         assert!(pintados > 5, "pinto pocos texeles: {pintados}");
         // Son gotas: quedan huecos sin pintar dentro de la zona (un disco sin huecos pintaria todo).
-        assert!(pintados < en_zona, "pintados {pintados} de {en_zona}: sin huecos");
+        assert!(
+            pintados < en_zona,
+            "pintados {pintados} de {en_zona}: sin huecos"
+        );
     }
 
     #[test]
     fn el_punteado_con_el_mismo_toque_da_el_mismo_resultado() {
         let tris = cuadrado();
-        let opts = DabOptions { brush: BrushType::Stipple, normal: Vec3::Z, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Stipple,
+            normal: Vec3::Z,
+            ..Default::default()
+        };
         let pintar = || {
             let mut s = StrokeState::new(64);
             let mut pixels = layer(64, [0, 0, 0, 0]);
             s.begin_stroke();
-            s.dab_surface(&mut pixels, &tris, Vec3::new(1.0, 1.0, 0.0), 0.5, [255, 0, 0], 1.0, opts);
+            s.dab_surface(
+                &mut pixels,
+                &tris,
+                Vec3::new(1.0, 1.0, 0.0),
+                0.5,
+                [255, 0, 0],
+                1.0,
+                opts,
+            );
             pixels
         };
         assert_eq!(pintar(), pintar());
@@ -847,21 +1076,30 @@ mod tests {
     fn la_esponja_empieza_de_cero_su_profundidad_en_una_pasada_nueva() {
         let tris = cuadrado();
         // Sin techo: un hueco de mas de 3 toques empieza una pasada nueva.
-        let opts = DabOptions { brush: BrushType::InkSponge, normal: Vec3::Z, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::InkSponge,
+            normal: Vec3::Z,
+            ..Default::default()
+        };
         let (centro, lejos, radio) = (Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.3, 0.3, 0.0), 0.5);
         let mut s = StrokeState::new(64);
         let mut pixels = layer(64, [0, 0, 0, 0]);
         s.begin_stroke();
         s.dab_surface(&mut pixels, &tris, centro, radio, [255, 0, 0], 1.0, opts);
         let antes = s.stroke_depth.clone();
-        assert!(antes.iter().any(|d| *d > 0.9), "la primera pasada no dejo profundidad");
+        assert!(
+            antes.iter().any(|d| *d > 0.9),
+            "la primera pasada no dejo profundidad"
+        );
         for _ in 0..5 {
             s.dab_surface(&mut pixels, &tris, lejos, 0.1, [255, 0, 0], 1.0, opts);
         }
         s.dab_surface(&mut pixels, &tris, centro, radio, [255, 0, 0], 1.0, opts);
         // Cada toque gira distinto: si la profundidad no se reiniciara, solo podria subir (es el maximo de las puntas).
         // Al reiniciarse, donde la segunda punta toca menos que la primera la profundidad baja.
-        let baja = (0..antes.len()).any(|i| antes[i] > 0.9 && s.stroke_depth[i] > 0.0 && s.stroke_depth[i] < antes[i] - 0.2);
+        let baja = (0..antes.len()).any(|i| {
+            antes[i] > 0.9 && s.stroke_depth[i] > 0.0 && s.stroke_depth[i] < antes[i] - 0.2
+        });
         assert!(baja, "la profundidad no se reinicio en la pasada nueva");
     }
 
@@ -871,7 +1109,11 @@ mod tests {
         let mut pixels = layer(64, [0, 0, 0, 0]);
         s.begin_stroke();
         let c = 32.0 / 63.0;
-        let opts = DabOptions { brush: BrushType::Airbrush, ceiling, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Airbrush,
+            ceiling,
+            ..Default::default()
+        };
         for _ in 0..n {
             s.dab(&mut pixels, c, c, 10.0, [255, 0, 0], 1.0, opts);
         }
@@ -901,7 +1143,10 @@ mod tests {
         let mut pixels = layer(64, [0, 0, 0, 0]);
         s.begin_stroke();
         let c = 32.0 / 63.0;
-        let opts = DabOptions { ceiling: true, ..Default::default() };
+        let opts = DabOptions {
+            ceiling: true,
+            ..Default::default()
+        };
         for _ in 0..8 {
             s.dab(&mut pixels, c, c, 10.0, [255, 0, 0], 0.5, opts);
         }
@@ -915,7 +1160,12 @@ mod tests {
         let mut pixels = layer(64, [0, 0, 0, 0]);
         s.begin_stroke();
         let c = 32.0 / 63.0;
-        let opts = DabOptions { brush: BrushType::Airbrush, ceiling: true, flow, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Airbrush,
+            ceiling: true,
+            flow,
+            ..Default::default()
+        };
         for _ in 0..n {
             s.dab(&mut pixels, c, c, 10.0, [255, 0, 0], 1.0, opts);
         }
@@ -932,7 +1182,11 @@ mod tests {
     #[test]
     fn con_flujo_bajo_cada_toque_suma_poco_y_se_acerca_al_techo() {
         // Cobertura del texel = 0.25 (aerografo) * 0.5 (flujo) = 0.125; luego c + 0.125 * (1 - c) = 0.234...
-        let (a1, a2, a40) = (alfa_con_flujo(1, 0.5), alfa_con_flujo(2, 0.5), alfa_con_flujo(40, 0.5));
+        let (a1, a2, a40) = (
+            alfa_con_flujo(1, 0.5),
+            alfa_con_flujo(2, 0.5),
+            alfa_con_flujo(40, 0.5),
+        );
         assert!((a1 as i32 - 32).abs() <= 1, "alfa = {a1}");
         assert!((a2 as i32 - 60).abs() <= 1, "alfa = {a2}");
         // Sigue subiendo hacia la opacidad (1.0) sin pasarla.
@@ -944,7 +1198,10 @@ mod tests {
         let mut s = StrokeState::new(64);
         let mut pixels = layer(64, [0, 0, 0, 0]);
         let c = 32.0 / 63.0;
-        let opts = DabOptions { ceiling: true, ..Default::default() };
+        let opts = DabOptions {
+            ceiling: true,
+            ..Default::default()
+        };
         s.begin_stroke();
         s.dab(&mut pixels, c, c, 10.0, [255, 0, 0], 0.5, opts);
         s.begin_stroke();
@@ -960,7 +1217,10 @@ mod tests {
             let mut pixels = layer(64, [0, 0, 0, 0]);
             s.begin_stroke();
             let (centro, lejos) = (32.0 / 63.0, 10.0 / 63.0);
-            let opts = DabOptions { ceiling, ..Default::default() };
+            let opts = DabOptions {
+                ceiling,
+                ..Default::default()
+            };
             s.dab(&mut pixels, centro, centro, 10.0, [255, 0, 0], 0.5, opts);
             // Un hueco de mas de 3 toques en otro sitio.
             for _ in 0..5 {
@@ -978,7 +1238,12 @@ mod tests {
     /// Mide el coste de un toque (pintar + componer) sobre modelos de prueba, con la textura de tamano real. No es una
     /// prueba de correccion: se corre a mano con
     /// `cargo test --release medir_ -- --ignored --nocapture` (o sin `--release` para ver el perfil de `cargo run`).
-    fn medir(nombre: &str, centros: &[Vec3], radio: f32, tris_de: &dyn Fn(Vec3, f32) -> Vec<SurfTri>) {
+    fn medir(
+        nombre: &str,
+        centros: &[Vec3],
+        radio: f32,
+        tris_de: &dyn Fn(Vec3, f32) -> Vec<SurfTri>,
+    ) {
         use crate::layers::LayerStack;
         let mut stack = LayerStack::new(TEX_SIZE);
         let mut s = StrokeState::new(TEX_SIZE);
@@ -987,7 +1252,15 @@ mod tests {
         for &c in centros {
             let tris = tris_de(c, radio);
             let a = std::time::Instant::now();
-            let r = s.dab_surface(&mut stack.layers[0].pixels, &tris, c, radio, [255, 0, 0], 1.0, DabOptions::default());
+            let r = s.dab_surface(
+                &mut stack.layers[0].pixels,
+                &tris,
+                c,
+                radio,
+                [255, 0, 0],
+                1.0,
+                DabOptions::default(),
+            );
             t_pintar += a.elapsed().as_micros();
             let b = std::time::Instant::now();
             if let Some(r) = r {
@@ -1018,8 +1291,9 @@ mod tests {
         let radio = 18.0 * 4.5 / 450.0;
         // Un arco de 150 toques separados un cuarto de radio.
         let paso = radio * 0.25 / 2.25;
-        let centros: Vec<Vec3> =
-            (0..150).map(|i| 2.25 * Vec3::new((i as f32 * paso).sin(), -(i as f32 * paso).cos(), 0.0)).collect();
+        let centros: Vec<Vec3> = (0..150)
+            .map(|i| 2.25 * Vec3::new((i as f32 * paso).sin(), -(i as f32 * paso).cos(), 0.0))
+            .collect();
         medir("esfera 48x24", &centros, radio, &|c, r| {
             let mut near = Vec::new();
             bvh.query_sphere(c, r, &mut near);
@@ -1036,20 +1310,38 @@ mod tests {
     #[ignore]
     fn medir_toque_en_triangulos_grandes() {
         // Un cuadrado de 2x2 que ocupa casi toda la textura: sus dos triangulos tienen cajas de ~0.4 millones de texeles.
-        let p = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 2.0, 0.0), Vec3::new(0.0, 2.0, 0.0)];
+        let p = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ];
         let uv = [[0.05, 0.05], [0.95, 0.05], [0.95, 0.95], [0.05, 0.95]];
         let tris = vec![
-            SurfTri { p: [p[0], p[1], p[2]], uv: [uv[0], uv[1], uv[2]] },
-            SurfTri { p: [p[0], p[2], p[3]], uv: [uv[0], uv[2], uv[3]] },
+            SurfTri {
+                p: [p[0], p[1], p[2]],
+                uv: [uv[0], uv[1], uv[2]],
+            },
+            SurfTri {
+                p: [p[0], p[2], p[3]],
+                uv: [uv[0], uv[2], uv[3]],
+            },
         ];
-        let centros: Vec<Vec3> = (0..60).map(|i| Vec3::new(0.5 + i as f32 * 0.02, 1.0, 0.0)).collect();
+        let centros: Vec<Vec3> = (0..60)
+            .map(|i| Vec3::new(0.5 + i as f32 * 0.02, 1.0, 0.0))
+            .collect();
         medir("cuadrado grande", &centros, 0.1, &|_, _| tris.clone());
     }
 
     #[test]
     fn con_techo_la_tiza_conserva_el_grano_del_papel_aunque_se_acumulen_toques() {
         let tris = cuadrado();
-        let opts = DabOptions { brush: BrushType::Chalk, normal: Vec3::Z, ceiling: true, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Chalk,
+            normal: Vec3::Z,
+            ceiling: true,
+            ..Default::default()
+        };
         let mut s = StrokeState::new(64);
         let mut pixels = layer(64, [0, 0, 0, 0]);
         s.begin_stroke();
@@ -1077,12 +1369,25 @@ mod tests {
         let tris = cuadrado();
         let (center, radius, opacity) = (Vec3::new(1.0, 1.0, 0.0), 0.8, 0.6);
         let pintar = |toques: usize| {
-            let opts = DabOptions { brush: BrushType::Chalk, normal: Vec3::Z, ceiling: true, ..Default::default() };
+            let opts = DabOptions {
+                brush: BrushType::Chalk,
+                normal: Vec3::Z,
+                ceiling: true,
+                ..Default::default()
+            };
             let mut s = StrokeState::new(64);
             let mut pixels = layer(64, [0, 0, 0, 0]);
             s.begin_stroke();
             for _ in 0..toques {
-                s.dab_surface(&mut pixels, &tris, center, radius, [255, 255, 255], opacity, opts);
+                s.dab_surface(
+                    &mut pixels,
+                    &tris,
+                    center,
+                    radius,
+                    [255, 255, 255],
+                    opacity,
+                    opts,
+                );
             }
             let alfas: Vec<u32> = pixels.chunks(4).map(|p| p[3] as u32).collect();
             (alfas.iter().sum::<u32>(), *alfas.iter().max().unwrap())

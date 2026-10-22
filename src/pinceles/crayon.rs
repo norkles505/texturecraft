@@ -89,7 +89,11 @@ fn construir() -> Punta {
             let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
             // 1 = el alcance de la punta.
             let rn = (dx * dx + dy * dy).sqrt() / c;
-            data.push(if rn >= 1.0 { 0.0 } else { perfil(rn * TIP_REACH) });
+            data.push(if rn >= 1.0 {
+                0.0
+            } else {
+                perfil(rn * TIP_REACH)
+            });
         }
     }
     Punta::new(data)
@@ -143,7 +147,11 @@ pub(super) fn hard_mix_toque(v: f32, t: f32, d: f32) -> f32 {
 
 /// La cobertura `v` del toque `dab` en el texel `(tx, ty)` (en la posicion `pos` del modelo) ya mezclada con su papel.
 pub(super) fn mezcla(v: f32, dab: u32, pos: Vec3, tx: u32, ty: u32) -> f32 {
-    hard_mix_toque(v, paper_value(pos, tx, ty, CRAYON_PAPER_SALT), profundidad(dab))
+    hard_mix_toque(
+        v,
+        paper_value(pos, tx, ty, CRAYON_PAPER_SALT),
+        profundidad(dab),
+    )
 }
 
 #[cfg(test)]
@@ -186,12 +194,26 @@ mod tests {
                 .collect();
             v.iter().sum::<f32>() / v.len() as f32
         };
-        let medias = [anillo(0.0, 0.3), anillo(0.6, 0.7), anillo(0.8, 0.9), anillo(0.95, 1.0)];
-        assert!(medias.windows(2).all(|w| w[0] >= w[1]), "no baja hacia afuera: {medias:?}");
-        assert!(medias[1] > medias[2] && medias[2] > medias[3], "el hombro no baja: {medias:?}");
+        let medias = [
+            anillo(0.0, 0.3),
+            anillo(0.6, 0.7),
+            anillo(0.8, 0.9),
+            anillo(0.95, 1.0),
+        ];
+        assert!(
+            medias.windows(2).all(|w| w[0] >= w[1]),
+            "no baja hacia afuera: {medias:?}"
+        );
+        assert!(
+            medias[1] > medias[2] && medias[2] > medias[3],
+            "el hombro no baja: {medias:?}"
+        );
         // En el radio del pincel (1 / TIP_REACH del alcance) vale `exp(-(0.135 / 0.13)^2)` = 0.34.
         let en_radio = a.sample(0.5 + 0.5 / TIP_REACH, 0.5);
-        assert!((en_radio - 0.34).abs() < 0.03, "en el radio vale {en_radio}");
+        assert!(
+            (en_radio - 0.34).abs() < 0.03,
+            "en el radio vale {en_radio}"
+        );
     }
 
     #[test]
@@ -207,7 +229,11 @@ mod tests {
             distintas.insert((d * 10_000.0) as i32);
         }
         assert!(lo < 0.66 && hi > 0.87, "casi no varia: de {lo} a {hi}");
-        assert!(distintas.len() > 300, "los toques se repiten: {} valores", distintas.len());
+        assert!(
+            distintas.len() > 300,
+            "los toques se repiten: {} valores",
+            distintas.len()
+        );
     }
 
     #[test]
@@ -241,7 +267,11 @@ mod tests {
         assert_eq!(d.roundness, 0.7);
         assert_eq!(d.shift, Vec3::ZERO);
         assert!(d.follaje.is_none());
-        assert!((d.reach() - CRAYON_REACH * radio).abs() < 1e-4, "alcance {}", d.reach());
+        assert!(
+            (d.reach() - CRAYON_REACH * radio).abs() < 1e-4,
+            "alcance {}",
+            d.reach()
+        );
         // Sin azar de forma: todos los toques son iguales (la profundidad del papel es otra cosa).
         let p = Vec3::new(0.3, 0.9, 0.0);
         for dab in 1..50 {
@@ -278,7 +308,16 @@ mod tests {
         }
         // El crayon la cambia (con v = 0.5 nunca queda igual: sube o baja) y la deja en 0..1.
         let cambia = (0..200u32)
-            .map(|i| dry_mezcla_toque(DryKind::Crayon, 0.5, 7, Vec3::new(i as f32 * 0.013, 0.3, i as f32 * 0.007), i, 5))
+            .map(|i| {
+                dry_mezcla_toque(
+                    DryKind::Crayon,
+                    0.5,
+                    7,
+                    Vec3::new(i as f32 * 0.013, 0.3, i as f32 * 0.007),
+                    i,
+                    5,
+                )
+            })
             .inspect(|r| assert!((0.0..=1.0).contains(r), "{r}"))
             .filter(|r| *r != 0.5)
             .count();
@@ -290,11 +329,22 @@ mod tests {
 
     /// Cuadrado de 4 x 4 unidades que cubre toda la textura de 256 (64 texeles por unidad).
     fn cuadrado() -> [SurfTri; 2] {
-        let p = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(4.0, 0.0, 0.0), Vec3::new(4.0, 4.0, 0.0), Vec3::new(0.0, 4.0, 0.0)];
+        let p = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(4.0, 4.0, 0.0),
+            Vec3::new(0.0, 4.0, 0.0),
+        ];
         let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         [
-            SurfTri { p: [p[0], p[1], p[2]], uv: [uv[0], uv[1], uv[2]] },
-            SurfTri { p: [p[0], p[2], p[3]], uv: [uv[0], uv[2], uv[3]] },
+            SurfTri {
+                p: [p[0], p[1], p[2]],
+                uv: [uv[0], uv[1], uv[2]],
+            },
+            SurfTri {
+                p: [p[0], p[2], p[3]],
+                uv: [uv[0], uv[2], uv[3]],
+            },
         ]
     }
 
@@ -305,7 +355,14 @@ mod tests {
     /// Pinta toques en los `centros` (el trazo va en la direccion `dir`) y devuelve los pixeles de la capa.
     fn pintar(ceiling: bool, flow: f32, dir: Vec3, centros: &[Vec3]) -> Vec<u8> {
         let tris = cuadrado();
-        let opts = DabOptions { brush: BrushType::WaxCrayon, normal: Vec3::Z, dir, ceiling, flow, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::WaxCrayon,
+            normal: Vec3::Z,
+            dir,
+            ceiling,
+            flow,
+            ..Default::default()
+        };
         let mut s = StrokeState::new(256);
         let mut pixels = vec![0u8; 256 * 256 * 4];
         s.begin_stroke();
@@ -319,7 +376,10 @@ mod tests {
     fn texeles(pixels: &[u8]) -> impl Iterator<Item = (Vec3, &[u8])> {
         (0..256u32 * 256).map(move |i| {
             let (tx, ty) = (i % 256, i / 256);
-            (Vec3::new(tx as f32 / 255.0 * 4.0, ty as f32 / 255.0 * 4.0, 0.0), &pixels[i as usize * 4..i as usize * 4 + 4])
+            (
+                Vec3::new(tx as f32 / 255.0 * 4.0, ty as f32 / 255.0 * 4.0, 0.0),
+                &pixels[i as usize * 4..i as usize * 4 + 4],
+            )
         })
     }
 
@@ -344,51 +404,107 @@ mod tests {
                 if q[3] > 0 {
                     pintados += 1;
                     alfas.insert(q[3]);
-                    assert_eq!(&q[..3], &BASE, "ceiling {ceiling}: el color no es el del pincel");
+                    assert_eq!(
+                        &q[..3],
+                        &BASE,
+                        "ceiling {ceiling}: el color no es el del pincel"
+                    );
                     let d = p.distance(CENTRO);
-                    assert!(d < alcance + 0.02, "ceiling {ceiling}: pinto a {d}, mas alla del alcance {alcance}");
+                    assert!(
+                        d < alcance + 0.02,
+                        "ceiling {ceiling}: pinto a {d}, mas alla del alcance {alcance}"
+                    );
                 }
             }
-            assert!(pintados > 1000, "ceiling {ceiling}: pinto pocos texeles: {pintados}");
-            assert!(alfas.len() > 8, "ceiling {ceiling}: la opacidad es casi pareja: {} valores", alfas.len());
+            assert!(
+                pintados > 1000,
+                "ceiling {ceiling}: pinto pocos texeles: {pintados}"
+            );
+            assert!(
+                alfas.len() > 8,
+                "ceiling {ceiling}: la opacidad es casi pareja: {} valores",
+                alfas.len()
+            );
         }
     }
 
     #[test]
     fn la_punta_se_alarga_a_lo_largo_del_trazo() {
         let (ax, ay) = extension(&pintar(false, 1.0, Vec3::X, &[CENTRO]));
-        assert!(ax > ay * 1.25, "con el trazo en X mide {ax} de ancho y {ay} de alto");
+        assert!(
+            ax > ay * 1.25,
+            "con el trazo en X mide {ax} de ancho y {ay} de alto"
+        );
         let (bx, by) = extension(&pintar(false, 1.0, Vec3::Y, &[CENTRO]));
-        assert!(by > bx * 1.25, "con el trazo en Y mide {bx} de ancho y {by} de alto");
+        assert!(
+            by > bx * 1.25,
+            "con el trazo en Y mide {bx} de ancho y {by} de alto"
+        );
     }
 
     #[test]
     fn el_papel_deja_huecos_en_el_interior_y_el_techo_los_rellena() {
         // Una linea de toques separados 0.16 del radio (el espaciado del pincel), de izquierda a derecha.
-        let linea: Vec<Vec3> = (0..40).map(|i| Vec3::new(0.8 + i as f32 * 0.16 * RADIO, 2.0, 0.0)).collect();
+        let linea: Vec<Vec3> = (0..40)
+            .map(|i| Vec3::new(0.8 + i as f32 * 0.16 * RADIO, 2.0, 0.0))
+            .collect();
         // El interior del trazo: donde cubren todos los toques que pueden llegar y la punta pinta del todo.
         let interior = |p: &[u8]| -> Vec<u8> {
-            texeles(p).filter(|(p, _)| (1.6..3.1).contains(&p.x) && (p.y - 2.0).abs() < 0.1).map(|(_, q)| q[3]).collect()
+            texeles(p)
+                .filter(|(p, _)| (1.6..3.1).contains(&p.x) && (p.y - 2.0).abs() < 0.1)
+                .map(|(_, q)| q[3])
+                .collect()
         };
         let sin_techo = interior(&pintar(false, 1.0, Vec3::X, &linea));
         let con_techo = interior(&pintar(true, 1.0, Vec3::X, &linea));
         let huecos = |v: &[u8]| v.iter().filter(|a| **a < 100).count();
         // Sin techo (el maximo de los toques): donde el papel vale 0 un toque deja `1 - profundidad`, a lo sumo 0.37
         // (94 de 255); en el resto, la punta llena pinta del todo. No hay valores intermedios.
-        assert!(sin_techo.iter().all(|a| *a <= 95 || *a >= 250), "valores intermedios: {:?}", sin_techo.iter().filter(|a| **a > 95 && **a < 250).collect::<Vec<_>>());
-        assert!(huecos(&sin_techo) > 20, "casi no hay huecos: {} de {}", huecos(&sin_techo), sin_techo.len());
+        assert!(
+            sin_techo.iter().all(|a| *a <= 95 || *a >= 250),
+            "valores intermedios: {:?}",
+            sin_techo
+                .iter()
+                .filter(|a| **a > 95 && **a < 250)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            huecos(&sin_techo) > 20,
+            "casi no hay huecos: {} de {}",
+            huecos(&sin_techo),
+            sin_techo.len()
+        );
         // Con techo (`c + v * (1 - c)`, como photocraft) los toques que se solapan rellenan esos huecos.
-        assert!(huecos(&con_techo) * 4 < huecos(&sin_techo), "el techo no rellena: {} contra {}", huecos(&con_techo), huecos(&sin_techo));
+        assert!(
+            huecos(&con_techo) * 4 < huecos(&sin_techo),
+            "el techo no rellena: {} contra {}",
+            huecos(&con_techo),
+            huecos(&sin_techo)
+        );
     }
 
     #[test]
     fn con_flujo_bajo_el_trazo_es_mas_tenue_y_el_mismo_trazo_da_lo_mismo() {
-        let linea: Vec<Vec3> = (0..20).map(|i| Vec3::new(1.0 + i as f32 * 0.16 * RADIO, 2.0, 0.0)).collect();
+        let linea: Vec<Vec3> = (0..20)
+            .map(|i| Vec3::new(1.0 + i as f32 * 0.16 * RADIO, 2.0, 0.0))
+            .collect();
         let suma = |p: &[u8]| p.chunks(4).map(|q| u32::from(q[3])).sum::<u32>();
         for ceiling in [false, true] {
-            let (pleno, bajo) = (pintar(ceiling, 1.0, Vec3::X, &linea), pintar(ceiling, 0.3, Vec3::X, &linea));
-            assert!(suma(&bajo) < suma(&pleno), "ceiling {ceiling}: {} no es menos que {}", suma(&bajo), suma(&pleno));
-            assert_eq!(pleno, pintar(ceiling, 1.0, Vec3::X, &linea), "ceiling {ceiling}: no es determinista");
+            let (pleno, bajo) = (
+                pintar(ceiling, 1.0, Vec3::X, &linea),
+                pintar(ceiling, 0.3, Vec3::X, &linea),
+            );
+            assert!(
+                suma(&bajo) < suma(&pleno),
+                "ceiling {ceiling}: {} no es menos que {}",
+                suma(&bajo),
+                suma(&pleno)
+            );
+            assert_eq!(
+                pleno,
+                pintar(ceiling, 1.0, Vec3::X, &linea),
+                "ceiling {ceiling}: no es determinista"
+            );
         }
     }
 }

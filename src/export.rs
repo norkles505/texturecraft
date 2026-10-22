@@ -18,12 +18,17 @@ pub fn flip_rows(rgba: &[u8], size: u32) -> Vec<u8> {
 
 /// Escribe un PNG RGBA de `size` x `size`. `flip_vertical` es `true` en todos los casos de la app.
 pub fn write_png(path: &Path, size: u32, rgba: &[u8], flip_vertical: bool) -> Result<(), String> {
-    let file = File::create(path).map_err(|e| format!("No se pudo crear {}: {e}", path.display()))?;
+    let file =
+        File::create(path).map_err(|e| format!("No se pudo crear {}: {e}", path.display()))?;
     let mut encoder = png::Encoder::new(BufWriter::new(file), size, size);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
-    let result = if flip_vertical { writer.write_image_data(&flip_rows(rgba, size)) } else { writer.write_image_data(rgba) };
+    let result = if flip_vertical {
+        writer.write_image_data(&flip_rows(rgba, size))
+    } else {
+        writer.write_image_data(rgba)
+    };
     result.map_err(|e| e.to_string())
 }
 
@@ -31,7 +36,11 @@ pub fn write_png(path: &Path, size: u32, rgba: &[u8], flip_vertical: bool) -> Re
 pub fn free_path(base: &str) -> PathBuf {
     let mut n = 0u32;
     loop {
-        let name = if n == 0 { format!("{base}.png") } else { format!("{base}_{n}.png") };
+        let name = if n == 0 {
+            format!("{base}.png")
+        } else {
+            format!("{base}_{n}.png")
+        };
         let path = PathBuf::from(name);
         if !path.exists() {
             return path;
@@ -47,7 +56,9 @@ mod tests {
     #[test]
     fn el_volteo_invierte_las_filas() {
         // 2x2: fila 0 = rojo,rojo; fila 1 = azul,azul.
-        let img = [255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255];
+        let img = [
+            255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+        ];
         let f = flip_rows(&img, 2);
         assert_eq!(&f[0..4], &[0, 0, 255, 255]);
         assert_eq!(&f[8..12], &[255, 0, 0, 255]);
@@ -64,7 +75,10 @@ mod tests {
         write_png(&path, 4, &img, true).unwrap();
         // Firma PNG.
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[0..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        assert_eq!(
+            &bytes[0..8],
+            &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

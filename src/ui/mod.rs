@@ -10,9 +10,11 @@ mod barra_herramientas;
 mod barra_inferior;
 mod cursor;
 mod estilo;
+mod galeria;
 mod gizmo;
 mod panel_capas;
 mod panel_color;
+mod panel_edicion;
 mod panel_mallas;
 mod panel_menu;
 mod panel_opciones;
@@ -21,7 +23,9 @@ mod ventana_referencia;
 
 use std::time::Duration;
 
-use egui::{Align2, Color32, CornerRadius, FontId, Frame, Margin, Rect, Sense, Stroke, StrokeKind, vec2};
+use egui::{
+    Align2, Color32, CornerRadius, FontId, Frame, Margin, Rect, Sense, Stroke, StrokeKind, vec2,
+};
 use winit::event::WindowEvent;
 use winit::window::Window;
 
@@ -29,22 +33,23 @@ use crate::Tool;
 use crate::blend::BlendMode;
 use crate::brush::Brush;
 use crate::camera::{Camera, ViewAxis};
-use panel_color::{ColorPanel, pill_checker, pill_gradient, slider_row, slider_row_with};
-use panel_pinceles::BrushPanel;
 use crate::layers::{Background, LayerStack};
 use crate::obj::MeshPart;
+use panel_color::{ColorPanel, pill_checker, pill_gradient, slider_row, slider_row_with};
+use panel_pinceles::BrushPanel;
 
 use barra_herramientas::*;
 use barra_inferior::*;
+pub use cursor::BrushRing;
 use cursor::*;
 use estilo::*;
 use gizmo::*;
 use panel_capas::*;
+use panel_edicion::*;
 use panel_mallas::*;
 use panel_menu::*;
 use panel_opciones::*;
 use ventana_referencia::*;
-pub use cursor::BrushRing;
 
 /// true si en este cuadro se apreto el boton principal del raton fuera de `panel` y fuera de la barra de herramientas
 /// (sus botones abren y cierran los paneles por su cuenta: si tambien contaran como "fuera", el panel se cerraria y se
@@ -65,6 +70,17 @@ struct OptionsPanel {
     menu_open: bool,
     /// Panel de Ajustes (el que abre la fila "Ajustes" del menu): ventana centrada en la pantalla.
     settings_open: bool,
+    /// La fila "Regresar a mi galería" del menu se pulso: `UiLayer::run` vuelve a mostrar la galeria y la apaga.
+    open_gallery: bool,
+    /// La fila "Guardar imagen" del menu se pulso: `UiLayer::run` lo avisa a `main.rs` (`UiOutput::save_image`) y lo apaga.
+    save_image: bool,
+    /// Interruptor "Modo edición" de la ventana de Ajustes (apagado por defecto). Todavia solo se muestra: no cambia
+    /// nada del programa.
+    edit_mode: bool,
+    /// Propiedades de la barra inferior (color, transparencia, borde, esquinas), cambiadas desde el modo edición.
+    bottom_bar: BarStyle,
+    /// Elemento de la interfaz elegido en modo edición (su panel de propiedades está abierto).
+    edit_selected: Option<EditTarget>,
     /// Panel de capas (el que abre el boton de capas de la barra inferior), cuanto se desplazo su lista (en puntos)
     /// y si esta abierto el desplegable de modos de mezcla.
     layers_open: bool,
@@ -116,6 +132,10 @@ pub struct UiOutput {
     pub layers_dirty: bool,
     /// El panel de mallas mostro u oculto alguna malla.
     pub parts_dirty: bool,
+    /// Se pulso "Regresar a mi galería": hay que guardar el proyecto en curso (capas y miniatura).
+    pub save_project: bool,
+    /// Se pulso "Guardar imagen": hay que exportar la textura de la pieza activa como PNG.
+    pub save_image: bool,
 }
 
 /// Todo lo de egui junto: contexto, entrada de winit y dibujado en wgpu.
@@ -129,6 +149,8 @@ pub struct UiLayer {
     options: OptionsPanel,
     /// Panel de pinceles flotante (se abre con el boton del pincel de la barra; sale en el mismo lugar que el de color).
     brush_panel: BrushPanel,
+    /// Pantalla "Mi galería": se dibuja encima de todo cada cuadro mientras `gallery.open` sea true.
+    gallery: galeria::GalleryState,
 }
 
 impl UiLayer {
@@ -145,7 +167,8 @@ impl UiLayer {
             None,
             Some(device.limits().max_texture_dimension_2d as usize),
         );
-        let renderer = egui_wgpu::Renderer::new(device, target_format, egui_wgpu::RendererOptions::default());
+        let renderer =
+            egui_wgpu::Renderer::new(device, target_format, egui_wgpu::RendererOptions::default());
         UiLayer {
             ctx,
             state,
@@ -153,24 +176,53 @@ impl UiLayer {
             panel: ColorPanel::default(),
             options: OptionsPanel::default(),
             brush_panel: BrushPanel::default(),
+            gallery: galeria::GalleryState::default(),
         }
     }
 
     /// Pasa un evento de winit a egui. `consumed` = egui lo uso (cursor sobre la barra, etc.): la camara y el
     /// pincel no deben reaccionar. `repaint` = hay que redibujar.
-    pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> egui_winit::EventResponse {
+    pub fn on_window_event(
+        &mut self,
+        window: &Window,
+        event: &WindowEvent,
+    ) -> egui_winit::EventResponse {
         self.state.on_window_event(window, event)
     }
 
-    /// El .obj que se eligio con el boton Importar del panel de mallas, si ya llego (se entrega una sola vez).
+    /// true si el "Modo edición" de Ajustes está encendido: mientras tanto no se pinta.
+    pub fn edit_mode(&self) -> bool {
+        self.options.edit_mode
+    }
+
+    /// El .obj que se eligio con el boton Importar del panel de mallas o con el "+" de la galeria, si ya llego (se
+    /// entrega una sola vez).
     pub fn take_import(&mut self) -> Option<std::path::PathBuf> {
-        self.options.pending_import.take()
+        self.gallery
+            .pending_import
+            .take()
+            .or_else(|| self.options.pending_import.take())
+    }
+
+    /// Vuelve a mostrar la galeria (por ejemplo si no se pudo abrir el proyecto al que se hizo clic).
+    pub fn show_gallery(&mut self) {
+        self.gallery.open = true;
+    }
+
+    /// El proyecto guardado (su id) al que se hizo clic en la galeria, si lo hubo (se entrega una sola vez).
+    pub fn take_open_project(&mut self) -> Option<String> {
+        self.gallery.pending_open.take()
     }
 
     /// true si el interruptor "Acumular pasada" del panel de opciones esta APAGADO: el trazo sube hacia la opacidad
     /// del pincel y no la pasa (como photocraft). Encendido (por defecto) = la regla de siempre.
     pub fn pass_ceiling(&self) -> bool {
         self.options.pass_ceiling
+    }
+
+    /// Pide a la galeria que vuelva a leer los proyectos guardados (se llama despues de guardar uno).
+    pub fn reload_gallery(&mut self) {
+        self.gallery.reload = true;
     }
 
     /// Arma la interfaz de este cuadro. Devuelve lo que hay que dibujar, si cambio la herramienta, el eje del
@@ -194,10 +246,13 @@ impl UiLayer {
         let mut changed = false;
         let mut layers_dirty = false;
         let mut parts_dirty = false;
+        let mut save_project = false;
+        let mut save_image = false;
         let mut view_axis = None;
         let panel = &mut self.panel;
         let options = &mut self.options;
         let brush_panel = &mut self.brush_panel;
+        let gallery = &mut self.gallery;
         let mut full_output = self.ctx.run_ui(raw_input, |ui| {
             let (color_was_open, brush_was_open) = (panel.open, brush_panel.open);
             changed |= toolbar(ui, tool, *color, panel, view_locked, brush, brush_panel);
@@ -207,9 +262,11 @@ impl UiLayer {
             } else if panel.open && !color_was_open {
                 brush_panel.open = false;
             }
-            let (layers_changed, parts_changed) = bottom_bar(ui, layers, parts, selected_part, options);
+            let (layers_changed, parts_changed) =
+                bottom_bar(ui, layers, parts, selected_part, options);
             layers_dirty |= layers_changed;
             parts_dirty |= parts_changed;
+            edit_mode_pill(ui.ctx(), options);
             changed |= reference_window(ui.ctx(), options, *tool, color);
             view_axis = nav_gizmo(ui.ctx(), camera);
             changed |= panel.show(ui.ctx(), color, opacity);
@@ -218,10 +275,29 @@ impl UiLayer {
             if let Some(r) = ring {
                 brush_ring(ui.ctx(), r);
             }
+            // La fila "Regresar a mi galería" del menu guarda el proyecto y vuelve a mostrar la galeria (este mismo
+            // cuadro). El guardado lo hace `main.rs` con la bandera `save_project` de `UiOutput`.
+            if std::mem::take(&mut options.open_gallery) {
+                gallery.open = true;
+                save_project = true;
+            }
+            // La galeria se dibuja encima de todo mientras `gallery.open` sea true.
+            galeria::gallery_screen(ui.ctx(), gallery);
+            // "Guardar imagen": la exportacion la hace `main.rs` con la bandera `save_image` de `UiOutput`.
+            save_image = std::mem::take(&mut options.save_image);
         });
         // Cursor, portapapeles, enlaces...
-        self.state.handle_platform_output(window, std::mem::take(&mut full_output.platform_output));
-        UiOutput { full_output, changed, view_axis, layers_dirty, parts_dirty }
+        self.state
+            .handle_platform_output(window, std::mem::take(&mut full_output.platform_output));
+        UiOutput {
+            full_output,
+            changed,
+            view_axis,
+            layers_dirty,
+            parts_dirty,
+            save_project,
+            save_image,
+        }
     }
 
     /// Dibuja la interfaz sobre `view` (que ya tiene el modelo). Devuelve los buffers de comandos extra que haya
@@ -250,8 +326,13 @@ impl UiLayer {
             }
         }
         let paint_jobs = self.ctx.tessellate(full_output.shapes, pixels_per_point);
-        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels, pixels_per_point };
-        let extra = self.renderer.update_buffers(device, queue, encoder, &paint_jobs, &screen);
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels,
+            pixels_per_point,
+        };
+        let extra = self
+            .renderer
+            .update_buffers(device, queue, encoder, &paint_jobs, &screen);
         {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("interfaz"),
@@ -260,7 +341,10 @@ impl UiLayer {
                     depth_slice: None,
                     resolve_target: None,
                     // Load: se conserva el modelo ya dibujado y la interfaz va encima.
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,

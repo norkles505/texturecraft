@@ -4,8 +4,8 @@
 //! ahi (0..1). El espaciado es una fraccion del radio. El tamano es el RADIO en texeles (el slider va de 1 a 100).
 
 use crate::pinceles::{
-    CRAYON_REACH, DUAL_GRAIN_REACH, DryKind, FOLIAGE_REACH, GRASS_REACH, HALFTONE_REACH, PASTEL_SCATTER, SPATTER_REACH,
-    STIPPLE_REACH,
+    CRAYON_REACH, DUAL_GRAIN_REACH, DryKind, FOLIAGE_REACH, GRASS_REACH, HALFTONE_REACH,
+    PASTEL_SCATTER, SPATTER_REACH, STIPPLE_REACH,
 };
 
 /// Radio minimo y maximo del pincel en texeles.
@@ -43,6 +43,9 @@ pub enum BrushType {
     /// Esponja de tinta (Ink Wash Sponge de photocraft): punta de esponja con poros que gira en cada toque, flujo 0.6
     /// y bordes mojados (el interior del trazo queda mas claro que su borde), sin papel (`pinceles/esponja.rs`).
     InkSponge,
+    /// Textura de esponja (Sponge Texture de photocraft): la esponja de poros con otra semilla, que gira en cada toque
+    /// y pinta cada uno con una opacidad distinta (de 0.7 a 1), sin bordes mojados y sin papel (`pinceles/esponja.rs`).
+    SpongeTexture,
     /// Salpicadura (Spatter de photocraft): uno o dos racimos de gotas por toque, cada uno con su tamano, giro, volteo y
     /// dispersion al azar en los dos ejes, sin papel (`pinceles/salpicadura.rs`).
     Spatter,
@@ -57,6 +60,9 @@ pub enum BrushType {
     /// que se mezcla en modo HardMix con cada toque, asi el borde sale granulado y el interior con pequenos huecos
     /// (`pinceles/crayon.rs`).
     WaxCrayon,
+    /// Cincel plano (deducido de la imagen de un pincel plano del Grease Pencil de Blender, no de photocraft): punta de
+    /// paralelogramo aplastada que sigue la direccion del trazo y deja una banda recta, sin papel (`pinceles/cincel.rs`).
+    Chisel,
 }
 
 /// Categorias del panel de pinceles (la columna de la izquierda).
@@ -94,7 +100,7 @@ impl BrushGroup {
 
 impl BrushType {
     /// En el orden en que salen en el panel.
-    pub const ALL: [BrushType; 18] = [
+    pub const ALL: [BrushType; 20] = [
         BrushType::Soft,
         BrushType::Hard,
         BrushType::Airbrush,
@@ -110,9 +116,11 @@ impl BrushType {
         BrushType::Foliage,
         BrushType::DualGrain,
         BrushType::InkSponge,
+        BrushType::SpongeTexture,
         BrushType::Spatter,
         BrushType::Grass,
         BrushType::Halftone,
+        BrushType::Chisel,
     ];
 
     pub fn name(self) -> &'static str {
@@ -131,10 +139,12 @@ impl BrushType {
             BrushType::Foliage => "Follaje",
             BrushType::DualGrain => "Doble grano",
             BrushType::InkSponge => "Esponja de tinta",
+            BrushType::SpongeTexture => "Textura de esponja",
             BrushType::Spatter => "Salpicadura",
             BrushType::Grass => "Pasto",
             BrushType::Halftone => "Puntos de semitono",
             BrushType::WaxCrayon => "Crayón de cera",
+            BrushType::Chisel => "Cincel plano",
         }
     }
 
@@ -151,10 +161,12 @@ impl BrushType {
             | BrushType::Foliage
             | BrushType::DualGrain
             | BrushType::InkSponge
+            | BrushType::SpongeTexture
             | BrushType::Spatter
             | BrushType::Grass
             | BrushType::Halftone
-            | BrushType::WaxCrayon => BrushGroup::Dry,
+            | BrushType::WaxCrayon
+            | BrushType::Chisel => BrushGroup::Dry,
         }
     }
 
@@ -178,6 +190,8 @@ impl BrushType {
             BrushType::DualGrain => 25.0,
             // Ink Wash Sponge de photocraft mide 70 de diametro.
             BrushType::InkSponge => 35.0,
+            // Sponge Texture de photocraft mide 60 de diametro.
+            BrushType::SpongeTexture => 30.0,
             // Spatter de photocraft mide 60 de diametro.
             BrushType::Spatter => 30.0,
             // Grass de photocraft mide 70 de diametro.
@@ -186,6 +200,8 @@ impl BrushType {
             BrushType::Halftone => 40.0,
             // Wax Crayon de photocraft mide 22 de diametro.
             BrushType::WaxCrayon => 11.0,
+            // Cincel plano: estimado de la imagen (la punta mide unos 1.4 radios de largo).
+            BrushType::Chisel => 25.0,
         }
     }
 
@@ -210,6 +226,8 @@ impl BrushType {
             BrushType::DualGrain => 0.5,
             // Ink Wash Sponge: 0.3 del diametro en photocraft = 0.6 del radio.
             BrushType::InkSponge => 0.6,
+            // Sponge Texture: 0.45 del diametro en photocraft = 0.9 del radio.
+            BrushType::SpongeTexture => 0.9,
             // Spatter: 0.6 del diametro en photocraft = 1.2 del radio.
             BrushType::Spatter => 1.2,
             // Grass: 0.25 del diametro en photocraft = 0.5 del radio.
@@ -218,6 +236,8 @@ impl BrushType {
             BrushType::Halftone => 0.5,
             // Wax Crayon: 0.08 del diametro en photocraft = 0.16 del radio.
             BrushType::WaxCrayon => 0.16,
+            // Cincel plano: estimado, parejo para que no se noten los toques.
+            BrushType::Chisel => 0.12,
         }
     }
 
@@ -231,10 +251,12 @@ impl BrushType {
             BrushType::Stipple => Some(DryKind::Stipple),
             BrushType::Foliage => Some(DryKind::Foliage),
             BrushType::InkSponge => Some(DryKind::Sponge),
+            BrushType::SpongeTexture => Some(DryKind::SpongeTexture),
             BrushType::Spatter => Some(DryKind::Spatter),
             BrushType::Grass => Some(DryKind::Grass),
             BrushType::Halftone => Some(DryKind::Halftone),
             BrushType::WaxCrayon => Some(DryKind::Crayon),
+            BrushType::Chisel => Some(DryKind::Chisel),
             _ => None,
         }
     }
@@ -279,10 +301,12 @@ impl BrushType {
             | BrushType::Stipple
             | BrushType::Foliage
             | BrushType::InkSponge
+            | BrushType::SpongeTexture
             | BrushType::Spatter
             | BrushType::Grass
             | BrushType::Halftone
-            | BrushType::WaxCrayon => (6.0 * t).min(1.0),
+            | BrushType::WaxCrayon
+            | BrushType::Chisel => (6.0 * t).min(1.0),
             // Doble grano: tampoco usa el falloff radial (su disco y sus gotas salen de `pinceles/dual_grain.rs`).
             BrushType::DualGrain => (6.0 * t).min(1.0),
         }
@@ -324,7 +348,11 @@ pub struct Brush {
 
 impl Brush {
     pub fn new(kind: BrushType) -> Brush {
-        Brush { kind, radius: kind.default_radius(), flow: kind.default_flow() }
+        Brush {
+            kind,
+            radius: kind.default_radius(),
+            flow: kind.default_flow(),
+        }
     }
 }
 
@@ -391,9 +419,15 @@ mod tests {
         // Su dispersion cubre el 60 % del radio en cada eje: la esquina esta a 0.6 * raiz de 2.
         assert!((b.scatter() - 0.6 * 2f32.sqrt()).abs() < 1e-6);
         assert!(b.scatter() > BrushType::Pastel.scatter());
-        // Solo los nueve de medio seco (carboncillo, pastel, crayon, punteado, follaje, esponja, salpicadura, pasto y
-        // semitono) tienen punta propia.
-        assert_eq!(BrushType::ALL.iter().filter(|k| k.dry_kind().is_some()).count(), 9);
+        // Solo los once de medio seco (carboncillo, pastel, crayon, punteado, follaje, esponja de tinta, textura de
+        // esponja, salpicadura, pasto, semitono y cincel) tienen punta propia.
+        assert_eq!(
+            BrushType::ALL
+                .iter()
+                .filter(|k| k.dry_kind().is_some())
+                .count(),
+            11
+        );
     }
 
     #[test]
@@ -443,6 +477,20 @@ mod tests {
                 assert_eq!(k.default_flow(), 1.0, "{}", k.name());
             }
         }
+    }
+
+    #[test]
+    fn la_textura_de_esponja_es_de_medio_seco_con_los_valores_de_photocraft() {
+        let b = BrushType::SpongeTexture;
+        assert_eq!(b.name(), "Textura de esponja");
+        assert_eq!(b.group(), BrushGroup::Dry);
+        assert_eq!(b.dry_kind(), Some(DryKind::SpongeTexture));
+        // 60 de diametro en photocraft = radio 30; espaciado 0.45 del diametro = 0.9 del radio.
+        assert_eq!(b.default_radius(), 30.0);
+        assert!((b.spacing() - 0.9).abs() < 1e-6);
+        // Sin dispersion y con flujo 1 (la variacion es de opacidad por toque).
+        assert_eq!(b.scatter(), 0.0);
+        assert_eq!(b.default_flow(), 1.0);
     }
 
     #[test]
@@ -503,6 +551,19 @@ mod tests {
         // Su punta llega a 0.865 + 2.6 * 0.13 = 1.203 radios: el margen es lo que pasa de 1.
         assert!((b.scatter() - 0.203).abs() < 1e-5);
         // Flujo 1 (sin efecto).
+        assert_eq!(b.default_flow(), 1.0);
+    }
+
+    #[test]
+    fn el_cincel_plano_es_de_medio_seco_con_valores_estimados() {
+        let b = BrushType::Chisel;
+        assert_eq!(b.name(), "Cincel plano");
+        assert_eq!(b.group(), BrushGroup::Dry);
+        assert_eq!(b.dry_kind(), Some(DryKind::Chisel));
+        assert_eq!(b.default_radius(), 25.0);
+        assert!((b.spacing() - 0.12).abs() < 1e-6);
+        // Su punta cabe en el radio y el flujo arranca en 1.
+        assert_eq!(b.scatter(), 0.0);
         assert_eq!(b.default_flow(), 1.0);
     }
 

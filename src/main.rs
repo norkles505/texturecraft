@@ -23,6 +23,7 @@ mod layers;
 mod obj;
 mod paint;
 mod pinceles;
+mod proyecto;
 mod ui;
 mod undo;
 mod uvmap;
@@ -47,7 +48,10 @@ use bvh::TriBvh;
 use camera::{Camera, ViewAxis};
 use glam::Vec3;
 use layers::LayerStack;
-use obj::{MeshPart, ObjMesh, load_obj, part_of_triangle, piece_ranges, triangle_visibility, visible_ranges};
+use obj::{
+    MeshPart, ObjMesh, load_obj, part_of_triangle, piece_ranges, triangle_visibility,
+    visible_ranges,
+};
 use paint::{DabOptions, Rect, StrokeState, SurfTri, TEX_SIZE, surface_rect};
 use ui::{BrushRing, UiLayer, UiOutput};
 use undo::History;
@@ -55,8 +59,20 @@ use uvmap::UvMaps;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Colores de prueba para distinguir capas (tecla K).
-const PALETTE: [[u8; 3]; 6] = [[225, 70, 60], [60, 120, 230], [70, 190, 90], [240, 200, 50], [20, 20, 20], [255, 255, 255]];
-const CLEAR: wgpu::Color = wgpu::Color { r: 0.16, g: 0.16, b: 0.18, a: 1.0 };
+const PALETTE: [[u8; 3]; 6] = [
+    [225, 70, 60],
+    [60, 120, 230],
+    [70, 190, 90],
+    [240, 200, 50],
+    [20, 20, 20],
+    [255, 255, 255],
+];
+const CLEAR: wgpu::Color = wgpu::Color {
+    r: 0.16,
+    g: 0.16,
+    b: 0.18,
+    a: 1.0,
+};
 
 /// Herramienta activa con el boton izquierdo (seccion 8).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -133,7 +149,11 @@ fn new_piece(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("tablero"),
-            size: wgpu::Extent3d { width: TEX_SIZE, height: TEX_SIZE, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: TEX_SIZE,
+                height: TEX_SIZE,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -151,12 +171,29 @@ fn new_piece(
         label: Some("bg"),
         layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&tex_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&tex_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
         ],
     });
-    Piece { first_vertex, vertex_count, texture, bind_group, layers, history: History::default(), uv_maps: None }
+    Piece {
+        first_vertex,
+        vertex_count,
+        texture,
+        bind_group,
+        layers,
+        history: History::default(),
+        uv_maps: None,
+    }
 }
 
 /// Llamadas de dibujo `(pieza, tramo de vertices)`: solo las mallas visibles. Con una pieza por parte cada parte se
@@ -167,7 +204,12 @@ fn draw_calls(piece_count: usize, parts: &[MeshPart]) -> Vec<(usize, std::ops::R
             .iter()
             .enumerate()
             .filter(|(_, p)| p.visible)
-            .map(|(i, p)| (i, p.first_vertex as u32..(p.first_vertex + p.vertex_count) as u32))
+            .map(|(i, p)| {
+                (
+                    i,
+                    p.first_vertex as u32..(p.first_vertex + p.vertex_count) as u32,
+                )
+            })
             .collect()
     } else {
         visible_ranges(parts).into_iter().map(|r| (0, r)).collect()
@@ -224,6 +266,13 @@ struct Gpu {
     ui: UiLayer,
     /// Ultimo radio (en pixeles de pantalla) del circulo del pincel; se usa cuando el cursor sale del modelo.
     ring_radius: f32,
+    /// Proyecto en curso: su carpeta en `proyecto::projects_dir()` (`None` = aun no se guardo; la primera vez que se
+    /// pulsa "Regresar a mi galería" se le pone un identificador y las siguientes sobrescriben la misma carpeta).
+    project_id: Option<String>,
+    /// Nombre del proyecto (el del modelo, sin la extension).
+    project_name: String,
+    /// Ruta del .obj abierto (`None` = la esfera de prueba), para guardarla en el proyecto.
+    model_path: Option<std::path::PathBuf>,
 }
 
 struct App {
@@ -251,7 +300,11 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
     device
         .create_texture(&wgpu::TextureDescriptor {
             label: Some("profundidad"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -320,7 +373,10 @@ mod dab_points_tests {
         assert_eq!(rapido.len(), lento.len());
         for (i, (a, b)) in lento.iter().zip(&rapido).enumerate() {
             let esperado = 0.7 * (i + 1) as f32;
-            assert!((a - esperado).abs() < 1e-3 && (b - esperado).abs() < 1e-3, "toque {i}: {a} y {b}, esperado {esperado}");
+            assert!(
+                (a - esperado).abs() < 1e-3 && (b - esperado).abs() < 1e-3,
+                "toque {i}: {a} y {b}, esperado {esperado}"
+            );
         }
     }
 
@@ -351,30 +407,45 @@ fn test_sphere() -> ObjMesh {
 
 /// Lee un OBJ (Y arriba, como los de Blender al exportar) y lo centra y ajusta a `FIT_SIZE`.
 fn load_mesh(path: &Path) -> Result<ObjMesh, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("No se pudo leer {}: {e}", path.display()))?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("No se pudo leer {}: {e}", path.display()))?;
     let mesh = load_obj(&text, FIT_SIZE, true).map_err(|e| format!("{}: {e}", path.display()))?;
     if !mesh.has_uvs {
-        eprintln!("Aviso: {} no trae UVs, no se podra pintar bien.", path.display());
+        eprintln!(
+            "Aviso: {} no trae UVs, no se podra pintar bien.",
+            path.display()
+        );
     }
     Ok(mesh)
 }
 
 fn file_name(path: &Path) -> String {
-    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Nombre apto para un archivo: lo que no es letra o numero pasa a `_`.
 fn slug(name: &str) -> String {
-    name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect()
+    name.chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 impl Gpu {
-    fn new(event_loop: &ActiveEventLoop, window: Arc<Window>, mesh: &ObjMesh, model_name: &str) -> Gpu {
+    fn new(
+        event_loop: &ActiveEventLoop,
+        window: Arc<Window>,
+        mesh: &ObjMesh,
+        model_name: &str,
+    ) -> Gpu {
         // winit recomienda pasar su handle de pantalla al crear la instancia (Wayland/X11/GL lo necesitan).
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
-            event_loop.owned_display_handle(),
-        )));
-        let surface = instance.create_surface(window.clone()).expect("no se pudo crear la superficie");
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
+            Box::new(event_loop.owned_display_handle()),
+        ));
+        let surface = instance
+            .create_surface(window.clone())
+            .expect("no se pudo crear la superficie");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
@@ -383,8 +454,9 @@ impl Gpu {
         }))
         .expect("no hay GPU compatible");
         log::info!("GPU: {:?}", adapter.get_info());
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .expect("no se pudo abrir el dispositivo");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .expect("no se pudo abrir el dispositivo");
 
         let size = window.inner_size();
         let mut config = surface
@@ -483,7 +555,10 @@ impl Gpu {
                 })],
             }),
             // Sin culling: el sentido de giro de los OBJ varia y asi se ve siempre.
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: Some(true),
@@ -508,7 +583,16 @@ impl Gpu {
         // Una pieza por parte (2 a 12 partes) o una sola, cada una con su textura, capas e historial.
         let pieces: Vec<Piece> = piece_ranges(&parts)
             .into_iter()
-            .map(|r| new_piece(&device, &queue, &bind_group_layout, &uniform_buffer, &sampler, r))
+            .map(|r| {
+                new_piece(
+                    &device,
+                    &queue,
+                    &bind_group_layout,
+                    &uniform_buffer,
+                    &sampler,
+                    r,
+                )
+            })
             .collect();
         let draw_ranges = draw_calls(pieces.len(), &parts);
 
@@ -543,6 +627,12 @@ impl Gpu {
             parts,
             ui,
             ring_radius: 20.0,
+            project_id: None,
+            project_name: Path::new(model_name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| model_name.to_string()),
+            model_path: None,
         }
     }
 
@@ -558,7 +648,11 @@ impl Gpu {
 
     /// Pieza donde cae una malla: con una pieza por parte es la misma posicion; con una sola pieza, la 0.
     fn piece_for_part(&self, part: usize) -> usize {
-        if self.pieces.len() == self.parts.len() { part.min(self.pieces.len() - 1) } else { 0 }
+        if self.pieces.len() == self.parts.len() {
+            part.min(self.pieces.len() - 1)
+        } else {
+            0
+        }
     }
 
     /// Pieza activa: la que muestran el panel de capas, el titulo y la exportacion (seccion 3.3).
@@ -584,18 +678,27 @@ impl Gpu {
     /// Cambia el modelo que se dibuja. `model_name` es el nombre de la malla si el OBJ no trae partes. Las piezas
     /// nuevas empiezan con una textura y un historial vacios (el historial era de otro modelo).
     fn set_mesh(&mut self, mesh: &ObjMesh, model_name: &str) {
-        self.vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertices"),
-            contents: bytemuck::cast_slice(&mesh.interleaved()),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        self.vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("vertices"),
+                contents: bytemuck::cast_slice(&mesh.interleaved()),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
         self.bvh = TriBvh::new(mesh);
         self.uvs = mesh.uvs.clone();
         self.parts = mesh.scene_parts(model_name);
         self.pieces = piece_ranges(&self.parts)
             .into_iter()
             .map(|r| {
-                new_piece(&self.device, &self.queue, &self.bind_group_layout, &self.uniform_buffer, &self.sampler, r)
+                new_piece(
+                    &self.device,
+                    &self.queue,
+                    &self.bind_group_layout,
+                    &self.uniform_buffer,
+                    &self.sampler,
+                    r,
+                )
             })
             .collect();
         self.selected_part = 0;
@@ -612,19 +715,67 @@ impl Gpu {
         self.window.request_redraw();
     }
 
-    /// Abre un .obj (arrastrado a la ventana o elegido en el panel de mallas) y reemplaza el modelo actual.
+    /// Abre un .obj (arrastrado a la ventana o elegido en el panel de mallas o con el "+" de la galeria) y reemplaza el
+    /// modelo actual. Es un proyecto nuevo: todavia no tiene carpeta guardada.
     fn open_obj(&mut self, path: &Path) {
         match load_mesh(path) {
             Ok(mesh) => {
                 self.set_mesh(&mesh, &file_name(path));
-                self.window.set_title(&format!("texturecraft - {}", file_name(path)));
+                self.project_id = None;
+                self.project_name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| file_name(path));
+                self.model_path = Some(path.to_path_buf());
+                self.window
+                    .set_title(&format!("texturecraft - {}", file_name(path)));
                 self.window.request_redraw();
             }
             Err(e) => {
                 eprintln!("{e}");
-                self.window.set_title("texturecraft - no se pudo abrir el archivo (mira la terminal)");
+                self.window
+                    .set_title("texturecraft - no se pudo abrir el archivo (mira la terminal)");
             }
         }
+    }
+
+    /// Abre un proyecto guardado (el que se pulso en la galeria): carga su modelo, repone las capas de cada pieza y
+    /// deja el id para que "Regresar a mi galería" sobrescriba esa misma carpeta. Si algo falla no cambia nada.
+    fn open_project(&mut self, id: &str) -> Result<(), String> {
+        let proyecto::Loaded {
+            name,
+            model,
+            active,
+            stacks,
+        } = proyecto::load(id, TEX_SIZE)?;
+        let (mesh, model_name) = match &model {
+            Some(path) => (load_mesh(path)?, file_name(path)),
+            None => (test_sphere(), String::from("Esfera de prueba")),
+        };
+        // El modelo debe seguir teniendo las mismas piezas que cuando se guardo (si el .obj cambio, no encajan).
+        let needed = piece_ranges(&mesh.scene_parts(&model_name)).len();
+        if stacks.len() != needed {
+            return Err(format!(
+                "El proyecto tiene {} piezas y el modelo ahora tiene {needed}",
+                stacks.len()
+            ));
+        }
+        self.set_mesh(&mesh, &model_name);
+        for (i, stack) in stacks.into_iter().enumerate() {
+            let m = stack.size - 1;
+            self.pieces[i].layers = stack;
+            self.upload_rect(i, (0, 0, m, m));
+        }
+        // Con una pieza por parte, la pieza activa es la malla elegida; con una sola pieza no hay nada que elegir.
+        if self.pieces.len() == self.parts.len() {
+            self.selected_part = active.min(self.parts.len() - 1);
+        }
+        self.project_id = Some(id.to_string());
+        self.project_name = name;
+        self.model_path = model;
+        self.window.set_title(&self.status());
+        self.window.request_redraw();
+        Ok(())
     }
 
     /// Rayo de pantalla -> BVH -> pieza, parte, UV, triangulo y posicion 3D del punto tocado (`None` si el cursor no
@@ -654,7 +805,10 @@ impl Gpu {
         let mut per_px: Vec<f32> = Vec::with_capacity(2);
         for (dx, dy) in [(step, 0.0), (0.0, step)] {
             // Un punto vecino en otra pieza no sirve para medir.
-            if let Some(b) = self.pick_uv(camera, x + dx, y + dy).filter(|b| b.piece == a.piece) {
+            if let Some(b) = self
+                .pick_uv(camera, x + dx, y + dy)
+                .filter(|b| b.piece == a.piece)
+            {
                 let d = a.pos.distance(b.pos) / step;
                 if d > 0.0 {
                     per_px.push(d);
@@ -688,8 +842,16 @@ impl Gpu {
                 aspect: wgpu::TextureAspect::All,
             },
             &bytes,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
     }
 
@@ -716,7 +878,10 @@ impl Gpu {
         let l = stack.selected_layer();
         let c = self.brush_color;
         let piece = if self.pieces.len() > 1 {
-            format!(" | pieza \"{}\"", self.parts[self.selected_part.min(self.parts.len() - 1)].name)
+            format!(
+                " | pieza \"{}\"",
+                self.parts[self.selected_part.min(self.parts.len() - 1)].name
+            )
         } else {
             String::new()
         };
@@ -754,7 +919,9 @@ impl Gpu {
     /// Cuentagotas (seccion 8.2): toma el color de la textura COMPUESTA (lo que se ve, con fondo y todas las capas)
     /// en el punto de pantalla y lo pone como color del pincel.
     fn pick_color(&mut self, camera: &Camera, px: f32, py: f32) {
-        let Some(c) = self.color_at(camera, px, py) else { return };
+        let Some(c) = self.color_at(camera, px, py) else {
+            return;
+        };
         self.brush_color = c;
         self.window.set_title(&self.status());
         // El cuadrito de color de la barra tambien debe mostrar el color nuevo.
@@ -802,8 +969,15 @@ impl Gpu {
         // Triangulos cercanos que son de esta pieza (cada pieza tiene su textura). El pastel dispersa su toque de lado:
         // se busca con ese margen de mas.
         let mut near = Vec::new();
-        bvh.query_sphere(pick.pos, radius * (1.0 + self.brush.kind.scatter()), &mut near);
-        let (first_tri, end_tri) = (piece.first_vertex / 3, (piece.first_vertex + piece.vertex_count) / 3);
+        bvh.query_sphere(
+            pick.pos,
+            radius * (1.0 + self.brush.kind.scatter()),
+            &mut near,
+        );
+        let (first_tri, end_tri) = (
+            piece.first_vertex / 3,
+            (piece.first_vertex + piece.vertex_count) / 3,
+        );
         // Hacia donde mira un triangulo respecto a la camara. El signo del triangulo tocado dice como esta orientado
         // el modelo (el giro de las caras varia entre OBJ): solo se pintan los que miran igual que el. Asi la parte de
         // atras de una pared fina no se pinta.
@@ -821,7 +995,9 @@ impl Gpu {
                 SurfTri { p: *p, uv: *uv }
             })
             .collect();
-        let Some(area) = surface_rect(size, &tris) else { return };
+        let Some(area) = surface_rect(size, &tris) else {
+            return;
+        };
         // Normal del triangulo tocado: la tiza la usa para orientar su punta sobre la superficie (el signo da igual).
         let normal = {
             let (p, _) = bvh.tri(pick.tri);
@@ -885,7 +1061,9 @@ impl Gpu {
     /// Relleno (seccion 8.6): un solo toque por apoyo, entra al historial de la pieza como un paso. Devuelve true si
     /// cambio algo.
     fn fill_at(&mut self, camera: &Camera, px: f32, py: f32) -> bool {
-        let Some(pick) = self.pick_uv(camera, px, py) else { return false };
+        let Some(pick) = self.pick_uv(camera, px, py) else {
+            return false;
+        };
         self.activate_part(pick.part);
         let color = self.brush_color;
         let uvs = &self.uvs;
@@ -900,9 +1078,12 @@ impl Gpu {
         let y = ((pick.v - pick.v.floor()) * max).round() as u32;
         // Islas y cobertura UV de esta pieza (solo sus triangulos): se arman la primera vez.
         let (a, b) = (piece.first_vertex, piece.first_vertex + piece.vertex_count);
-        let maps = piece.uv_maps.get_or_insert_with(|| UvMaps::build(&uvs[a * 2..b * 2], size));
+        let maps = piece
+            .uv_maps
+            .get_or_insert_with(|| UvMaps::build(&uvs[a * 2..b * 2], size));
         let layer = &mut piece.layers.layers[sel];
-        let Some(plan) = fill::plan(&layer.pixels, size, x, y, color, layer.alpha_lock, maps) else {
+        let Some(plan) = fill::plan(&layer.pixels, size, x, y, color, layer.alpha_lock, maps)
+        else {
             return false;
         };
         // Antes de tocar nada: copia de las baldosas que va a cambiar (deshacer).
@@ -948,7 +1129,9 @@ impl Gpu {
     /// borrador con un preset que acumula (el aerografo) y el trazo en modo "techo" (con "Acumular pasada" encendido la
     /// regla es el maximo de los toques y repetir un toque en el mismo sitio no cambia nada).
     fn builds_up(&self) -> bool {
-        matches!(self.tool, Tool::Brush | Tool::Eraser) && self.brush.kind.build_up() && self.ui.pass_ceiling()
+        matches!(self.tool, Tool::Brush | Tool::Eraser)
+            && self.brush.kind.build_up()
+            && self.ui.pass_ceiling()
     }
 
     /// Un toque en el sitio donde esta el puntero, sin moverlo (el temporizador del aerografo). Devuelve true si
@@ -968,6 +1151,65 @@ impl Gpu {
         }
     }
 
+    /// Guarda el proyecto en curso en disco (capas de todas las piezas y miniatura) y pide a la galeria que relea la
+    /// lista. La primera vez le asigna carpeta; despues sobrescribe la misma.
+    fn save_project(&mut self) {
+        let id = self
+            .project_id
+            .get_or_insert_with(proyecto::new_id)
+            .clone();
+        let stacks: Vec<&LayerStack> = self.pieces.iter().map(|p| &p.layers).collect();
+        let result = proyecto::save(
+            &id,
+            &self.project_name,
+            self.model_path.as_deref(),
+            &stacks,
+            self.active(),
+        );
+        match result {
+            Ok(dir) => println!("Proyecto guardado: {}", dir.display()),
+            Err(e) => eprintln!("{e}"),
+        }
+        self.ui.reload_gallery();
+        self.window.request_redraw();
+    }
+
+    /// "Guardar imagen" del menu: pregunta donde guardar y escribe la textura de la pieza activa como PNG transparente
+    /// (sin el fondo de visualizacion). Devuelve el mensaje a mostrar en el titulo de la ventana.
+    fn save_image(&self) -> String {
+        let stack = &self.pieces[self.active()].layers;
+        let mut default = slug(&self.project_name);
+        if self.pieces.len() > 1 {
+            default.push('_');
+            default.push_str(&slug(
+                &self.parts[self.selected_part.min(self.parts.len() - 1)].name,
+            ));
+        }
+        let Some(mut path) = rfd::FileDialog::new()
+            .set_title("Guardar imagen")
+            .set_file_name(format!("{default}.png"))
+            .add_filter("Imagen PNG", &["png"])
+            .save_file()
+        else {
+            return self.status();
+        };
+        if path.extension().is_none() {
+            path.set_extension("png");
+        }
+        // Sin fondo: el blanco o los cuadros del panel de capas son solo para ver lo pintado; el PNG sale transparente
+        // donde no hay pintura.
+        match export::write_png(&path, stack.size, &stack.export_composite(false), true) {
+            Ok(()) => {
+                println!("Imagen guardada: {}", path.display());
+                format!("texturecraft - imagen guardada: {}", path.display())
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                format!("texturecraft - no se pudo guardar la imagen ({e})")
+            }
+        }
+    }
+
     /// Exporta un PNG a la carpeta actual (seccion 13). `kind`: 0 = textura con fondo, 1 = textura transparente,
     /// 2 = solo la capa elegida (sus pixeles tal cual, sin opacidad ni visibilidad). Exporta la pieza activa; con
     /// varias piezas el nombre del archivo lleva el de la malla. Devuelve el mensaje a mostrar.
@@ -976,13 +1218,18 @@ impl Gpu {
         let size = stack.size;
         let (base, pixels) = match kind {
             0 => ("texturecraft_textura", stack.export_composite(true)),
-            1 => ("texturecraft_textura_transparente", stack.export_composite(false)),
+            1 => (
+                "texturecraft_textura_transparente",
+                stack.export_composite(false),
+            ),
             _ => ("texturecraft_capa", stack.selected_layer().pixels.clone()),
         };
         let mut base = base.to_string();
         if self.pieces.len() > 1 {
             base.push('_');
-            base.push_str(&slug(&self.parts[self.selected_part.min(self.parts.len() - 1)].name));
+            base.push_str(&slug(
+                &self.parts[self.selected_part.min(self.parts.len() - 1)].name,
+            ));
         }
         let path = export::free_path(&base);
         match export::write_png(&path, size, &pixels, true) {
@@ -1002,7 +1249,11 @@ impl Gpu {
     fn undo_redo(&mut self, redo: bool) -> bool {
         let a = self.active();
         let piece = &mut self.pieces[a];
-        let rect = if redo { piece.history.redo(&mut piece.layers) } else { piece.history.undo(&mut piece.layers) };
+        let rect = if redo {
+            piece.history.redo(&mut piece.layers)
+        } else {
+            piece.history.undo(&mut piece.layers)
+        };
         match rect {
             Some(r) => {
                 piece.layers.composite_rect(r);
@@ -1021,7 +1272,11 @@ impl Gpu {
             return false;
         }
         // El relleno es de un solo toque por apoyo: arrastrar no vuelve a rellenar. Difuminar y borrosidad aun no pintan.
-        if self.tool == Tool::Fill || self.tool == Tool::Smudge || self.tool == Tool::Blur || self.tool == Tool::Hand {
+        if self.tool == Tool::Fill
+            || self.tool == Tool::Smudge
+            || self.tool == Tool::Blur
+            || self.tool == Tool::Hand
+        {
             return false;
         }
         // Se recorre el tramo de pantalla en pasos chicos y se mide la distancia 3D sobre el modelo entre cada par de
@@ -1044,7 +1299,8 @@ impl Gpu {
 
     /// Distancia entre toques en unidades del modelo (una fraccion del radio del pincel, como en la seccion 7.4).
     fn dab_spacing(&self) -> f32 {
-        (self.brush.radius * WORLD_PER_RADIUS * self.brush.kind.spacing()).max(0.5 * WORLD_PER_RADIUS)
+        (self.brush.radius * WORLD_PER_RADIUS * self.brush.kind.spacing())
+            .max(0.5 * WORLD_PER_RADIUS)
     }
 
     /// Un paso corto del raton `a` -> `b`: pone los toques que le tocan segun lo recorrido sobre el modelo. Si `a` cae
@@ -1077,7 +1333,8 @@ impl Gpu {
             let pick = if t >= 0.9999 {
                 q
             } else {
-                self.pick_uv(camera, a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t).unwrap_or(q)
+                self.pick_uv(camera, a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+                    .unwrap_or(q)
             };
             self.dab_surface(pick, dirty);
         }
@@ -1086,7 +1343,12 @@ impl Gpu {
     /// Dibuja un cuadro (modelo + interfaz). Devuelve cuanto falta para el proximo cuadro que pide egui
     /// (`ZERO` = ya mismo, `Duration::MAX` = ninguno) y el eje del gizmo al que se hizo clic, si hubo (la camara
     /// vive en `App`, asi que es quien la gira).
-    fn render(&mut self, camera: &Camera, mouse: (f32, f32), cursor_in_window: bool) -> (Duration, Option<ViewAxis>) {
+    fn render(
+        &mut self,
+        camera: &Camera,
+        mouse: (f32, f32),
+        cursor_in_window: bool,
+    ) -> (Duration, Option<ViewAxis>) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
@@ -1104,16 +1366,26 @@ impl Gpu {
 
         let aspect = self.config.width as f32 / self.config.height as f32;
         let (mvp, normal) = camera.matrices(aspect);
-        let uniforms = Uniforms { mvp: mvp.to_cols_array_2d(), normal_matrix: normal.to_cols_array_2d() };
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let uniforms = Uniforms {
+            mvp: mvp.to_cols_array_2d(),
+            normal_matrix: normal.to_cols_array_2d(),
+        };
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         // Misma textura vista sin sRGB, solo para la interfaz (ver el comentario en `Gpu::new`).
         let ui_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.config.format.remove_srgb_suffix()),
             ..Default::default()
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("cuadro") });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("cuadro"),
+            });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("modelo"),
@@ -1121,11 +1393,17 @@ impl Gpu {
                     view: &view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(CLEAR), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
@@ -1141,10 +1419,18 @@ impl Gpu {
             }
         }
         // Cursor propio sobre el modelo: circulo del pincel (pincel y borrador) o la chincheta del cuentagotas.
-        let ring = if cursor_in_window && matches!(self.tool, Tool::Brush | Tool::Eraser | Tool::Eyedropper) {
+        // Sin círculo del pincel en modo edición (no se pinta).
+        let ring = if cursor_in_window
+            && !self.ui.edit_mode()
+            && matches!(self.tool, Tool::Brush | Tool::Eraser | Tool::Eyedropper)
+        {
             let pin = self.tool == Tool::Eyedropper;
             // Chincheta: el color que hay bajo la punta (el que se tomaria al hacer clic), para mostrarlo dentro del aro.
-            let color = if pin { self.color_at(camera, mouse.0, mouse.1) } else { None };
+            let color = if pin {
+                self.color_at(camera, mouse.0, mouse.1)
+            } else {
+                None
+            };
             let on_model = if pin {
                 true
             } else {
@@ -1156,13 +1442,27 @@ impl Gpu {
                     None => false,
                 }
             };
-            Some(BrushRing { pos: [mouse.0, mouse.1], radius: self.ring_radius, on_model, pin, color })
+            Some(BrushRing {
+                pos: [mouse.0, mouse.1],
+                radius: self.ring_radius,
+                on_model,
+                pin,
+                color,
+            })
         } else {
             None
         };
         // Interfaz (egui) encima del modelo. El panel de capas muestra las de la pieza activa.
         let active = self.active();
-        let UiOutput { full_output, changed: ui_changed, view_axis, layers_dirty, parts_dirty } = self.ui.run(
+        let UiOutput {
+            full_output,
+            changed: ui_changed,
+            view_axis,
+            layers_dirty,
+            parts_dirty,
+            save_project,
+            save_image,
+        } = self.ui.run(
             &self.window,
             &mut self.tool,
             &mut self.brush_color,
@@ -1189,17 +1489,41 @@ impl Gpu {
         if piece_changed {
             self.window.request_redraw();
         }
+        // "Regresar a mi galería": antes de volver se guarda el proyecto (capas y miniatura).
+        if save_project {
+            self.save_project();
+        }
+        // "Guardar imagen" del menu: diálogo para elegir dónde guardar y exportación de la textura.
+        if save_image {
+            let msg = self.save_image();
+            self.window.set_title(&msg);
+        }
         // El boton Importar del panel de mallas ya tiene el archivo elegido: se reemplaza el modelo.
         if let Some(path) = self.ui.take_import() {
             self.open_obj(&path);
+        }
+        // Se pulso la tarjeta de un proyecto guardado en la galeria: se abre. Si falla, la galeria vuelve a mostrarse.
+        if let Some(id) = self.ui.take_open_project() {
+            if let Err(e) = self.open_project(&id) {
+                eprintln!("{e}");
+                self.ui.show_gallery();
+                self.window.request_redraw();
+            }
         }
         if ui_changed || piece_changed {
             self.window.set_title(&self.status());
         }
         let size = [self.config.width, self.config.height];
-        let (extra, repaint_delay) =
-            self.ui.paint(&self.device, &self.queue, &mut encoder, &ui_view, size, full_output);
-        self.queue.submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
+        let (extra, repaint_delay) = self.ui.paint(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &ui_view,
+            size,
+            full_output,
+        );
+        self.queue
+            .submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
         self.window.pre_present_notify();
         self.queue.present(frame);
         (repaint_delay, view_axis)
@@ -1229,7 +1553,9 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         let due = *self.next_build_up.get_or_insert(now + BUILD_UP_INTERVAL);
         let next = if now >= due {
-            if !std::mem::take(&mut self.moved_since_tick) && gpu.stroke_hold(&self.camera, self.mouse.0, self.mouse.1) {
+            if !std::mem::take(&mut self.moved_since_tick)
+                && gpu.stroke_hold(&self.camera, self.mouse.0, self.mouse.1)
+            {
                 gpu.window.request_redraw();
             }
             now + BUILD_UP_INTERVAL
@@ -1252,11 +1578,13 @@ impl ApplicationHandler for App {
         // `cargo run -- modelo.obj` abre ese modelo; sin argumento (o si falla) se ve la esfera de prueba.
         let mut title = String::from("texturecraft");
         let mut model_name = String::from("Esfera de prueba");
+        let mut model_path = None;
         let mesh = match std::env::args().nth(1) {
             Some(arg) => match load_mesh(Path::new(&arg)) {
                 Ok(m) => {
                     title = format!("texturecraft - {}", file_name(Path::new(&arg)));
                     model_name = file_name(Path::new(&arg));
+                    model_path = Some(std::path::PathBuf::from(&arg));
                     m
                 }
                 Err(e) => {
@@ -1268,7 +1596,8 @@ impl ApplicationHandler for App {
         };
         window.set_title(&title);
         self.gpu = Some(Gpu::new(event_loop, window, &mesh, &model_name));
-        if let Some(g) = &self.gpu {
+        if let Some(g) = self.gpu.as_mut() {
+            g.model_path = model_path;
             g.window.request_redraw();
         }
     }
@@ -1299,6 +1628,10 @@ impl ApplicationHandler for App {
                 }
                 match button {
                     MouseButton::Left => {
+                        // Modo edición: el botón izquierdo no pinta (solo sirve para elegir cosas de la interfaz).
+                        if down && gpu.ui.edit_mode() {
+                            return;
+                        }
                         let was_down = self.left_down;
                         self.left_down = down;
                         if down {
@@ -1373,7 +1706,9 @@ impl ApplicationHandler for App {
                 self.camera.zoom(steps);
                 gpu.window.request_redraw();
             }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !ui_has_it => {
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed && !ui_has_it =>
+            {
                 match event.logical_key {
                     Key::Named(NamedKey::Escape) => event_loop.exit(),
                     Key::Character(ref c) if c == "1" && !gpu.view_locked => {
@@ -1413,8 +1748,12 @@ impl ApplicationHandler for App {
                             "b" => {
                                 let l = &mut gpu.layers_mut().layers[sel];
                                 let n = BlendMode::ALL.len();
-                                let i = BlendMode::ALL.iter().position(|&m| m == l.blend).unwrap_or(0);
-                                l.blend = BlendMode::ALL[if shift { (i + n - 1) % n } else { (i + 1) % n }];
+                                let i = BlendMode::ALL
+                                    .iter()
+                                    .position(|&m| m == l.blend)
+                                    .unwrap_or(0);
+                                l.blend = BlendMode::ALL
+                                    [if shift { (i + n - 1) % n } else { (i + 1) % n }];
                                 recompose = true;
                             }
                             "v" => {
@@ -1506,7 +1845,8 @@ impl ApplicationHandler for App {
                 // Si hay un giro animado de la vista (clic en el gizmo), se avanza antes de dibujar y se sigue
                 // redibujando hasta que termine.
                 let animating = self.camera.update_animation();
-                let (delay, view_axis) = gpu.render(&self.camera, self.mouse, self.cursor_in_window);
+                let (delay, view_axis) =
+                    gpu.render(&self.camera, self.mouse, self.cursor_in_window);
                 if let Some(axis) = view_axis {
                     if !gpu.view_locked {
                         self.camera.snap_to(axis);
@@ -1542,5 +1882,7 @@ fn main() {
         next_build_up: None,
         moved_since_tick: false,
     };
-    event_loop.run_app(&mut app).expect("error en el bucle de eventos");
+    event_loop
+        .run_app(&mut app)
+        .expect("error en el bucle de eventos");
 }

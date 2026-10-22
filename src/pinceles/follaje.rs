@@ -75,8 +75,15 @@ fn construir() -> Punta {
             let half = 0.42 * (PI * t).sin() * (1.0 - 0.25 * t);
             let inside = ((half - v.abs()) * c).clamp(0.0, 1.0);
             let rib = 1.0 - 0.45 * (1.0 - (v.abs() * c / 1.2).clamp(0.0, 1.0));
-            let veins = 1.0 - 0.2 * (1.0 - (((u * 7.0 - v.abs() * 5.0).fract() - 0.5).abs() * 8.0).clamp(0.0, 1.0));
-            let stem = if u < -0.75 && v.abs() * c < 0.9 { 1.0 } else { 0.0 };
+            let veins = 1.0
+                - 0.2
+                    * (1.0
+                        - (((u * 7.0 - v.abs() * 5.0).fract() - 0.5).abs() * 8.0).clamp(0.0, 1.0));
+            let stem = if u < -0.75 && v.abs() * c < 0.9 {
+                1.0
+            } else {
+                0.0
+            };
             data.push((inside * rib * veins).max(stem));
         }
     }
@@ -165,7 +172,11 @@ fn hsv_a_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 
 /// El color `base` con el tono corrido `hue` (en vueltas) y el brillo corrido `bright` (la saturacion no cambia).
 pub(super) fn matizar(base: [u8; 3], hue: f32, bright: f32) -> [u8; 3] {
-    let c = [f32::from(base[0]) / 255.0, f32::from(base[1]) / 255.0, f32::from(base[2]) / 255.0];
+    let c = [
+        f32::from(base[0]) / 255.0,
+        f32::from(base[1]) / 255.0,
+        f32::from(base[2]) / 255.0,
+    ];
     let [h, s, v] = rgb_a_hsv(c);
     let o = hsv_a_rgb(h + hue, s, (v + bright).clamp(0.0, 1.0));
     [0, 1, 2].map(|k| (o[k] * 255.0).round().clamp(0.0, 255.0) as u8)
@@ -219,19 +230,36 @@ mod tests {
                 assert!((0.5 - 1e-4..=1.0 + 1e-4).contains(&size), "tamano {size}");
                 tam_min = tam_min.min(size);
                 tam_max = tam_max.max(size);
-                assert!((0.6 - 1e-4..=1.0).contains(&h.roundness), "redondez {}", h.roundness);
+                assert!(
+                    (0.6 - 1e-4..=1.0).contains(&h.roundness),
+                    "redondez {}",
+                    h.roundness
+                );
                 // Cada eje se aleja a lo sumo 1.2 veces el radio de la hoja (como mucho 1.2 radios del pincel).
-                assert!(h.shift.x.abs() <= FOLIAGE_SCATTER * radio + 1e-4 && h.shift.y.abs() <= FOLIAGE_SCATTER * radio + 1e-4);
+                assert!(
+                    h.shift.x.abs() <= FOLIAGE_SCATTER * radio + 1e-4
+                        && h.shift.y.abs() <= FOLIAGE_SCATTER * radio + 1e-4
+                );
                 en_x |= h.shift.x.abs() > 0.3;
                 en_y |= h.shift.y.abs() > 0.3;
                 volteos[(h.t.cross(h.b).dot(Vec3::Z) > 0.0) as usize] = true;
             }
-            assert!(d.reach() <= FOLIAGE_REACH * radio + 1e-4, "alcance {}", d.reach());
+            assert!(
+                d.reach() <= FOLIAGE_REACH * radio + 1e-4,
+                "alcance {}",
+                d.reach()
+            );
         }
         // Mas o menos la mitad de los toques lleva dos hojas.
-        assert!(con_una > 100 && con_dos > 100, "una {con_una}, dos {con_dos}");
+        assert!(
+            con_una > 100 && con_dos > 100,
+            "una {con_una}, dos {con_dos}"
+        );
         assert!(en_x && en_y, "no se dispersa en los dos ejes");
-        assert!(tam_max - tam_min > 0.3, "los tamanos casi no varian: de {tam_min} a {tam_max}");
+        assert!(
+            tam_max - tam_min > 0.3,
+            "los tamanos casi no varian: de {tam_min} a {tam_max}"
+        );
         assert!(volteos[0] && volteos[1], "el volteo no cambia nunca");
     }
 
@@ -242,7 +270,10 @@ mod tests {
         let a = DryDab::new(DryKind::Foliage, 9, Vec3::Z, Vec3::X, 1.0).with_color([60, 160, 60]);
         let b = DryDab::new(DryKind::Foliage, 9, Vec3::Z, Vec3::X, 1.0).with_color([60, 160, 60]);
         let p = Vec3::new(0.2, -0.1, 0.0);
-        assert_eq!(a.alpha_color(p, [60, 160, 60]), b.alpha_color(p, [60, 160, 60]));
+        assert_eq!(
+            a.alpha_color(p, [60, 160, 60]),
+            b.alpha_color(p, [60, 160, 60])
+        );
     }
 
     #[test]
@@ -252,17 +283,31 @@ mod tests {
         let (mut verde_min, mut verde_max) = (255u8, 0u8);
         for dab in 1..200 {
             let d = DryDab::new(DryKind::Foliage, dab, Vec3::Z, Vec3::X, 1.0).with_color(base);
-            let c = d.follaje.as_ref().and_then(|f| f.paint).expect("la hoja no tiene color");
+            let c = d
+                .follaje
+                .as_ref()
+                .and_then(|f| f.paint)
+                .expect("la hoja no tiene color");
             colores.insert(c);
             verde_min = verde_min.min(c[1]);
             verde_max = verde_max.max(c[1]);
             // El brillo corre a lo sumo 0.12 (31 de 255) y el tono unos 12: nunca se aleja mucho del color del pincel.
             for k in 0..3 {
-                assert!((i32::from(c[k]) - i32::from(base[k])).abs() <= 60, "color {c:?} lejos de {base:?}");
+                assert!(
+                    (i32::from(c[k]) - i32::from(base[k])).abs() <= 60,
+                    "color {c:?} lejos de {base:?}"
+                );
             }
         }
-        assert!(colores.len() > 20, "pocos colores distintos: {}", colores.len());
-        assert!(verde_max - verde_min > 20, "el verde casi no varia: de {verde_min} a {verde_max}");
+        assert!(
+            colores.len() > 20,
+            "pocos colores distintos: {}",
+            colores.len()
+        );
+        assert!(
+            verde_max - verde_min > 20,
+            "el verde casi no varia: de {verde_min} a {verde_max}"
+        );
         // Los demas pinceles de medio seco no cambian el color.
         let s = DryDab::new(DryKind::Stipple, 3, Vec3::Z, Vec3::X, 1.0).with_color(base);
         assert_eq!(s.alpha_color(Vec3::new(0.1, 0.1, 0.0), base).1, base);
@@ -270,7 +315,13 @@ mod tests {
 
     #[test]
     fn el_matiz_no_cambia_el_color_si_no_se_mueve_nada() {
-        for c in [[60u8, 160, 60], [255, 0, 0], [10, 10, 10], [200, 180, 40], [255, 255, 255]] {
+        for c in [
+            [60u8, 160, 60],
+            [255, 0, 0],
+            [10, 10, 10],
+            [200, 180, 40],
+            [255, 255, 255],
+        ] {
             assert_eq!(matizar(c, 0.0, 0.0), c);
         }
         // Mas brillo aclara, menos brillo oscurece.
@@ -281,13 +332,28 @@ mod tests {
 
     #[test]
     fn el_follaje_pinta_hojas_de_colores_distintos_y_no_pasa_de_su_alcance() {
-        let p = [Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 2.0, 0.0), Vec3::new(0.0, 2.0, 0.0)];
+        let p = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ];
         let uv = [[0.25, 0.25], [0.5, 0.25], [0.5, 0.75], [0.25, 0.75]];
         let tris = [
-            SurfTri { p: [p[0], p[1], p[2]], uv: [uv[0], uv[1], uv[2]] },
-            SurfTri { p: [p[0], p[2], p[3]], uv: [uv[0], uv[2], uv[3]] },
+            SurfTri {
+                p: [p[0], p[1], p[2]],
+                uv: [uv[0], uv[1], uv[2]],
+            },
+            SurfTri {
+                p: [p[0], p[2], p[3]],
+                uv: [uv[0], uv[2], uv[3]],
+            },
         ];
-        let opts = DabOptions { brush: BrushType::Foliage, normal: Vec3::Z, ..Default::default() };
+        let opts = DabOptions {
+            brush: BrushType::Foliage,
+            normal: Vec3::Z,
+            ..Default::default()
+        };
         let mut s = StrokeState::new(64);
         let mut pixels = vec![0u8; 64 * 64 * 4];
         s.begin_stroke();
@@ -305,6 +371,10 @@ mod tests {
             }
         }
         assert!(pintados > 30, "pinto pocos texeles: {pintados}");
-        assert!(colores.len() > 3, "todas las hojas salen del mismo color: {}", colores.len());
+        assert!(
+            colores.len() > 3,
+            "todas las hojas salen del mismo color: {}",
+            colores.len()
+        );
     }
 }

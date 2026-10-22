@@ -38,10 +38,17 @@ pub(super) fn nav_gizmo(ctx: &egui::Context, camera: &Camera) -> Option<ViewAxis
     egui::Area::new(egui::Id::new("navgizmo"))
         .anchor(Align2::RIGHT_TOP, vec2(-GIZMO_MARGIN, GIZMO_MARGIN))
         .show(ctx, |ui| {
-            let (rect, response) = ui.allocate_exact_size(vec2(GIZMO_SIZE, GIZMO_SIZE), Sense::click());
+            let (rect, response) =
+                ui.allocate_exact_size(vec2(GIZMO_SIZE, GIZMO_SIZE), Sense::click());
             let center = rect.center();
             let pointer = response.hover_pos();
-            let radius = |a: ViewAxis| if a.is_positive() { GIZMO_POS_R } else { GIZMO_NEG_R };
+            let radius = |a: ViewAxis| {
+                if a.is_positive() {
+                    GIZMO_POS_R
+                } else {
+                    GIZMO_NEG_R
+                }
+            };
 
             // (eje, posicion en pantalla, profundidad). En espacio de vista +Z mira hacia quien ve, asi que mayor Z =
             // mas cerca; se ordena de lejos a cerca para que lo de delante tape lo de atras.
@@ -56,13 +63,21 @@ pub(super) fn nav_gizmo(ctx: &egui::Context, camera: &Camera) -> Option<ViewAxis
 
             // Eje bajo el cursor: el de mas adelante si se solapan.
             let hovered = pointer.and_then(|p| {
-                items.iter().rev().find(|(a, pos, _)| pos.distance(p) <= radius(*a) + 2.0).map(|(a, _, _)| *a)
+                items
+                    .iter()
+                    .rev()
+                    .find(|(a, pos, _)| pos.distance(p) <= radius(*a) + 2.0)
+                    .map(|(a, _, _)| *a)
             });
 
             let p = ui.painter();
             // Fondo suave solo mientras el cursor esta encima del gizmo.
             if pointer.is_some_and(|q| q.distance(center) <= GIZMO_SIZE * 0.5) {
-                p.circle_filled(center, GIZMO_SIZE * 0.5 - 2.0, Color32::from_white_alpha(22));
+                p.circle_filled(
+                    center,
+                    GIZMO_SIZE * 0.5 - 2.0,
+                    Color32::from_white_alpha(22),
+                );
             }
             for &(axis, pos, depth) in &items {
                 // Los ejes que apuntan hacia atras se ven mas apagados.
@@ -75,15 +90,32 @@ pub(super) fn nav_gizmo(ctx: &egui::Context, camera: &Camera) -> Option<ViewAxis
                     if hot {
                         p.circle_stroke(pos, GIZMO_POS_R + 1.0, Stroke::new(1.5, Color32::WHITE));
                     }
-                    p.text(pos, Align2::CENTER_CENTER, axis_name(axis), FontId::proportional(9.5), Color32::from_rgb(30, 30, 30));
+                    p.text(
+                        pos,
+                        Align2::CENTER_CENTER,
+                        axis_name(axis),
+                        FontId::proportional(9.5),
+                        Color32::from_rgb(30, 30, 30),
+                    );
                 } else {
                     // Negativo: circulo hueco; al pasar el cursor crece un poco y muestra su nombre.
                     let r = if hot { GIZMO_NEG_R + 3.5 } else { GIZMO_NEG_R };
-                    let fill = axis_color(axis).gamma_multiply(if hot { 0.55 } else { 0.28 } * fade);
+                    let fill =
+                        axis_color(axis).gamma_multiply(if hot { 0.55 } else { 0.28 } * fade);
                     p.circle_filled(pos, r, fill);
-                    p.circle_stroke(pos, r, Stroke::new(1.5, if hot { Color32::WHITE } else { color }));
+                    p.circle_stroke(
+                        pos,
+                        r,
+                        Stroke::new(1.5, if hot { Color32::WHITE } else { color }),
+                    );
                     if hot {
-                        p.text(pos, Align2::CENTER_CENTER, axis_name(axis), FontId::proportional(9.0), Color32::WHITE);
+                        p.text(
+                            pos,
+                            Align2::CENTER_CENTER,
+                            axis_name(axis),
+                            FontId::proportional(9.0),
+                            Color32::WHITE,
+                        );
                     }
                 }
             }

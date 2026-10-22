@@ -7,7 +7,9 @@
 
 use glam::Vec3;
 
-use super::{carboncillo, crayon, esponja, follaje, pastel, pasto, punteado, salpicadura, semitono};
+use super::{
+    carboncillo, cincel, crayon, esponja, follaje, pastel, pasto, punteado, salpicadura, semitono,
+};
 
 /// Los pinceles de medio seco portados de photocraft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -35,6 +37,12 @@ pub enum DryKind {
     /// que se mezcla en modo HardMix con CADA toque (`crayon.rs`; la mezcla se aplica en `paint.rs` con
     /// `dry_mezcla_toque`).
     Crayon,
+    /// Textura de esponja (Sponge Texture de photocraft): la esponja de poros con otra semilla, sin bordes mojados, y una
+    /// opacidad distinta en cada toque (`esponja.rs`; la opacidad se aplica en `paint.rs` con `dry_mezcla_toque`).
+    SpongeTexture,
+    /// Cincel plano: punta de paralelogramo aplastada que sigue la direccion del trazo, sin papel ni azar
+    /// (`cincel.rs`; deducido de una imagen, no de photocraft).
+    Chisel,
 }
 
 /// Cuanta cobertura RESTA el papel (carboncillo) o el lienzo (pastel) en un texel: `profundidad * t`, con `t` el patron
@@ -54,7 +62,9 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
         | DryKind::Spatter
         | DryKind::Grass
         | DryKind::Halftone
-        | DryKind::Crayon => 0.0,
+        | DryKind::Crayon
+        | DryKind::SpongeTexture
+        | DryKind::Chisel => 0.0,
     }
 }
 
@@ -70,12 +80,13 @@ pub fn dry_hardmix(kind: DryKind, tx: u32, ty: u32) -> Option<f32> {
 }
 
 /// La cobertura `v` de UN toque (el numero `dab`) en el texel `(tx, ty)` (en la posicion `pos` del modelo) ya mezclada
-/// con el papel de ese toque, o `v` tal cual si el pincel no mezcla papel con cada toque (todos menos el crayon). A
+/// con el papel de ese toque, o `v` tal cual si el pincel no mezcla papel con cada toque (todos menos el crayon y la textura de esponja, que solo la escala por la opacidad del toque). A
 /// diferencia de `dry_subtract` y `dry_hardmix`, que actuan sobre la cobertura ya acumulada del trazo, esta se aplica
 /// a cada toque ANTES de acumularlo (`each_tip` de photocraft; `paint.rs`, `dab_surface`).
 pub fn dry_mezcla_toque(kind: DryKind, v: f32, dab: u32, pos: Vec3, tx: u32, ty: u32) -> f32 {
     match kind {
         DryKind::Crayon => crayon::mezcla(v, dab, pos, tx, ty),
+        DryKind::SpongeTexture => v * esponja::opacidad_toque(dab),
         _ => v,
     }
 }
@@ -93,6 +104,9 @@ pub fn dry_mezcla_toque(kind: DryKind, v: f32, dab: u32, pos: Vec3, tx: u32, ty:
 ///   (`semitono.rs`).
 /// - Crayon de cera: una elipse de borde suave que sigue la direccion del trazo, sin tamano ni dispersion al azar; su
 ///   punta llega mas alla del radio (`crayon.rs`).
+/// - Cincel plano: un paralelogramo aplastado que sigue la direccion del trazo, sin azar (`cincel.rs`).
+/// - Esponja de tinta y Textura de esponja: la punta de poros gira libre; la de tinta cambia de tamano y la textura
+///   cambia de opacidad en cada toque (`esponja.rs`).
 pub struct DryDab {
     pub(super) kind: DryKind,
     /// Ejes de la punta sobre la superficie.
@@ -126,6 +140,8 @@ impl DryDab {
             DryKind::Stipple => punteado::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Foliage => follaje::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Sponge => esponja::nuevo(dab, inv_radius, t0, b0),
+            DryKind::SpongeTexture => esponja::nuevo_textura(dab, inv_radius, t0, b0),
+            DryKind::Chisel => cincel::nuevo(inv_radius, t0, n, along),
             DryKind::Spatter => salpicadura::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Grass => pasto::nuevo(dab, inv_radius, radius, t0, b0, n, along),
             DryKind::Halftone => semitono::nuevo(inv_radius, t0, b0),
@@ -157,13 +173,18 @@ impl DryDab {
     /// Cobertura (0..1) de UNA punta (la hoja principal, sin la segunda) en un texel.
     fn punta_alpha(&self, offset: Vec3) -> f32 {
         let o = offset - self.shift;
-        let (u, v) = (o.dot(self.t) * self.inv_radius, o.dot(self.b) * self.inv_radius / self.roundness);
+        let (u, v) = (
+            o.dot(self.t) * self.inv_radius,
+            o.dot(self.b) * self.inv_radius / self.roundness,
+        );
         let tip = match self.kind {
             DryKind::Charcoal => carboncillo::punta(),
             DryKind::Pastel => pastel::punta(),
             DryKind::Stipple => punteado::punta(),
             DryKind::Foliage => follaje::punta(),
             DryKind::Sponge => esponja::punta(),
+            DryKind::SpongeTexture => esponja::punta_textura(),
+            DryKind::Chisel => cincel::punta(),
             DryKind::Spatter => salpicadura::punta(),
             DryKind::Grass => pasto::punta(),
             DryKind::Halftone => semitono::punta(),
@@ -215,15 +236,37 @@ mod tests {
 
     #[test]
     fn la_resta_del_papel_y_del_lienzo_esta_en_rango_y_varia() {
-        for (kind, depth) in [(DryKind::Charcoal, CHARCOAL_PAPER_DEPTH), (DryKind::Pastel, PASTEL_CANVAS_DEPTH)] {
+        for (kind, depth) in [
+            (DryKind::Charcoal, CHARCOAL_PAPER_DEPTH),
+            (DryKind::Pastel, PASTEL_CANVAS_DEPTH),
+        ] {
             let vals: Vec<f32> = (0..300u32)
-                .map(|i| dry_subtract(kind, Vec3::new(i as f32 * 0.011, 0.2, i as f32 * 0.005), i, i * 3 % 1024))
+                .map(|i| {
+                    dry_subtract(
+                        kind,
+                        Vec3::new(i as f32 * 0.011, 0.2, i as f32 * 0.005),
+                        i,
+                        i * 3 % 1024,
+                    )
+                })
                 .collect();
-            assert!(vals.iter().all(|v| (0.0..=depth + 1e-6).contains(v)), "{kind:?}");
-            let (lo, hi) = (vals.iter().cloned().fold(f32::MAX, f32::min), vals.iter().cloned().fold(0.0, f32::max));
-            assert!(hi - lo > 0.2 * depth, "{kind:?} es casi plano: de {lo} a {hi}");
+            assert!(
+                vals.iter().all(|v| (0.0..=depth + 1e-6).contains(v)),
+                "{kind:?}"
+            );
+            let (lo, hi) = (
+                vals.iter().cloned().fold(f32::MAX, f32::min),
+                vals.iter().cloned().fold(0.0, f32::max),
+            );
+            assert!(
+                hi - lo > 0.2 * depth,
+                "{kind:?} es casi plano: de {lo} a {hi}"
+            );
             // Mismo punto, mismo valor.
-            assert_eq!(dry_subtract(kind, Vec3::ONE, 5, 9), dry_subtract(kind, Vec3::ONE, 5, 9));
+            assert_eq!(
+                dry_subtract(kind, Vec3::ONE, 5, 9),
+                dry_subtract(kind, Vec3::ONE, 5, 9)
+            );
         }
     }
 }
