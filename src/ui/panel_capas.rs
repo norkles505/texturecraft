@@ -21,6 +21,8 @@ pub(super) const LP_ROW_H: f32 = 70.0;
 /// Miniatura de cada capa (tambien la de la capa de seleccion): vertical, como en Ibis Paint.
 pub(super) const LP_THUMB_W: f32 = 48.0;
 pub(super) const LP_THUMB_H: f32 = 58.0;
+/// Lado de la miniatura de la mascara (cuadrada, junto a la de la capa).
+pub(super) const LP_MASK_W: f32 = 30.0;
 pub(super) const LP_CTRL_H: f32 = 34.0;
 pub(super) const LP_SLIDER_H: f32 = 36.0;
 /// Fondo de la capa elegida y gris de la parte de arriba de la tira izquierda.
@@ -41,18 +43,11 @@ pub(super) const BP_GAP: f32 = 12.0;
 pub(super) const BP_HEAD_FILL: Color32 = Color32::from_gray(75);
 
 /// Menu de los tres puntos del panel de capas (como el de Ibis Paint): ancho, alto de cada fila y tamano del texto.
-/// Cada fila es (nombre, activa); las que no estan activas se ven en gris y no responden al clic. Por ahora ninguna
-/// tiene funcion: al hacer clic en una activa solo se cierra el menu.
+/// Las filas las arma `layers_panel` segun la capa elegida (nombre, activa): las que no estan activas se ven en gris y
+/// no responden al clic.
 pub(super) const MORE_W: f32 = 235.0;
 pub(super) const MORE_ROW_H: f32 = 36.0;
 pub(super) const MORE_TEXT_SIZE: f32 = 14.0;
-pub(super) const MORE_ITEMS: [(&str, bool); 5] = [
-    ("Selecciona la opacidad", true),
-    ("Renombrar capa", true),
-    ("Bloquear capa", true),
-    ("Iniciar Modo Solo", true),
-    ("Guardar como PNG Transparente", true),
-];
 
 /// Grupos del desplegable (titulo y sus modos, en el orden de `BlendMode::ALL`). El titulo vacio = sin barra de titulo.
 pub(super) const BLEND_GROUPS: [(&str, &[BlendMode]); 6] = [
@@ -238,13 +233,25 @@ pub(super) fn layers_panel(
 ) -> bool {
     if !options.layers_open {
         options.more_open = false;
+        options.channel_open = false;
+        options.delete_armed = None;
+        options.rename = None;
         return false;
+    }
+    // El aviso de "toca otra vez para borrar" vale solo para la capa a la que se toco.
+    if options
+        .delete_armed
+        .is_some_and(|id| stack.selected_layer().id != id)
+    {
+        options.delete_armed = None;
     }
     let mut recompose = false;
     // Donde quedo el boton de los tres puntos (el menu se abre pegado a el).
     let mut dots_rect: Option<Rect> = None;
     // Donde quedo el desplegable de modos de mezcla (el desplegable se abre encima de el).
     let mut dropdown: Option<Rect> = None;
+    // Lo mismo para el desplegable del canal (Color, Rugosidad, Metalico, Altura).
+    let mut channel_dd: Option<Rect> = None;
     #[allow(deprecated)]
     let id = egui::Id::new("layers_panel");
     let out = egui::Area::new(id)
@@ -294,7 +301,8 @@ pub(super) fn layers_panel(
                     );
                     p.rect_filled(list, CornerRadius::same(0), LP_LIST_EMPTY);
 
-                    // Tira izquierda: nueva capa (funciona), duplicar y carpeta (todavia sin funcion).
+                    // Tira izquierda: nueva capa, duplicar y carpeta nueva. Si duplicar o la carpeta no se pueden, el texto
+                    // que sale al pasar el cursor dice por que.
                     let lx = left.center().x;
                     let ly = |k: f32| bx.bottom() - 18.0 - 33.0 * k;
                     let hit_l = vec2(LP_LEFT_W, 32.0);
@@ -308,9 +316,11 @@ pub(super) fn layers_panel(
                         false,
                     );
                     if r.on_hover_text("Nueva capa").clicked() {
+                        // Elegida una capa de una carpeta, la nueva queda dentro de la carpeta. Vacia no cambia lo que se ve.
                         stack.add_layer();
                     }
-                    panel_icon(
+                    let blocker = stack.duplicate_blocker();
+                    let r = panel_icon(
                         ui,
                         ui_id.with("lp_copy"),
                         egui::pos2(lx, ly(1.0)),
@@ -318,9 +328,12 @@ pub(super) fn layers_panel(
                         22.0,
                         egui::include_image!("../../assets/icons/layer_copy.svg"),
                         false,
-                    )
-                    .on_hover_text("Duplicar capa (todavia sin funcion)");
-                    panel_icon(
+                    );
+                    if r.on_hover_text(blocker.unwrap_or("Duplicar capa")).clicked() {
+                        recompose |= stack.duplicate_layer();
+                    }
+                    let blocker = stack.add_folder_blocker();
+                    let r = panel_icon(
                         ui,
                         ui_id.with("lp_folder"),
                         egui::pos2(lx, ly(0.0)),
@@ -328,14 +341,20 @@ pub(super) fn layers_panel(
                         28.0,
                         egui::include_image!("../../assets/icons/layer_folder.svg"),
                         false,
-                    )
-                    .on_hover_text("Carpeta nueva (todavia sin funcion)");
+                    );
+                    if r
+                        .on_hover_text(blocker.unwrap_or("Carpeta nueva con la capa elegida dentro"))
+                        .clicked()
+                    {
+                        recompose |= stack.add_folder();
+                    }
 
                     // Tira derecha (de arriba abajo): cuadricula, circulo, combinar, borrar y mas. Todavia sin funcion.
                     let rx = right.center().x;
                     let ry = |k: f32| bx.bottom() - 15.0 - 27.0 * k;
                     let hit_r = vec2(LP_RIGHT_W, 26.0);
-                    panel_icon(
+                    // Limpiar capa: pide a `main` que vacie lo que se pinta ahora (hace falta el historial); Ctrl+Z lo deshace.
+                    let r = panel_icon(
                         ui,
                         ui_id.with("lp_checker"),
                         egui::pos2(rx, ry(4.0)),
@@ -343,9 +362,12 @@ pub(super) fn layers_panel(
                         25.0,
                         egui::include_image!("../../assets/icons/layer_checker.svg"),
                         false,
-                    )
-                    .on_hover_text("Limpiar capa (todavia sin funcion)");
-                    panel_icon(
+                    );
+                    if r.on_hover_text("Limpiar capa (se puede deshacer)").clicked() {
+                        stack.op_requested = Some(crate::layers::LayerOp::Clear);
+                    }
+                    // Invertir colores: igual que limpiar, lo hace `main` con el historial (Ctrl+Z lo deshace).
+                    let r = panel_icon(
                         ui,
                         ui_id.with("lp_half"),
                         egui::pos2(rx, ry(3.0)),
@@ -353,9 +375,13 @@ pub(super) fn layers_panel(
                         19.0,
                         egui::include_image!("../../assets/icons/layer_invert.svg"),
                         false,
-                    )
-                    .on_hover_text("Invertir colores (todavia sin funcion)");
-                    panel_icon(
+                    );
+                    if r.on_hover_text("Invertir colores (se puede deshacer)").clicked() {
+                        stack.op_requested = Some(crate::layers::LayerOp::Invert);
+                    }
+                    // Combinar hacia abajo: si no se puede, el texto que sale al pasar el cursor dice por que.
+                    let blocker = stack.merge_down_blocker();
+                    let r = panel_icon(
                         ui,
                         ui_id.with("lp_merge"),
                         egui::pos2(rx, ry(2.0)),
@@ -363,18 +389,41 @@ pub(super) fn layers_panel(
                         18.0,
                         egui::include_image!("../../assets/icons/layer_merge.svg"),
                         false,
-                    )
-                    .on_hover_text("Combinar hacia abajo (todavia sin funcion)");
-                    panel_icon(
+                    );
+                    if r
+                        .on_hover_text(blocker.unwrap_or("Combinar hacia abajo (no se puede deshacer)"))
+                        .clicked()
+                        && blocker.is_none()
+                    {
+                        recompose |= stack.merge_down();
+                    }
+                    // Bote de basura: el primer toque lo "arma" (se pinta de azul) y el segundo borra la capa elegida (una
+                    // carpeta se borra con todas las capas de dentro).
+                    let armed = options.delete_armed == Some(stack.selected_layer().id);
+                    let is_folder = stack.selected_layer().is_group();
+                    let r = panel_icon(
                         ui,
                         ui_id.with("lp_trash"),
                         egui::pos2(rx, ry(1.0)),
                         hit_r,
                         26.0,
                         egui::include_image!("../../assets/icons/layer_trash.svg"),
-                        false,
-                    )
-                    .on_hover_text("Borrar capa (todavia sin funcion)");
+                        armed,
+                    );
+                    let hint = match (armed, is_folder) {
+                        (true, true) => "Toca otra vez para borrar la carpeta y sus capas (no se puede deshacer)",
+                        (true, false) => "Toca otra vez para borrar la capa (no se puede deshacer)",
+                        (false, true) => "Borrar carpeta y las capas de dentro",
+                        (false, false) => "Borrar capa",
+                    };
+                    if r.on_hover_text(hint).clicked() {
+                        if armed {
+                            options.delete_armed = None;
+                            recompose |= stack.remove_layer();
+                        } else if stack.layers.len() > 1 {
+                            options.delete_armed = Some(stack.selected_layer().id);
+                        }
+                    }
                     let dots = ui.interact(
                         Rect::from_center_size(egui::pos2(rx, ry(0.0)), hit_r),
                         ui_id.with("lp_dots"),
@@ -392,6 +441,7 @@ pub(super) fn layers_panel(
                     if dots.clone().on_hover_text("Mas opciones").clicked() {
                         options.more_open = !options.more_open;
                         options.blend_open = false;
+                        options.channel_open = false;
                     }
 
                     // Fila "Fondo" (abajo de la lista) y zona de la lista. Como en Ibis Paint, si todo cabe la pila de filas
@@ -513,12 +563,21 @@ pub(super) fn layers_panel(
                         if rr.clicked() {
                             stack.selected = idx;
                         }
+                        // Las capas de una carpeta van un poco metidas hacia la derecha.
+                        let indent = if stack.layers[idx].parent.is_some() { 14.0 } else { 0.0 };
                         let th = Rect::from_min_size(
-                            egui::pos2(row.left() + 6.0, row.center().y - LP_THUMB_H * 0.5),
+                            egui::pos2(row.left() + 6.0 + indent, row.center().y - LP_THUMB_H * 0.5),
                             vec2(LP_THUMB_W, LP_THUMB_H),
                         );
-                        let eye_c = egui::pos2(th.right() + 26.0, row.center().y);
-                        // El ojo se crea despues de la fila para tener prioridad donde se solapan.
+                        // Con mascara, su miniatura va junto a la de la capa y empuja el nombre y el ojo a la derecha.
+                        let has_mask = stack.layers[idx].mask.is_some();
+                        let mask_w = if has_mask { LP_MASK_W + 4.0 } else { 0.0 };
+                        let mk = Rect::from_min_size(
+                            egui::pos2(th.right() + 4.0, row.center().y - LP_MASK_W * 0.5),
+                            vec2(LP_MASK_W, LP_MASK_W),
+                        );
+                        let eye_c = egui::pos2(th.right() + 26.0 + mask_w, row.center().y);
+                        // El ojo y las miniaturas se crean despues de la fila para tener prioridad donde se solapan.
                         let eye = ui.interact(
                             Rect::from_center_size(eye_c, vec2(26.0, 26.0)).intersect(area),
                             ui_id.with(("leye", d)),
@@ -527,6 +586,27 @@ pub(super) fn layers_panel(
                         if eye.clicked() {
                             stack.layers[idx].visible = !stack.layers[idx].visible;
                             recompose = true;
+                        }
+                        if has_mask {
+                            // Tocar la miniatura de la capa o la de la mascara elige donde pinta el pincel.
+                            let on_layer = ui.interact(
+                                th.intersect(area),
+                                ui_id.with(("lthumb", d)),
+                                Sense::click(),
+                            );
+                            let on_mask = ui.interact(
+                                mk.intersect(area),
+                                ui_id.with(("lmask", d)),
+                                Sense::click(),
+                            );
+                            if on_layer.clicked() {
+                                stack.selected = idx;
+                                stack.layers[idx].editing_mask = false;
+                            }
+                            if on_mask.clicked() {
+                                stack.selected = idx;
+                                stack.layers[idx].editing_mask = true;
+                            }
                         }
                         let selected = stack.selected == idx;
                         let l = &stack.layers[idx];
@@ -539,21 +619,95 @@ pub(super) fn layers_panel(
                                 Color32::from_black_alpha(10),
                             );
                         }
-                        paint_checker(
-                            &pa,
-                            th,
-                            6.0,
-                            Color32::from_gray(250),
-                            Color32::from_gray(222),
-                        );
-                        let border = if selected {
+                        // Una capa de color liso muestra su color en la miniatura, una carpeta su dibujo y las de pintura el
+                        // tablero. Las capas de dentro de una carpeta llevan una raya del color de la carpeta a la izquierda.
+                        let folder_color = Color32::from_rgb(240, 190, 90);
+                        if l.parent.is_some() {
+                            pa.line_segment(
+                                [
+                                    egui::pos2(row.left() + 6.0, row.top() + 2.0),
+                                    egui::pos2(row.left() + 6.0, row.bottom() - 2.0),
+                                ],
+                                Stroke::new(3.0, folder_color),
+                            );
+                        }
+                        if let crate::layers::LayerSource::Solid(c) = l.source {
+                            pa.rect_filled(
+                                th,
+                                CornerRadius::same(3),
+                                Color32::from_rgb(c[0], c[1], c[2]),
+                            );
+                        } else if l.is_group() {
+                            pa.rect_filled(th, CornerRadius::same(3), Color32::from_gray(250));
+                            let body = Rect::from_min_max(
+                                egui::pos2(th.left() + 5.0, th.top() + 19.0),
+                                egui::pos2(th.right() - 5.0, th.bottom() - 11.0),
+                            );
+                            let tab = Rect::from_min_size(
+                                egui::pos2(body.left(), body.top() - 6.0),
+                                vec2(20.0, 8.0),
+                            );
+                            pa.rect_filled(tab, CornerRadius::same(2), folder_color);
+                            pa.rect_filled(body, CornerRadius::same(3), folder_color);
+                        } else {
+                            paint_checker(
+                                &pa,
+                                th,
+                                6.0,
+                                Color32::from_gray(250),
+                                Color32::from_gray(222),
+                            );
+                        }
+                        // El borde azul marca donde pinta el pincel: la capa o su mascara.
+                        let border = if selected && !l.painting_mask() {
                             Stroke::new(2.0, ACCENT)
                         } else {
                             Stroke::new(1.0, Color32::from_gray(170))
                         };
                         pa.rect_stroke(th, CornerRadius::same(3), border, StrokeKind::Inside);
+                        // Candadito bajo el ojo en las capas bloqueadas.
+                        if l.locked {
+                            let c = egui::pos2(th.right() + 26.0 + mask_w, row.bottom() - 11.0);
+                            let grey = Color32::from_gray(90);
+                            let shackle =
+                                Rect::from_center_size(egui::pos2(c.x, c.y - 5.0), vec2(7.0, 8.0));
+                            pa.rect_stroke(
+                                shackle,
+                                CornerRadius::same(3),
+                                Stroke::new(1.5, grey),
+                                StrokeKind::Inside,
+                            );
+                            pa.rect_filled(
+                                Rect::from_center_size(c, vec2(11.0, 8.0)),
+                                CornerRadius::same(2),
+                                grey,
+                            );
+                        }
+                        // Miniatura de la mascara: cuadro con un circulo (blanco sobre negro si esta invertida) y una
+                        // raya roja si esta apagada.
+                        if let Some(m) = &l.mask {
+                            let (back, front) = if m.invert {
+                                (Color32::BLACK, Color32::WHITE)
+                            } else {
+                                (Color32::WHITE, Color32::BLACK)
+                            };
+                            pa.rect_filled(mk, CornerRadius::same(3), back);
+                            pa.circle_filled(mk.center(), LP_MASK_W * 0.25, front);
+                            if !m.enabled {
+                                pa.line_segment(
+                                    [mk.left_bottom(), mk.right_top()],
+                                    Stroke::new(2.0, Color32::from_rgb(220, 60, 60)),
+                                );
+                            }
+                            let border = if selected && l.painting_mask() {
+                                Stroke::new(2.0, ACCENT)
+                            } else {
+                                Stroke::new(1.0, Color32::from_gray(170))
+                            };
+                            pa.rect_stroke(mk, CornerRadius::same(3), border, StrokeKind::Inside);
+                        }
                         pa.text(
-                            egui::pos2(th.right() + 8.0, row.top() + 13.0),
+                            egui::pos2(th.right() + 8.0 + mask_w, row.top() + 13.0),
                             Align2::LEFT_CENTER,
                             &l.name,
                             FontId::proportional(16.0),
@@ -751,9 +905,49 @@ pub(super) fn layers_panel(
                     if r.clicked() {
                         options.blend_open = !options.blend_open;
                         options.more_open = false;
+                        options.channel_open = false;
                         options.blend_scroll = 0.0;
                     }
                     dropdown = Some(dd);
+
+                    // Desplegable del canal (debajo del de modo de mezcla): que se pinta y se ve. Color, Rugosidad,
+                    // Metalico o Altura; la lista tambien trae la "Vista: material".
+                    ui.add_space(4.0);
+                    let (ctrl2, _) = ui.allocate_exact_size(vec2(LP_W, LP_CTRL_H), Sense::hover());
+                    p.rect_filled(ctrl2, CornerRadius::same(8), Color32::BLACK);
+                    let cd = Rect::from_min_max(
+                        egui::pos2(ctrl2.left() + 7.0, ctrl2.center().y - 13.0),
+                        egui::pos2(ctrl2.right() - 7.0, ctrl2.center().y + 13.0),
+                    );
+                    let r = ui.interact(cd, ui_id.with("lp_channel"), Sense::click());
+                    let cd_fill = if r.hovered() {
+                        Color32::from_gray(245)
+                    } else {
+                        Color32::WHITE
+                    };
+                    p.rect_filled(cd, CornerRadius::same(4), cd_fill);
+                    let cd_label = if stack.material_view {
+                        format!("Canal: {} (vista material)", stack.channel.label())
+                    } else {
+                        format!("Canal: {}", stack.channel.label())
+                    };
+                    p.text(
+                        egui::pos2(cd.left() + 10.0, cd.center().y),
+                        Align2::LEFT_CENTER,
+                        cd_label,
+                        FontId::proportional(13.0),
+                        Color32::from_gray(30),
+                    );
+                    let c = egui::pos2(cd.right() - 14.0, cd.center().y + 1.0);
+                    let chevron = Stroke::new(1.6, Color32::from_gray(40));
+                    p.line_segment([c + vec2(-4.5, 2.0), c + vec2(0.0, -2.5)], chevron);
+                    p.line_segment([c + vec2(0.0, -2.5), c + vec2(4.5, 2.0)], chevron);
+                    if r.clicked() {
+                        options.channel_open = !options.channel_open;
+                        options.blend_open = false;
+                        options.more_open = false;
+                    }
+                    channel_dd = Some(cd);
 
                     // Opacidad de la capa elegida: el mismo deslizador que usa el panel de color (`slider_row`):
                     // etiqueta, boton -, barra en pastilla con tablero y degradado, boton + y perilla blanca.
@@ -1007,6 +1201,110 @@ pub(super) fn layers_panel(
         }
     }
 
+    // Desplegable del canal: lista corta que sale encima de su caja, con el mismo estilo del menu de los tres puntos.
+    // Cuatro canales (el actual lleva un punto) y, al final, la "Vista: material". Al elegir una fila se cierra.
+    let mut channel_rect: Option<Rect> = None;
+    if options.channel_open {
+        if let Some(cd) = channel_dd {
+            let mut close = false;
+            let mut clicked: Option<usize> = None;
+            let mut items: Vec<String> = crate::layers::ChannelKind::ALL
+                .iter()
+                .map(|k| {
+                    let mark = if stack.channel == *k { "• " } else { "" };
+                    format!("{mark}{}", k.label())
+                })
+                .collect();
+            items.push(
+                (if stack.material_view {
+                    "• Vista: material"
+                } else {
+                    "Vista: material"
+                })
+                .to_string(),
+            );
+            #[allow(deprecated)]
+            let cid = egui::Id::new("layers_channel_menu");
+            let mo = egui::Area::new(cid)
+                .order(egui::Order::Foreground)
+                .pivot(Align2::LEFT_BOTTOM)
+                .fixed_pos(egui::pos2(cd.left(), cd.top() - 4.0))
+                .sense(Sense::click())
+                .show(ctx, |ui| {
+                    Frame::new()
+                        .fill(bar_fill())
+                        .corner_radius(CornerRadius::same(18))
+                        .inner_margin(Margin::same(MENU_BORDER as i8))
+                        .show(ui, |ui| {
+                            Frame::new()
+                                .fill(MENU_FILL)
+                                .corner_radius(CornerRadius::same(10))
+                                .inner_margin(Margin::symmetric(0, 3))
+                                .show(ui, |ui| {
+                                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                                    let n = items.len();
+                                    for (i, label) in items.iter().enumerate() {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            vec2(cd.width() - 2.0 * MENU_BORDER, MORE_ROW_H),
+                                            Sense::click(),
+                                        );
+                                        let p = ui.painter();
+                                        if response.hovered() {
+                                            let r = 7;
+                                            let corners = CornerRadius {
+                                                nw: if i == 0 { r } else { 0 },
+                                                ne: if i == 0 { r } else { 0 },
+                                                sw: if i + 1 == n { r } else { 0 },
+                                                se: if i + 1 == n { r } else { 0 },
+                                            };
+                                            p.rect_filled(
+                                                rect,
+                                                corners,
+                                                Color32::from_black_alpha(14),
+                                            );
+                                        }
+                                        p.text(
+                                            egui::pos2(rect.left() + MENU_PAD, rect.center().y),
+                                            Align2::LEFT_CENTER,
+                                            label.as_str(),
+                                            FontId::proportional(MORE_TEXT_SIZE),
+                                            MENU_TEXT,
+                                        );
+                                        if i + 1 < n {
+                                            p.hline(
+                                                rect.left() + 2.0..=rect.right() - 2.0,
+                                                rect.bottom() - 0.5,
+                                                Stroke::new(1.0, MENU_LINE),
+                                            );
+                                        }
+                                        if response.clicked() {
+                                            clicked = Some(i);
+                                            close = true;
+                                        }
+                                    }
+                                });
+                        });
+                });
+            channel_rect = Some(mo.response.rect);
+            match clicked {
+                // Un canal: cambia lo que se pinta y, si no esta la vista de material, lo que se ve.
+                Some(i) if i < crate::layers::ChannelKind::ALL.len() => {
+                    stack.channel = crate::layers::ChannelKind::ALL[i];
+                    recompose = true;
+                }
+                // La ultima fila: enciende o apaga la vista de material.
+                Some(_) => {
+                    stack.material_view = !stack.material_view;
+                    recompose = true;
+                }
+                None => {}
+            }
+            if close {
+                options.channel_open = false;
+            }
+        }
+    }
+
     // Menu de los tres puntos (como el de Ibis Paint): panel gris claro con filas separadas por lineas y el mismo borde
     // semitransparente que los demas paneles. Sale pegado al borde derecho del panel de capas, hacia arriba desde el
     // boton. "Rasterizar" va en gris (desactivada). Por ahora las filas solo cierran el menu.
@@ -1014,6 +1312,61 @@ pub(super) fn layers_panel(
     if options.more_open {
         if let Some(dots) = dots_rect {
             let mut close = false;
+            // Fila que se toco (posicion en `items`); se hace al terminar de dibujar el menu.
+            let mut clicked: Option<usize> = None;
+            // Las filas de la mascara, de las capas de color liso y de las carpetas van primero (cambian segun la capa
+            // elegida) y despues las de siempre.
+            let (has_mask, mask_on, is_solid) = {
+                let l = &stack.layers[stack.selected];
+                (
+                    l.mask.is_some(),
+                    l.mask.as_ref().is_some_and(|m| m.enabled),
+                    l.is_solid(),
+                )
+            };
+            let (can_leave, can_enter) = (stack.can_leave_folder(), stack.can_enter_folder_above());
+            let locked = stack.selected_layer().locked;
+            let solo_on = stack.solo;
+            let (can_up, can_down) = (
+                stack.move_up_blocker().is_none(),
+                stack.move_down_blocker().is_none(),
+            );
+            let items: Vec<(String, bool)> = vec![
+                (
+                    (if has_mask {
+                        "Borrar máscara"
+                    } else {
+                        "Añadir máscara"
+                    })
+                    .to_string(),
+                    true,
+                ),
+                ("Invertir máscara".to_string(), has_mask),
+                (
+                    (if mask_on {
+                        "Apagar máscara"
+                    } else {
+                        "Encender máscara"
+                    })
+                    .to_string(),
+                    has_mask,
+                ),
+                ("Nueva capa de color".to_string(), true),
+                ("Cambiar color de la capa".to_string(), is_solid),
+                ("Sacar de la carpeta".to_string(), can_leave),
+                ("Meter en la carpeta de arriba".to_string(), can_enter),
+                ("Subir capa".to_string(), can_up),
+                ("Bajar capa".to_string(), can_down),
+                (
+                    (if locked { "Desbloquear capa" } else { "Bloquear capa" }).to_string(),
+                    true,
+                ),
+                ("Renombrar capa".to_string(), true),
+                (
+                    (if solo_on { "Terminar Modo Solo" } else { "Iniciar Modo Solo" }).to_string(),
+                    true,
+                ),
+            ];
             #[allow(deprecated)]
             let mid = egui::Id::new("layers_more_menu");
             let mo = egui::Area::new(mid)
@@ -1037,8 +1390,8 @@ pub(super) fn layers_panel(
                                 .inner_margin(Margin::symmetric(0, 3))
                                 .show(ui, |ui| {
                                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                                    let n = MORE_ITEMS.len();
-                                    for (i, (label, enabled)) in MORE_ITEMS.iter().enumerate() {
+                                    let n = items.len();
+                                    for (i, (label, enabled)) in items.iter().enumerate() {
                                         let sense = if *enabled {
                                             Sense::click()
                                         } else {
@@ -1072,7 +1425,7 @@ pub(super) fn layers_panel(
                                         p.text(
                                             egui::pos2(rect.left() + MENU_PAD, rect.center().y),
                                             Align2::LEFT_CENTER,
-                                            *label,
+                                            label.as_str(),
                                             FontId::proportional(MORE_TEXT_SIZE),
                                             color,
                                         );
@@ -1084,6 +1437,7 @@ pub(super) fn layers_panel(
                                             );
                                         }
                                         if *enabled && response.clicked() {
+                                            clicked = Some(i);
                                             close = true;
                                         }
                                     }
@@ -1091,9 +1445,131 @@ pub(super) fn layers_panel(
                         });
                 });
             more_rect = Some(mo.response.rect);
+            // Filas de la mascara (las tres primeras), de las capas de color liso (la cuarta y la quinta), de las
+            // carpetas (la sexta y la septima), de subir y bajar la capa (la octava y la novena) y de bloquearla (la
+            // decima): hay que recomponer la textura para que se vea el cambio. Las de color liso usan el color del pincel.
+            match clicked {
+                Some(0) => {
+                    if has_mask {
+                        stack.remove_mask();
+                    } else {
+                        stack.add_mask();
+                    }
+                    recompose = true;
+                }
+                Some(1) => recompose |= stack.invert_mask(),
+                Some(2) => recompose |= stack.toggle_mask_enabled(),
+                Some(3) => recompose |= stack.add_solid_layer(options.brush_color),
+                Some(4) => recompose |= stack.set_solid_color(options.brush_color),
+                Some(5) => recompose |= stack.leave_folder(),
+                Some(6) => recompose |= stack.enter_folder_above(),
+                Some(7) => recompose |= stack.move_up(),
+                Some(8) => recompose |= stack.move_down(),
+                // Bloquear o desbloquear la capa elegida (igual que la tecla L). Se recompone para que se actualice la
+                // barra de titulo, que avisa cuando esta bloqueada.
+                Some(9) => {
+                    let l = &mut stack.layers[stack.selected];
+                    l.locked = !l.locked;
+                    recompose = true;
+                }
+                // Renombrar: abre la ventanita para escribir el nombre nuevo (se dibuja mas abajo).
+                Some(10) => options.rename = Some((stack.selected_layer().id, String::new(), false)),
+                // Modo Solo: en pantalla solo se ve la capa elegida (`main` recompone al notar el cambio).
+                Some(11) => stack.solo = !stack.solo,
+                _ => {}
+            }
             if close {
                 options.more_open = false;
             }
+        }
+    }
+
+    // Ventanita para renombrar la capa elegida (la abre "Renombrar capa" del menu de tres puntos). Sale en el mismo sitio
+    // que el menu. El campo empieza vacio y muestra el nombre actual como pista, asi escribir lo reemplaza sin tener que
+    // borrarlo. Enter acepta (un nombre vacio no cambia nada); Esc cancela.
+    let mut rename_rect: Option<Rect> = None;
+    if let Some((rid, mut text, mut focused)) = options.rename.take() {
+        let mut keep = stack.selected_layer().id == rid;
+        if let (true, Some(dots)) = (keep, dots_rect) {
+            #[allow(deprecated)]
+            let area_id = egui::Id::new("layers_rename");
+            #[allow(deprecated)]
+            let edit_id = egui::Id::new("layers_rename_edit");
+            let current = stack
+                .layers
+                .iter()
+                .find(|l| l.id == rid)
+                .map(|l| l.name.clone())
+                .unwrap_or_default();
+            let mut apply = false;
+            let ro = egui::Area::new(area_id)
+                .order(egui::Order::Foreground)
+                .pivot(Align2::RIGHT_BOTTOM)
+                .fixed_pos(egui::pos2(
+                    out.response.rect.right() - 2.0,
+                    dots.bottom() + 2.0,
+                ))
+                .sense(Sense::click())
+                .show(ctx, |ui| {
+                    Frame::new()
+                        .fill(bar_fill())
+                        .corner_radius(CornerRadius::same(18))
+                        .inner_margin(Margin::same(MENU_BORDER as i8))
+                        .show(ui, |ui| {
+                            Frame::new()
+                                .fill(MENU_FILL)
+                                .corner_radius(CornerRadius::same(10))
+                                .inner_margin(Margin::symmetric(12, 10))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("Nombre de la capa")
+                                            .size(MORE_TEXT_SIZE)
+                                            .color(Color32::WHITE),
+                                    );
+                                    ui.add_space(6.0);
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut text)
+                                            .id(edit_id)
+                                            .hint_text(current.as_str())
+                                            .char_limit(24)
+                                            .desired_width(MORE_W - 48.0)
+                                            .text_color(Color32::WHITE),
+                                    );
+                                    if !focused {
+                                        resp.request_focus();
+                                        focused = true;
+                                    }
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new("Enter acepta - Esc cancela")
+                                            .size(11.0)
+                                            .color(Color32::from_gray(150)),
+                                    );
+                                    if resp.lost_focus() {
+                                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                            apply = true;
+                                        } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                            keep = false;
+                                        }
+                                    }
+                                });
+                        });
+                });
+            rename_rect = Some(ro.response.rect);
+            if apply {
+                let name = text.trim();
+                if !name.is_empty() {
+                    if let Some(l) = stack.layers.iter_mut().find(|l| l.id == rid) {
+                        l.name = name.to_string();
+                        // Se recompone para que la barra de titulo muestre el nombre nuevo.
+                        recompose = true;
+                    }
+                }
+                keep = false;
+            }
+        }
+        if keep {
+            options.rename = Some((rid, text, focused));
         }
     }
 
@@ -1106,16 +1582,33 @@ pub(super) fn layers_panel(
             let in_dropdown = dropdown.is_some_and(|r| r.contains(pt));
             let in_more = more_rect.is_some_and(|r| r.contains(pt));
             let in_dots = dots_rect.is_some_and(|r| r.contains(pt));
+            let in_channel = channel_rect.is_some_and(|r| r.contains(pt));
+            let in_channel_dd = channel_dd.is_some_and(|r| r.contains(pt));
+            let in_rename = rename_rect.is_some_and(|r| r.contains(pt));
+            if options.rename.is_some() && !in_rename {
+                options.rename = None;
+            }
+            if options.channel_open && !in_channel && !in_channel_dd {
+                options.channel_open = false;
+            }
             if options.blend_open && !in_popup && !in_dropdown {
                 options.blend_open = false;
             }
             if options.more_open && !in_more && !in_dots {
                 options.more_open = false;
             }
-            if !panel.contains(pt) && !in_popup && !in_more && !button.contains(pt) {
+            if !panel.contains(pt)
+                && !in_popup
+                && !in_more
+                && !in_channel
+                && !in_rename
+                && !button.contains(pt)
+            {
                 options.layers_open = false;
                 options.blend_open = false;
                 options.more_open = false;
+                options.channel_open = false;
+                options.rename = None;
             }
         }
     }

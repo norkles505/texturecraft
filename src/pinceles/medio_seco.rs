@@ -8,7 +8,8 @@
 use glam::Vec3;
 
 use super::{
-    carboncillo, cincel, crayon, esponja, follaje, pastel, pasto, punteado, salpicadura, semitono,
+    arcane, carboncillo, cincel, crayon, esponja, follaje, pastel, pasto, punteado, salpicadura,
+    semitono,
 };
 
 /// Los pinceles de medio seco portados de photocraft.
@@ -43,6 +44,9 @@ pub enum DryKind {
     /// Cincel plano: punta de paralelogramo aplastada que sigue la direccion del trazo, sin papel ni azar
     /// (`cincel.rs`; deducido de una imagen, no de photocraft).
     Chisel,
+    /// Punta de Arcane (pincel de ibisPaint): elipse aplastada, ancha de lado a lado del trazo, que sigue su direccion, sin
+    /// papel ni azar (`arcane.rs`). Sus desvanecidos de inicio y fin son aparte (`desvanecido.rs`).
+    Arcane,
 }
 
 /// Cuanta cobertura RESTA el papel (carboncillo) o el lienzo (pastel) en un texel: `profundidad * t`, con `t` el patron
@@ -64,7 +68,8 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
         | DryKind::Halftone
         | DryKind::Crayon
         | DryKind::SpongeTexture
-        | DryKind::Chisel => 0.0,
+        | DryKind::Chisel
+        | DryKind::Arcane => 0.0,
     }
 }
 
@@ -142,6 +147,7 @@ impl DryDab {
             DryKind::Sponge => esponja::nuevo(dab, inv_radius, t0, b0),
             DryKind::SpongeTexture => esponja::nuevo_textura(dab, inv_radius, t0, b0),
             DryKind::Chisel => cincel::nuevo(inv_radius, t0, n, along),
+            DryKind::Arcane => arcane::nuevo(inv_radius, t0, n, along),
             DryKind::Spatter => salpicadura::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Grass => pasto::nuevo(dab, inv_radius, radius, t0, b0, n, along),
             DryKind::Halftone => semitono::nuevo(inv_radius, t0, b0),
@@ -185,6 +191,7 @@ impl DryDab {
             DryKind::Sponge => esponja::punta(),
             DryKind::SpongeTexture => esponja::punta_textura(),
             DryKind::Chisel => cincel::punta(),
+            DryKind::Arcane => arcane::punta(),
             DryKind::Spatter => salpicadura::punta(),
             DryKind::Grass => pasto::punta(),
             DryKind::Halftone => semitono::punta(),

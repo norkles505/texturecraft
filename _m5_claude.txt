@@ -1,0 +1,313 @@
+diff --git a/src/brush.rs b/src/brush.rs
+index 01015cb..2cbed72 100644
+--- a/src/brush.rs
++++ b/src/brush.rs
+@@ -63,6 +63,10 @@ pub enum BrushType {
+     /// Cincel plano (deducido de la imagen de un pincel plano del Grease Pencil de Blender, no de photocraft): punta de
+     /// paralelogramo aplastada que sigue la direccion del trazo y deja una banda recta, sin papel (`pinceles/cincel.rs`).
+     Chisel,
++    /// Arcane (pincel de cara y cuerpo de ibisPaint, leido de su QR y de capturas de sus trazos): punta de elipse aplastada (ancha de lado a
++    /// lado del trazo) de borde casi duro y espaciado muy denso, que nace casi transparente y al soltar se desvanece en un trazo largo
++    /// (`pinceles/desvanecido.rs`). Sin papel ni grano.
++    Arcane,
+ }
+ 
+ /// Categorias del panel de pinceles (la columna de la izquierda).
+@@ -100,9 +104,10 @@ impl BrushGroup {
+ 
+ impl BrushType {
+     /// En el orden en que salen en el panel.
+-    pub const ALL: [BrushType; 20] = [
++    pub const ALL: [BrushType; 21] = [
+         BrushType::Soft,
+         BrushType::Hard,
++        BrushType::Arcane,
+         BrushType::Airbrush,
+         BrushType::Pencil,
+         BrushType::PencilSoft,
+@@ -145,12 +150,13 @@ impl BrushType {
+             BrushType::Halftone => "Puntos de semitono",
+             BrushType::WaxCrayon => "Crayón de cera",
+             BrushType::Chisel => "Cincel plano",
++            BrushType::Arcane => "Arcane (cara y cuerpo)",
+         }
+     }
+ 
+     pub fn group(self) -> BrushGroup {
+         match self {
+-            BrushType::Soft | BrushType::Hard => BrushGroup::Basic,
++            BrushType::Soft | BrushType::Hard | BrushType::Arcane => BrushGroup::Basic,
+             BrushType::Pencil | BrushType::PencilSoft => BrushGroup::Pencil,
+             BrushType::MarkerSoft | BrushType::MarkerHard => BrushGroup::Marker,
+             BrushType::Airbrush => BrushGroup::Airbrush,
+@@ -202,6 +208,8 @@ impl BrushType {
+             BrushType::WaxCrayon => 11.0,
+             // Cincel plano: estimado de la imagen (la punta mide unos 1.4 radios de largo).
+             BrushType::Chisel => 25.0,
++            // Arcane: grosor 107 px en el QR de ibisPaint = radio 53.5.
++            BrushType::Arcane => 53.5,
+         }
+     }
+ 
+@@ -238,6 +246,8 @@ impl BrushType {
+             BrushType::WaxCrayon => 0.16,
+             // Cincel plano: estimado, parejo para que no se noten los toques.
+             BrushType::Chisel => 0.12,
++            // Arcane: espaciado 0.025 del grosor (QR) = 0.05 del radio. Si pinta lento, subirlo a 0.1 no cambia lo que se ve.
++            BrushType::Arcane => 0.05,
+         }
+     }
+ 
+@@ -257,6 +267,7 @@ impl BrushType {
+             BrushType::Halftone => Some(DryKind::Halftone),
+             BrushType::WaxCrayon => Some(DryKind::Crayon),
+             BrushType::Chisel => Some(DryKind::Chisel),
++            BrushType::Arcane => Some(DryKind::Arcane),
+             _ => None,
+         }
+     }
+@@ -288,6 +299,8 @@ impl BrushType {
+             BrushType::Hard => (8.0 * t).min(1.0),
+             BrushType::Airbrush => t * t,
+             BrushType::Pencil => (10.0 * t).min(1.0),
++            // Arcane: borde casi duro (en las capturas pasa de 0 a 1 en unos 2 px de 27: 0.1 del radio).
++            BrushType::Arcane => (10.0 * t).min(1.0),
+             BrushType::PencilSoft => t * t * (3.0 - 2.0 * t),
+             BrushType::MarkerSoft => (4.0 * t).min(1.0),
+             BrushType::MarkerHard => (20.0 * t).min(1.0),
+@@ -321,6 +334,12 @@ pub const MIN_FLOW: f32 = 0.01;
+ pub const BUILD_UP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+ 
+ impl BrushType {
++    /// true si la opacidad de cada toque depende de donde va en el trazo (desvanecido de inicio y de fin). Esos
++    /// pinceles guardan los toques del trazo y lo repintan al soltar el boton (`main.rs`, `pinceles/desvanecido.rs`).
++    pub fn fades(self) -> bool {
++        matches!(self, BrushType::Arcane)
++    }
++
+     /// true si el pincel sigue depositando pintura con el puntero quieto (un toque cada `BUILD_UP_INTERVAL`).
+     pub fn build_up(self) -> bool {
+         matches!(self, BrushType::Airbrush)
+@@ -419,14 +438,14 @@ mod tests {
+         // Su dispersion cubre el 60 % del radio en cada eje: la esquina esta a 0.6 * raiz de 2.
+         assert!((b.scatter() - 0.6 * 2f32.sqrt()).abs() < 1e-6);
+         assert!(b.scatter() > BrushType::Pastel.scatter());
+-        // Solo los once de medio seco (carboncillo, pastel, crayon, punteado, follaje, esponja de tinta, textura de
+-        // esponja, salpicadura, pasto, semitono y cincel) tienen punta propia.
++        // Solo los doce de medio seco (carboncillo, pastel, crayon, punteado, follaje, esponja de tinta, textura de
++        // esponja, salpicadura, pasto, semitono, cincel y Arcane) tienen punta propia.
+         assert_eq!(
+             BrushType::ALL
+                 .iter()
+                 .filter(|k| k.dry_kind().is_some())
+                 .count(),
+-            11
++            12
+         );
+     }
+ 
+@@ -567,6 +586,25 @@ mod tests {
+         assert_eq!(b.default_flow(), 1.0);
+     }
+ 
++    #[test]
++    fn arcane_es_un_pincel_simple_con_los_valores_del_qr_y_es_el_unico_con_desvanecido() {
++        let b = BrushType::Arcane;
++        assert_eq!(b.name(), "Arcane (cara y cuerpo)");
++        assert_eq!(b.group(), BrushGroup::Basic);
++        assert_eq!(b.dry_kind(), Some(DryKind::Arcane));
++        // Grosor 107 = radio 53.5; espaciado 0.025 del grosor = 0.05 del radio.
++        assert_eq!(b.default_radius(), 53.5);
++        assert!((b.spacing() - 0.05).abs() < 1e-6);
++        assert_eq!(b.scatter(), 0.0);
++        assert_eq!(b.default_flow(), 1.0);
++        // Borde casi duro: pasa a opacidad plena a 0.1 del radio hacia adentro.
++        assert_eq!(b.falloff(0.1), 1.0);
++        assert!(b.falloff(0.05) < 1.0);
++        for k in BrushType::ALL {
++            assert_eq!(k.fades(), k == BrushType::Arcane, "{}", k.name());
++        }
++    }
++
+     #[test]
+     fn la_tiza_esta_en_su_categoria_con_sus_valores() {
+         assert_eq!(BrushType::Chalk.group(), BrushGroup::Chalk);
+diff --git a/src/pinceles/medio_seco.rs b/src/pinceles/medio_seco.rs
+index 607cef1..d832675 100644
+--- a/src/pinceles/medio_seco.rs
++++ b/src/pinceles/medio_seco.rs
+@@ -8,7 +8,8 @@
+ use glam::Vec3;
+ 
+ use super::{
+-    carboncillo, cincel, crayon, esponja, follaje, pastel, pasto, punteado, salpicadura, semitono,
++    arcane, carboncillo, cincel, crayon, esponja, follaje, pastel, pasto, punteado, salpicadura,
++    semitono,
+ };
+ 
+ /// Los pinceles de medio seco portados de photocraft.
+@@ -43,6 +44,9 @@ pub enum DryKind {
+     /// Cincel plano: punta de paralelogramo aplastada que sigue la direccion del trazo, sin papel ni azar
+     /// (`cincel.rs`; deducido de una imagen, no de photocraft).
+     Chisel,
++    /// Punta de Arcane (pincel de ibisPaint): elipse aplastada, ancha de lado a lado del trazo, que sigue su direccion, sin
++    /// papel ni azar (`arcane.rs`). Sus desvanecidos de inicio y fin son aparte (`desvanecido.rs`).
++    Arcane,
+ }
+ 
+ /// Cuanta cobertura RESTA el papel (carboncillo) o el lienzo (pastel) en un texel: `profundidad * t`, con `t` el patron
+@@ -64,7 +68,8 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
+         | DryKind::Halftone
+         | DryKind::Crayon
+         | DryKind::SpongeTexture
+-        | DryKind::Chisel => 0.0,
++        | DryKind::Chisel
++        | DryKind::Arcane => 0.0,
+     }
+ }
+ 
+@@ -142,6 +147,7 @@ impl DryDab {
+             DryKind::Sponge => esponja::nuevo(dab, inv_radius, t0, b0),
+             DryKind::SpongeTexture => esponja::nuevo_textura(dab, inv_radius, t0, b0),
+             DryKind::Chisel => cincel::nuevo(inv_radius, t0, n, along),
++            DryKind::Arcane => arcane::nuevo(inv_radius, t0, n, along),
+             DryKind::Spatter => salpicadura::nuevo(dab, inv_radius, radius, t0, b0),
+             DryKind::Grass => pasto::nuevo(dab, inv_radius, radius, t0, b0, n, along),
+             DryKind::Halftone => semitono::nuevo(inv_radius, t0, b0),
+@@ -185,6 +191,7 @@ impl DryDab {
+             DryKind::Sponge => esponja::punta(),
+             DryKind::SpongeTexture => esponja::punta_textura(),
+             DryKind::Chisel => cincel::punta(),
++            DryKind::Arcane => arcane::punta(),
+             DryKind::Spatter => salpicadura::punta(),
+             DryKind::Grass => pasto::punta(),
+             DryKind::Halftone => semitono::punta(),
+diff --git a/src/pinceles/mod.rs b/src/pinceles/mod.rs
+index edf7d67..e0eb06c 100644
+--- a/src/pinceles/mod.rs
++++ b/src/pinceles/mod.rs
+@@ -9,6 +9,8 @@
+ //! - `dual_grain.rs`: el DOBLE GRANO (disco con borde ruidoso multiplicado por una segunda punta de gotas sueltas).
+ //! - `esponja.rs`: la ESPONJA DE TINTA (punta de esponja con poros que gira en cada toque, con bordes mojados).
+ //! - `cincel.rs`: el CINCEL PLANO (paralelogramo aplastado que sigue el trazo; deducido de una imagen, no de photocraft).
++//! - `desvanecido.rs`: el DESVANECIDO de inicio y fin de trazo (opacidad de cada toque segun donde va en el trazo; del pincel Arcane, de ibisPaint).
++//! - `arcane.rs`: la PUNTA de Arcane (elipse aplastada, ancha de lado a lado del trazo, del pincel de ibisPaint).
+ //! - `salpicadura.rs`: la SALPICADURA (racimos de gotas, 1 o 2 por toque, con tamano, giro, volteo y dispersion al azar).
+ //! - `pasto.rs`: el PASTO (un manojo de hojas finas que sube hacia arriba del modelo, con tamano, giro leve, volteo y
+ //!   dispersion de lado al azar).
+@@ -28,7 +30,9 @@
+ 
+ mod azar;
+ mod carboncillo;
++mod arcane;
+ mod cincel;
++mod desvanecido;
+ mod crayon;
+ mod dual_grain;
+ mod esponja;
+@@ -45,6 +49,7 @@ mod tiza;
+ 
+ pub use crayon::CRAYON_REACH;
+ pub use dual_grain::{DUAL_GRAIN_REACH, DualDab};
++pub use desvanecido::{entrada as desvanecido_entrada, toque as desvanecido_toque};
+ pub use esponja::wet_factor;
+ pub use follaje::FOLIAGE_REACH;
+ pub use medio_seco::{DryDab, DryKind, dry_hardmix, dry_mezcla_toque, dry_subtract};
+diff --git a/src/ui/panel_pinceles.rs b/src/ui/panel_pinceles.rs
+index da6d199..27b771b 100644
+--- a/src/ui/panel_pinceles.rs
++++ b/src/ui/panel_pinceles.rs
+@@ -193,7 +193,8 @@ fn stroke_image(
+         }
+     };
+     let normal = if pared { -Vec3::Y } else { Vec3::Z };
+-    let mut dab = |cx: f32, cy: f32, dir: (f32, f32)| {
++    // `mult` es el multiplicador de opacidad del toque (el desvanecido de inicio y de fin de Arcane; 1 para el resto).
++    let mut dab = |cx: f32, cy: f32, dir: (f32, f32), mult: f32| {
+         // La tiza gira y cambia de tamano en cada toque, como la de verdad (chalk.rs).
+         let chalk = (kind == BrushType::Chalk).then(|| {
+             chalk_n += 1;
+@@ -254,7 +255,7 @@ fn stroke_image(
+                     }
+                     _ => kind.falloff(1.0 - d / r),
+                 };
+-                let a = raw * opacity;
++                let a = raw * opacity * mult;
+                 let i = y * w + x;
+                 // Esponja de tinta: lo mas hondo que llego una punta a este texel (su valor en la punta, sin la opacidad).
+                 if (sponge || semitono) && raw > depth[i] {
+@@ -266,18 +267,30 @@ fn stroke_image(
+             }
+         }
+     };
++    // Primero se arman todos los toques (para saber cuantos son: el desvanecido de final necesita el ultimo) y despues
++    // se pintan, cada uno con su opacidad (`desvanecido_toque`, como en `main.rs` al soltar el boton).
++    let mut dabs: Vec<(f32, f32, (f32, f32))> = Vec::new();
+     let mut last = pos(0.0);
+-    dab(last.0, last.1, (1.0, 0.0));
++    dabs.push((last.0, last.1, (1.0, 0.0)));
+     const STEPS: usize = 3000;
+     for i in 1..=STEPS {
+         let q = pos(i as f32 / STEPS as f32);
+         if (q.0 - last.0).hypot(q.1 - last.1) >= spacing {
+-            dab(q.0, q.1, (q.0 - last.0, q.1 - last.1));
++            dabs.push((q.0, q.1, (q.0 - last.0, q.1 - last.1)));
+             last = q;
+         }
+     }
+     let end = pos(1.0);
+-    dab(end.0, end.1, (end.0 - last.0, end.1 - last.1));
++    dabs.push((end.0, end.1, (end.0 - last.0, end.1 - last.1)));
++    let (n, paso) = (dabs.len(), spacing / r);
++    for (k, (cx, cy, dir)) in dabs.into_iter().enumerate() {
++        let mult = if kind.fades() {
++            crate::pinceles::desvanecido_toque(k, n, paso)
++        } else {
++            1.0
++        };
++        dab(cx, cy, dir, mult);
++    }
+     let mut rgba = Vec::with_capacity(w * h * 4);
+     for (i, a) in alpha.into_iter().enumerate() {
+         // Bordes mojados (como en `paint.rs`): la cobertura acumulada se multiplica por `wet_factor` de la profundidad.
+@@ -843,3 +856,39 @@ impl BrushPanel {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod desvanecido_tests {
++    use super::*;
++
++    /// Opacidad maxima de cada columna de la muestra.
++    fn por_columna(img: &egui::ColorImage) -> Vec<u8> {
++        let [w, h] = img.size;
++        (0..w)
++            .map(|x| (0..h).map(|y| img.pixels[y * w + x].a()).max().unwrap_or(0))
++            .collect()
++    }
++
++    #[test]
++    fn la_muestra_de_arcane_nace_y_se_apaga_y_la_de_un_pincel_normal_no() {
++        for (size, r) in [(egui::vec2(220.0, 44.0), 11.0), (egui::vec2(330.0, 78.0), 19.0)] {
++            let img = stroke_image(BrushType::Arcane, r, 1.0, [0, 0, 0], size, 8.0);
++            let cols = por_columna(&img);
++            let pintadas: Vec<usize> = (0..cols.len()).filter(|&x| cols[x] > 0).collect();
++            let (a, b) = (pintadas[0], *pintadas.last().unwrap());
++            // Los extremos son casi transparentes y el medio queda pleno.
++            assert!(cols[a + 2] < 70, "el inicio vale {}", cols[a + 2]);
++            assert!(cols[b - 2] < 70, "el final vale {}", cols[b - 2]);
++            assert!(cols[(a + b) / 2] > 230, "el medio vale {}", cols[(a + b) / 2]);
++            // Sube y baja sin forma rara: antes del medio no baja, despues no sube (con un poco de margen).
++            let medio = (a + b) / 2;
++            assert!((a..medio).all(|x| u16::from(cols[x + 1]) + 12 >= u16::from(cols[x])));
++            assert!((medio..b).all(|x| u16::from(cols[x]) + 12 >= u16::from(cols[x + 1])));
++            // Un pincel normal pinta pleno desde el principio.
++            let duro = stroke_image(BrushType::Hard, r, 1.0, [0, 0, 0], size, 8.0);
++            let cols = por_columna(&duro);
++            let pintadas: Vec<usize> = (0..cols.len()).filter(|&x| cols[x] > 0).collect();
++            assert!(cols[pintadas[0] + 3] > 200, "el pincel duro no pinta pleno");
++        }
++    }
++}
+312 _m5_claude.txt

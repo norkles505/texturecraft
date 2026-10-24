@@ -47,7 +47,7 @@ use brush::{BUILD_UP_INTERVAL, Brush};
 use bvh::TriBvh;
 use camera::{Camera, ViewAxis};
 use glam::Vec3;
-use layers::LayerStack;
+use layers::{ChannelKind, LayerOp, LayerStack, NORMAL_STRENGTH, PaintTarget};
 use obj::{
     MeshPart, ObjMesh, load_obj, part_of_triangle, piece_ranges, triangle_visibility,
     visible_ranges,
@@ -106,6 +106,8 @@ impl Tool {
 struct Uniforms {
     mvp: [[f32; 4]; 4],
     normal_matrix: [[f32; 4]; 4],
+    /// x = 1.0 con la vista de material (el shader usa rugosidad, metalico y altura); 0.0 = la luz de siempre.
+    params: [f32; 4],
 }
 
 /// Una pieza del modelo (seccion 3.3): su propio tramo de vertices, su textura en la GPU, sus capas y su historial.
@@ -115,6 +117,8 @@ struct Piece {
     first_vertex: usize,
     vertex_count: usize,
     texture: wgpu::Texture,
+    /// Textura de material: R = rugosidad, G = metalico, B = altura. Solo se mantiene al dia con la vista de material.
+    material: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     layers: LayerStack,
     history: History,
@@ -167,6 +171,28 @@ fn new_piece(
         &layers.composite,
     );
     let tex_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    // Material sin pintar: rugosidad y altura a la mitad, nada de metal (igual que `LayerStack::material_bytes`).
+    let flat = [128u8, 0, 128, 255].repeat((TEX_SIZE * TEX_SIZE) as usize);
+    let material = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("material"),
+            size: wgpu::Extent3d {
+                width: TEX_SIZE,
+                height: TEX_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &flat,
+    );
+    let mat_view = material.create_view(&wgpu::TextureViewDescriptor::default());
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("bg"),
         layout,
@@ -183,12 +209,17 @@ fn new_piece(
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&mat_view),
+            },
         ],
     });
     Piece {
         first_vertex,
         vertex_count,
         texture,
+        material,
         bind_group,
         layers,
         history: History::default(),
@@ -247,6 +278,11 @@ struct Gpu {
     /// tramo del raton al siguiente (como `next_at` de photocraft), asi los toques quedan a un espaciado exacto aunque
     /// el raton mande muchos eventos pequenos.
     stroke_to_next: f32,
+    /// Pinceles con desvanecido (`BrushType::fades`): los toques del trazo en curso, para repintarlo al soltar con el
+    /// desvanecido del final.
+    stroke_dabs: Vec<Pick>,
+    /// false si el trazo paso por otra pieza (no se repinta: cada pieza lleva su propio registro y estado de trazo).
+    stroke_fade_ok: bool,
     brush_color: [u8; 3],
     /// Opacidad del pincel (0..1), la barra de opacidad del panel de color.
     brush_opacity: f32,
@@ -432,6 +468,25 @@ fn slug(name: &str) -> String {
         .collect()
 }
 
+/// Luminosidad (0..=255) de un color: el gris con que se pinta en una mascara (blanco = se ve, negro = se oculta).
+fn luma(c: [u8; 3]) -> u8 {
+    ((77 * c[0] as u32 + 150 * c[1] as u32 + 29 * c[2] as u32) >> 8) as u8
+}
+
+#[cfg(test)]
+mod luma_tests {
+    use super::luma;
+
+    #[test]
+    fn blanco_negro_y_gris() {
+        assert_eq!(luma([255, 255, 255]), 255);
+        assert_eq!(luma([0, 0, 0]), 0);
+        assert_eq!(luma([128, 128, 128]), 128);
+        // El verde pesa mas que el azul.
+        assert!(luma([0, 255, 0]) > luma([0, 0, 255]));
+    }
+}
+
 impl Gpu {
     fn new(
         event_loop: &ActiveEventLoop,
@@ -498,7 +553,7 @@ impl Gpu {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -520,6 +575,16 @@ impl Gpu {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -616,6 +681,8 @@ impl Gpu {
             stroke_dir: Vec3::ZERO,
             last_dab_pos: None,
             stroke_to_next: 0.0,
+            stroke_dabs: Vec::new(),
+            stroke_fade_ok: true,
             brush_color: PALETTE[0],
             brush_opacity: 1.0,
             brush: Brush::default(),
@@ -853,6 +920,29 @@ impl Gpu {
                 depth_or_array_layers: 1,
             },
         );
+        // Con la vista de material tambien se sube el material (rugosidad, metalico, altura) de ese rectangulo.
+        if p.layers.material_view {
+            let mat = p.layers.material_bytes(rect);
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &p.material,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: x0, y: y0, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &mat,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(w * 4),
+                    rows_per_image: Some(h),
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
     }
 
     /// Tras cambiar ajustes de capas (ojo, opacidad, modo...) en la pieza `piece`: recompone todo y lo sube.
@@ -867,6 +957,19 @@ impl Gpu {
     /// Lo mismo, para la pieza activa.
     fn refresh_all(&mut self) {
         let a = self.active();
+        // El canal que se pinta y la vista de material son los mismos en todas las piezas: si cambian en la activa,
+        // se copian a las demas.
+        let channel = self.pieces[a].layers.channel;
+        let material_view = self.pieces[a].layers.material_view;
+        for p in 0..self.pieces.len() {
+            let l = &self.pieces[p].layers;
+            if p != a && (l.channel != channel || l.material_view != material_view) {
+                let l = &mut self.pieces[p].layers;
+                l.channel = channel;
+                l.material_view = material_view;
+                self.refresh_piece(p);
+            }
+        }
         self.refresh_piece(a);
     }
 
@@ -886,7 +989,7 @@ impl Gpu {
             String::new()
         };
         format!(
-            "texturecraft - {} #{:02X}{:02X}{:02X}{} | capa {}/{} \"{}\" | {} | {}%{}{}{}{}",
+            "texturecraft - {} #{:02X}{:02X}{:02X}{} | capa {}/{} \"{}\" | {} | {}%{}{}{}{}{}{}{}",
             self.tool.name(),
             c[0],
             c[1],
@@ -901,6 +1004,15 @@ impl Gpu {
             if l.locked { " | bloqueada" } else { "" },
             if l.alpha_lock { " | bloqueo alfa" } else { "" },
             if l.clip_to_below { " | recorte" } else { "" },
+            if l.is_solid() {
+                " | capa de color"
+            } else if l.is_group() && !l.painting_mask() {
+                " | carpeta: elige una capa de dentro para pintar"
+            } else {
+                ""
+            },
+            if l.painting_mask() { " | pintando la mascara" } else { "" },
+            if stack.solo { " | MODO SOLO (solo cambia lo que ves)" } else { "" },
         )
     }
 
@@ -942,15 +1054,16 @@ impl Gpu {
         self.activate_part(pick.part);
         self.stroke.begin_stroke();
         let piece = &mut self.pieces[pick.piece];
-        let id = piece.layers.selected_layer().id;
-        piece.history.begin(id);
+        let layer = piece.layers.selected_layer();
+        let (id, target) = (layer.id, layer.target(piece.layers.channel));
+        piece.history.begin(id, target);
     }
 
     /// Un toque en el punto de `pick` sobre la capa elegida de su pieza; recompone el rectangulo y lo suma a
     /// `dirty` (que es siempre de la pieza del trazo en curso: al cruzar a otra pieza se sube primero el anterior).
     /// El toque mide en el modelo (ver `paint.rs`): se buscan los triangulos de la pieza que estan cerca del punto
     /// tocado y miran a la camara, y cada texel se mide por su distancia 3D.
-    fn dab_surface(&mut self, pick: Pick, dirty: &mut Option<Rect>) {
+    fn dab_surface_mult(&mut self, pick: Pick, mult: f32, dirty: &mut Option<Rect>) {
         if self.stroke_piece != Some(pick.piece) {
             if let (Some(old), Some(r)) = (self.stroke_piece, dirty.take()) {
                 self.upload_rect(old, r);
@@ -961,8 +1074,9 @@ impl Gpu {
         let piece = &mut self.pieces[pick.piece];
         let sel = piece.layers.selected;
         let size = piece.layers.size;
+        let channel = piece.layers.channel;
         let layer = &mut piece.layers.layers[sel];
-        if !layer.paintable() {
+        if !layer.accepts(channel) {
             return;
         }
         let radius = self.brush.radius * WORLD_PER_RADIUS;
@@ -1016,9 +1130,33 @@ impl Gpu {
             }
             None => self.last_dab_pos = Some(pick.pos),
         }
+        // En la mascara se pinta en grises: el color del pincel pasa a su luminosidad y el borrador pinta negro (oculta
+        // la capa). Ahi no hay bloqueo alfa ni borrado: la mascara siempre es opaca.
+        // En un canal (rugosidad, metalico, altura) tambien se pinta en grises, pero ahi si hay bloqueo alfa y borrador:
+        // la hoja del canal guarda el alfa de donde la capa pinta ese canal.
+        let target = layer.target(channel);
+        let on_mask = target == PaintTarget::Mask;
+        let alpha_lock = layer.alpha_lock && !on_mask;
+        let (color, erase) = if on_mask {
+            // En la mascara de una capa de color liso el pincel siempre "pinta el color" (blanco = se ve) y el
+            // borrador lo quita; en una mascara normal el gris sale del color del pincel.
+            let g = if self.tool == Tool::Eraser {
+                0
+            } else if layer.is_solid() {
+                255
+            } else {
+                luma(self.brush_color)
+            };
+            ([g, g, g], false)
+        } else if target != PaintTarget::Layer {
+            let g = luma(self.brush_color);
+            ([g, g, g], self.tool == Tool::Eraser)
+        } else {
+            (self.brush_color, self.tool == Tool::Eraser)
+        };
         let opts = DabOptions {
-            alpha_lock: layer.alpha_lock,
-            erase: self.tool == Tool::Eraser,
+            alpha_lock,
+            erase,
             brush: self.brush.kind,
             normal,
             // Interruptor "Acumular pasada" de Opciones: apagado = el trazo no pasa de la opacidad (como photocraft).
@@ -1028,15 +1166,17 @@ impl Gpu {
             // El carboncillo orienta su punta a lo largo del trazo.
             dir: self.stroke_dir,
         };
-        // Antes de tocar nada: copia de las baldosas que va a cambiar el toque (deshacer).
-        piece.history.save_tiles(&layer.pixels, size, area);
+        // Antes de tocar nada: copia de las baldosas que va a cambiar el toque (deshacer). Los pixeles son los de la
+        // mascara si se pinta en ella, y si no los de la capa.
+        let pixels = layer.target_pixels_mut(target);
+        piece.history.save_tiles(pixels, size, area);
         if let Some(r) = self.stroke.dab_surface(
-            &mut layer.pixels,
+            pixels,
             &tris,
             pick.pos,
             radius,
-            self.brush_color,
-            self.brush_opacity,
+            color,
+            self.brush_opacity * mult,
             opts,
         ) {
             piece.layers.composite_rect(r);
@@ -1045,6 +1185,64 @@ impl Gpu {
                 None => r,
             });
         }
+    }
+
+    /// Un toque del trazo en curso (`dab_surface_mult` con opacidad plena). Si el pincel tiene desvanecido
+    /// (`BrushType::fades`) guarda el toque y lo pinta con el desvanecido de INICIO; el de final se aplica al soltar el
+    /// boton, repintando el trazo (`replay_fade`).
+    fn dab_surface(&mut self, pick: Pick, dirty: &mut Option<Rect>) {
+        if !self.brush.kind.fades() {
+            self.dab_surface_mult(pick, 1.0, dirty);
+            return;
+        }
+        if self.stroke_piece.is_some_and(|p| p != pick.piece) {
+            self.stroke_fade_ok = false;
+        }
+        let paso = self.fade_step();
+        let mult = crate::pinceles::desvanecido_entrada(self.stroke_dabs.len() as f32 * paso);
+        self.stroke_dabs.push(pick);
+        self.dab_surface_mult(pick, mult, dirty);
+    }
+
+    /// Espaciado entre toques en radios del pincel (para medir lo recorrido en el desvanecido).
+    fn fade_step(&self) -> f32 {
+        self.dab_spacing() / (self.brush.radius * WORLD_PER_RADIUS).max(1e-6)
+    }
+
+    /// Al soltar el boton con un pincel de desvanecido: devuelve la capa a como estaba antes del trazo (con el registro
+    /// de deshacer) y vuelve a pintar todos sus toques, ahora con el desvanecido de inicio Y de final.
+    fn replay_fade(&mut self) {
+        let Some(p) = self.stroke_piece else { return };
+        let dabs = std::mem::take(&mut self.stroke_dabs);
+        let n = dabs.len();
+        if n < 2 {
+            return;
+        }
+        let restored = {
+            let piece = &mut self.pieces[p];
+            let sel = piece.layers.selected;
+            let size = piece.layers.size;
+            let channel = piece.layers.channel;
+            let target = piece.layers.layers[sel].target(channel);
+            let pixels = piece.layers.layers[sel].target_pixels_mut(target);
+            let r = piece.history.restore_pending(pixels, size);
+            if let Some(r) = r {
+                piece.layers.composite_rect(r);
+            }
+            r
+        };
+        let Some(restored) = restored else { return };
+        self.stroke.begin_stroke();
+        self.stroke_dir = Vec3::ZERO;
+        self.last_dab_pos = None;
+        let paso = self.fade_step();
+        let mut dirty = Some(restored);
+        for (k, pick) in dabs.iter().enumerate() {
+            let mult = crate::pinceles::desvanecido_toque(k, n, paso);
+            self.dab_surface_mult(*pick, mult, &mut dirty);
+        }
+        self.flush(dirty);
+        self.window.request_redraw();
     }
 
     /// Sube a la GPU lo que cambio el trazo en curso (siempre en la pieza donde pinta). Devuelve true si habia algo.
@@ -1069,7 +1267,8 @@ impl Gpu {
         let uvs = &self.uvs;
         let piece = &mut self.pieces[pick.piece];
         let sel = piece.layers.selected;
-        if !piece.layers.layers[sel].paintable() {
+        let channel = piece.layers.channel;
+        if !piece.layers.layers[sel].accepts(channel) {
             return false;
         }
         let size = piece.layers.size;
@@ -1082,16 +1281,30 @@ impl Gpu {
             .uv_maps
             .get_or_insert_with(|| UvMaps::build(&uvs[a * 2..b * 2], size));
         let layer = &mut piece.layers.layers[sel];
-        let Some(plan) = fill::plan(&layer.pixels, size, x, y, color, layer.alpha_lock, maps)
-        else {
+        // En la mascara y en los canales se rellena con el gris del color del pincel; la mascara no lleva bloqueo alfa.
+        // En la mascara de una capa de color liso se rellena de blanco (se ve el color).
+        let (layer_id, target) = (layer.id, layer.target(channel));
+        let solid = layer.is_solid();
+        let (color, alpha_lock) = if target != PaintTarget::Layer {
+            let g = if target == PaintTarget::Mask && solid {
+                255
+            } else {
+                luma(color)
+            };
+            ([g, g, g], layer.alpha_lock && target != PaintTarget::Mask)
+        } else {
+            (color, layer.alpha_lock)
+        };
+        let pixels = layer.target_pixels_mut(target);
+        let Some(plan) = fill::plan(pixels, size, x, y, color, alpha_lock, maps) else {
             return false;
         };
         // Antes de tocar nada: copia de las baldosas que va a cambiar (deshacer).
-        piece.history.begin(layer.id);
+        piece.history.begin(layer_id, target);
         for r in fill::touched_tiles(&plan, size) {
-            piece.history.save_tiles(&layer.pixels, size, r);
+            piece.history.save_tiles(pixels, size, r);
         }
-        fill::apply(&mut layer.pixels, &plan, size, color, layer.alpha_lock);
+        fill::apply(pixels, &plan, size, color, alpha_lock);
         piece.history.end();
         piece.layers.composite_rect(plan.rect);
         self.upload_rect(pick.piece, plan.rect);
@@ -1100,6 +1313,8 @@ impl Gpu {
 
     /// Apoyar el boton: empieza un trazo nuevo y pinta el primer toque. Devuelve true si cambio algo.
     fn stroke_begin(&mut self, camera: &Camera, px: f32, py: f32) -> bool {
+        self.stroke_dabs.clear();
+        self.stroke_fade_ok = true;
         // El cuentagotas no pinta ni entra al historial: solo toma el color (tambien al arrastrar).
         if self.tool == Tool::Eyedropper {
             self.pick_color(camera, px, py);
@@ -1146,6 +1361,13 @@ impl Gpu {
 
     /// Soltar el boton: el trazo entra al historial de su pieza.
     fn stroke_end(&mut self) {
+        if self.brush.kind.fades()
+            && self.stroke_fade_ok
+            && matches!(self.tool, Tool::Brush | Tool::Eraser)
+        {
+            self.replay_fade();
+        }
+        self.stroke_dabs.clear();
         if let Some(p) = self.stroke_piece.take() {
             self.pieces[p].history.end();
         }
@@ -1201,13 +1423,62 @@ impl Gpu {
         match export::write_png(&path, stack.size, &stack.export_composite(false), true) {
             Ok(()) => {
                 println!("Imagen guardada: {}", path.display());
-                format!("texturecraft - imagen guardada: {}", path.display())
+                // Los canales pintados (rugosidad, metalico, altura) salen al lado: <nombre>_<canal>.png.
+                let n = Self::export_channels(stack, &path, false);
+                let extra = if n > 0 {
+                    format!(" (y {n} canales)")
+                } else {
+                    String::new()
+                };
+                format!("texturecraft - imagen guardada: {}{extra}", path.display())
             }
             Err(e) => {
                 eprintln!("{e}");
                 format!("texturecraft - no se pudo guardar la imagen ({e})")
             }
         }
+    }
+
+    /// Guarda junto a `path` un PNG en grises por cada canal extra que tenga pintura: `<ruta sin .png>_<canal>.png`.
+    /// Con `avoid_overwrite` busca un nombre libre. Devuelve cuantos guardo.
+    fn export_channels(stack: &LayerStack, path: &Path, avoid_overwrite: bool) -> usize {
+        let stem = path.with_extension("");
+        let mut n = 0;
+        for k in ChannelKind::EXTRA {
+            let Some(pixels) = stack.export_channel(k) else {
+                continue;
+            };
+            let base = format!("{}_{}", stem.display(), k.file_tag());
+            let out = if avoid_overwrite {
+                export::free_path(&base)
+            } else {
+                std::path::PathBuf::from(format!("{base}.png"))
+            };
+            match export::write_png(&out, stack.size, &pixels, true) {
+                Ok(()) => {
+                    println!("Canal exportado: {}", out.display());
+                    n += 1;
+                }
+                Err(e) => eprintln!("{e}"),
+            }
+        }
+        // Con la altura pintada tambien sale el mapa de normales (azul-violeta) calculado a partir de ella.
+        if let Some(pixels) = stack.export_normal(NORMAL_STRENGTH) {
+            let base = format!("{}_normal", stem.display());
+            let out = if avoid_overwrite {
+                export::free_path(&base)
+            } else {
+                std::path::PathBuf::from(format!("{base}.png"))
+            };
+            match export::write_png(&out, stack.size, &pixels, true) {
+                Ok(()) => {
+                    println!("Mapa de normales exportado: {}", out.display());
+                    n += 1;
+                }
+                Err(e) => eprintln!("{e}"),
+            }
+        }
+        n
     }
 
     /// Exporta un PNG a la carpeta actual (seccion 13). `kind`: 0 = textura con fondo, 1 = textura transparente,
@@ -1236,7 +1507,18 @@ impl Gpu {
             Ok(()) => {
                 let full = std::fs::canonicalize(&path).unwrap_or(path.clone());
                 println!("Exportado: {}", full.display());
-                format!("texturecraft - exportado: {}", path.display())
+                // Con la textura de color tambien salen los canales pintados, con nombres libres (no pisan nada).
+                let n = if kind == 0 {
+                    Self::export_channels(stack, &path, true)
+                } else {
+                    0
+                };
+                let extra = if n > 0 {
+                    format!(" (y {n} canales)")
+                } else {
+                    String::new()
+                };
+                format!("texturecraft - exportado: {}{extra}", path.display())
             }
             Err(e) => {
                 eprintln!("{e}");
@@ -1369,6 +1651,16 @@ impl Gpu {
         let uniforms = Uniforms {
             mvp: mvp.to_cols_array_2d(),
             normal_matrix: normal.to_cols_array_2d(),
+            params: [
+                if self.pieces[self.active()].layers.material_view {
+                    1.0
+                } else {
+                    0.0
+                },
+                0.0,
+                0.0,
+                0.0,
+            ],
         };
         self.queue
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -1479,6 +1771,25 @@ impl Gpu {
         // textura de esa pieza antes de enviar este cuadro.
         if layers_dirty {
             self.refresh_piece(active);
+        }
+        // Modo Solo: se encendio, se apago o se eligio otra capa con el modo encendido (por el panel o por teclado): se
+        // recompone y se sube la textura para que se vea la capa que toca. Si ya se recompuso arriba, no hace nada.
+        if self.pieces[active].layers.solo_dirty() {
+            self.refresh_piece(active);
+        }
+        // "Limpiar capa" o "Invertir colores" del panel de capas: se atienden aqui porque necesitan el historial de la
+        // pieza (Ctrl+Z los deshace).
+        if let Some(op) = self.pieces[active].layers.op_requested.take() {
+            let p = &mut self.pieces[active];
+            let changed = match op {
+                LayerOp::Clear => undo::clear_selected(&mut p.layers, &mut p.history),
+                LayerOp::Invert => undo::invert_selected(&mut p.layers, &mut p.history),
+            };
+            if let Some(r) = changed {
+                p.layers.composite_rect(r);
+                self.upload_rect(active, r);
+                self.window.request_redraw();
+            }
         }
         // El panel de mallas mostro u oculto alguna: cambian lo que se dibuja y lo que el pincel puede tocar.
         if parts_dirty {

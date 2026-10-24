@@ -193,7 +193,8 @@ fn stroke_image(
         }
     };
     let normal = if pared { -Vec3::Y } else { Vec3::Z };
-    let mut dab = |cx: f32, cy: f32, dir: (f32, f32)| {
+    // `mult` es el multiplicador de opacidad del toque (el desvanecido de inicio y de fin de Arcane; 1 para el resto).
+    let mut dab = |cx: f32, cy: f32, dir: (f32, f32), mult: f32| {
         // La tiza gira y cambia de tamano en cada toque, como la de verdad (chalk.rs).
         let chalk = (kind == BrushType::Chalk).then(|| {
             chalk_n += 1;
@@ -254,7 +255,7 @@ fn stroke_image(
                     }
                     _ => kind.falloff(1.0 - d / r),
                 };
-                let a = raw * opacity;
+                let a = raw * opacity * mult;
                 let i = y * w + x;
                 // Esponja de tinta: lo mas hondo que llego una punta a este texel (su valor en la punta, sin la opacidad).
                 if (sponge || semitono) && raw > depth[i] {
@@ -266,18 +267,30 @@ fn stroke_image(
             }
         }
     };
+    // Primero se arman todos los toques (para saber cuantos son: el desvanecido de final necesita el ultimo) y despues
+    // se pintan, cada uno con su opacidad (`desvanecido_toque`, como en `main.rs` al soltar el boton).
+    let mut dabs: Vec<(f32, f32, (f32, f32))> = Vec::new();
     let mut last = pos(0.0);
-    dab(last.0, last.1, (1.0, 0.0));
+    dabs.push((last.0, last.1, (1.0, 0.0)));
     const STEPS: usize = 3000;
     for i in 1..=STEPS {
         let q = pos(i as f32 / STEPS as f32);
         if (q.0 - last.0).hypot(q.1 - last.1) >= spacing {
-            dab(q.0, q.1, (q.0 - last.0, q.1 - last.1));
+            dabs.push((q.0, q.1, (q.0 - last.0, q.1 - last.1)));
             last = q;
         }
     }
     let end = pos(1.0);
-    dab(end.0, end.1, (end.0 - last.0, end.1 - last.1));
+    dabs.push((end.0, end.1, (end.0 - last.0, end.1 - last.1)));
+    let (n, paso) = (dabs.len(), spacing / r);
+    for (k, (cx, cy, dir)) in dabs.into_iter().enumerate() {
+        let mult = if kind.fades() {
+            crate::pinceles::desvanecido_toque(k, n, paso)
+        } else {
+            1.0
+        };
+        dab(cx, cy, dir, mult);
+    }
     let mut rgba = Vec::with_capacity(w * h * 4);
     for (i, a) in alpha.into_iter().enumerate() {
         // Bordes mojados (como en `paint.rs`): la cobertura acumulada se multiplica por `wet_factor` de la profundidad.
@@ -840,6 +853,42 @@ impl BrushPanel {
         if e.changed {
             // Un entero por ciento, como se muestra.
             brush.flow = ((fl * 100.0).round() / 100.0).clamp(MIN_FLOW, 1.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod desvanecido_tests {
+    use super::*;
+
+    /// Opacidad maxima de cada columna de la muestra.
+    fn por_columna(img: &egui::ColorImage) -> Vec<u8> {
+        let [w, h] = img.size;
+        (0..w)
+            .map(|x| (0..h).map(|y| img.pixels[y * w + x].a()).max().unwrap_or(0))
+            .collect()
+    }
+
+    #[test]
+    fn la_muestra_de_arcane_nace_y_se_apaga_y_la_de_un_pincel_normal_no() {
+        for (size, r) in [(egui::vec2(220.0, 44.0), 11.0), (egui::vec2(330.0, 78.0), 19.0)] {
+            let img = stroke_image(BrushType::Arcane, r, 1.0, [0, 0, 0], size, 8.0);
+            let cols = por_columna(&img);
+            let pintadas: Vec<usize> = (0..cols.len()).filter(|&x| cols[x] > 0).collect();
+            let (a, b) = (pintadas[0], *pintadas.last().unwrap());
+            // Los extremos son casi transparentes y el medio queda pleno.
+            assert!(cols[a + 2] < 70, "el inicio vale {}", cols[a + 2]);
+            assert!(cols[b - 2] < 70, "el final vale {}", cols[b - 2]);
+            assert!(cols[(a + b) / 2] > 230, "el medio vale {}", cols[(a + b) / 2]);
+            // Sube y baja sin forma rara: antes del medio no baja, despues no sube (con un poco de margen).
+            let medio = (a + b) / 2;
+            assert!((a..medio).all(|x| u16::from(cols[x + 1]) + 12 >= u16::from(cols[x])));
+            assert!((medio..b).all(|x| u16::from(cols[x]) + 12 >= u16::from(cols[x + 1])));
+            // Un pincel normal pinta pleno desde el principio.
+            let duro = stroke_image(BrushType::Hard, r, 1.0, [0, 0, 0], size, 8.0);
+            let cols = por_columna(&duro);
+            let pintadas: Vec<usize> = (0..cols.len()).filter(|&x| cols[x] > 0).collect();
+            assert!(cols[pintadas[0] + 3] > 200, "el pincel duro no pinta pleno");
         }
     }
 }

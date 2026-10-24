@@ -79,6 +79,8 @@ struct OptionsPanel {
     edit_mode: bool,
     /// Propiedades de la barra inferior (color, transparencia, borde, esquinas), cambiadas desde el modo edición.
     bottom_bar: BarStyle,
+    /// El estilo de la barra tal como está en el archivo: cuando `bottom_bar` es distinto y se suelta el mouse, se guarda.
+    bottom_bar_saved: BarStyle,
     /// Elemento de la interfaz elegido en modo edición (su panel de propiedades está abierto).
     edit_selected: Option<EditTarget>,
     /// Panel de capas (el que abre el boton de capas de la barra inferior), cuanto se desplazo su lista (en puntos)
@@ -97,6 +99,17 @@ struct OptionsPanel {
     pending_import: Option<std::path::PathBuf>,
     /// Menu de los tres puntos del panel de capas.
     more_open: bool,
+    /// Desplegable del canal (Color, Rugosidad, Metalico, Altura) del panel de capas.
+    channel_open: bool,
+    /// Color del pincel (lo copia `UiLayer::run` en cada cuadro): las filas "Nueva capa de color" y "Cambiar color de la
+    /// capa" del menu de tres puntos del panel de capas lo usan.
+    brush_color: [u8; 3],
+    /// Capa (su id) a la que ya se toco el bote de basura una vez: otro toque la borra. Se olvida si cambia la capa
+    /// elegida o se cierra el panel.
+    delete_armed: Option<u32>,
+    /// Ventanita para renombrar una capa: (id de la capa, texto escrito, ya se le pidio el foco al campo). Se abre con
+    /// "Renombrar capa" del menu de tres puntos; se cierra al aceptar, cancelar, cambiar de capa o cerrar el panel.
+    rename: Option<(u32, String, bool)>,
     blend_open: bool,
     /// Cuanto se desplazo la lista del desplegable de modos de mezcla (en puntos).
     blend_scroll: f32,
@@ -169,12 +182,18 @@ impl UiLayer {
         );
         let renderer =
             egui_wgpu::Renderer::new(device, target_format, egui_wgpu::RendererOptions::default());
+        // El estilo de la barra inferior que se dejó en la sesión anterior (o el de siempre si no hay archivo).
+        let bar_style = BarStyle::load();
         UiLayer {
             ctx,
             state,
             renderer,
             panel: ColorPanel::default(),
-            options: OptionsPanel::default(),
+            options: OptionsPanel {
+                bottom_bar: bar_style,
+                bottom_bar_saved: bar_style,
+                ..OptionsPanel::default()
+            },
             brush_panel: BrushPanel::default(),
             gallery: galeria::GalleryState::default(),
         }
@@ -254,6 +273,7 @@ impl UiLayer {
         let brush_panel = &mut self.brush_panel;
         let gallery = &mut self.gallery;
         let mut full_output = self.ctx.run_ui(raw_input, |ui| {
+            options.brush_color = *color;
             let (color_was_open, brush_was_open) = (panel.open, brush_panel.open);
             changed |= toolbar(ui, tool, *color, panel, view_locked, brush, brush_panel);
             // El panel de color y el de pinceles salen en el mismo lugar: abrir uno cierra el otro.

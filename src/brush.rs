@@ -63,6 +63,10 @@ pub enum BrushType {
     /// Cincel plano (deducido de la imagen de un pincel plano del Grease Pencil de Blender, no de photocraft): punta de
     /// paralelogramo aplastada que sigue la direccion del trazo y deja una banda recta, sin papel (`pinceles/cincel.rs`).
     Chisel,
+    /// Arcane (pincel de cara y cuerpo de ibisPaint, leido de su QR y de capturas de sus trazos): punta de elipse aplastada (ancha de lado a
+    /// lado del trazo) de borde casi duro y espaciado muy denso, que nace casi transparente y al soltar se desvanece en un trazo largo
+    /// (`pinceles/desvanecido.rs`). Sin papel ni grano.
+    Arcane,
 }
 
 /// Categorias del panel de pinceles (la columna de la izquierda).
@@ -100,9 +104,10 @@ impl BrushGroup {
 
 impl BrushType {
     /// En el orden en que salen en el panel.
-    pub const ALL: [BrushType; 20] = [
+    pub const ALL: [BrushType; 21] = [
         BrushType::Soft,
         BrushType::Hard,
+        BrushType::Arcane,
         BrushType::Airbrush,
         BrushType::Pencil,
         BrushType::PencilSoft,
@@ -145,12 +150,13 @@ impl BrushType {
             BrushType::Halftone => "Puntos de semitono",
             BrushType::WaxCrayon => "Crayón de cera",
             BrushType::Chisel => "Cincel plano",
+            BrushType::Arcane => "Arcane (cara y cuerpo)",
         }
     }
 
     pub fn group(self) -> BrushGroup {
         match self {
-            BrushType::Soft | BrushType::Hard => BrushGroup::Basic,
+            BrushType::Soft | BrushType::Hard | BrushType::Arcane => BrushGroup::Basic,
             BrushType::Pencil | BrushType::PencilSoft => BrushGroup::Pencil,
             BrushType::MarkerSoft | BrushType::MarkerHard => BrushGroup::Marker,
             BrushType::Airbrush => BrushGroup::Airbrush,
@@ -202,6 +208,8 @@ impl BrushType {
             BrushType::WaxCrayon => 11.0,
             // Cincel plano: estimado de la imagen (la punta mide unos 1.4 radios de largo).
             BrushType::Chisel => 25.0,
+            // Arcane: grosor 107 px en el QR de ibisPaint = radio 53.5.
+            BrushType::Arcane => 53.5,
         }
     }
 
@@ -238,6 +246,8 @@ impl BrushType {
             BrushType::WaxCrayon => 0.16,
             // Cincel plano: estimado, parejo para que no se noten los toques.
             BrushType::Chisel => 0.12,
+            // Arcane: espaciado 0.025 del grosor (QR) = 0.05 del radio. Si pinta lento, subirlo a 0.1 no cambia lo que se ve.
+            BrushType::Arcane => 0.05,
         }
     }
 
@@ -257,6 +267,7 @@ impl BrushType {
             BrushType::Halftone => Some(DryKind::Halftone),
             BrushType::WaxCrayon => Some(DryKind::Crayon),
             BrushType::Chisel => Some(DryKind::Chisel),
+            BrushType::Arcane => Some(DryKind::Arcane),
             _ => None,
         }
     }
@@ -288,6 +299,8 @@ impl BrushType {
             BrushType::Hard => (8.0 * t).min(1.0),
             BrushType::Airbrush => t * t,
             BrushType::Pencil => (10.0 * t).min(1.0),
+            // Arcane: borde casi duro (en las capturas pasa de 0 a 1 en unos 2 px de 27: 0.1 del radio).
+            BrushType::Arcane => (10.0 * t).min(1.0),
             BrushType::PencilSoft => t * t * (3.0 - 2.0 * t),
             BrushType::MarkerSoft => (4.0 * t).min(1.0),
             BrushType::MarkerHard => (20.0 * t).min(1.0),
@@ -321,6 +334,12 @@ pub const MIN_FLOW: f32 = 0.01;
 pub const BUILD_UP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl BrushType {
+    /// true si la opacidad de cada toque depende de donde va en el trazo (desvanecido de inicio y de fin). Esos
+    /// pinceles guardan los toques del trazo y lo repintan al soltar el boton (`main.rs`, `pinceles/desvanecido.rs`).
+    pub fn fades(self) -> bool {
+        matches!(self, BrushType::Arcane)
+    }
+
     /// true si el pincel sigue depositando pintura con el puntero quieto (un toque cada `BUILD_UP_INTERVAL`).
     pub fn build_up(self) -> bool {
         matches!(self, BrushType::Airbrush)
@@ -419,14 +438,14 @@ mod tests {
         // Su dispersion cubre el 60 % del radio en cada eje: la esquina esta a 0.6 * raiz de 2.
         assert!((b.scatter() - 0.6 * 2f32.sqrt()).abs() < 1e-6);
         assert!(b.scatter() > BrushType::Pastel.scatter());
-        // Solo los once de medio seco (carboncillo, pastel, crayon, punteado, follaje, esponja de tinta, textura de
-        // esponja, salpicadura, pasto, semitono y cincel) tienen punta propia.
+        // Solo los doce de medio seco (carboncillo, pastel, crayon, punteado, follaje, esponja de tinta, textura de
+        // esponja, salpicadura, pasto, semitono, cincel y Arcane) tienen punta propia.
         assert_eq!(
             BrushType::ALL
                 .iter()
                 .filter(|k| k.dry_kind().is_some())
                 .count(),
-            11
+            12
         );
     }
 
@@ -565,6 +584,25 @@ mod tests {
         // Su punta cabe en el radio y el flujo arranca en 1.
         assert_eq!(b.scatter(), 0.0);
         assert_eq!(b.default_flow(), 1.0);
+    }
+
+    #[test]
+    fn arcane_es_un_pincel_simple_con_los_valores_del_qr_y_es_el_unico_con_desvanecido() {
+        let b = BrushType::Arcane;
+        assert_eq!(b.name(), "Arcane (cara y cuerpo)");
+        assert_eq!(b.group(), BrushGroup::Basic);
+        assert_eq!(b.dry_kind(), Some(DryKind::Arcane));
+        // Grosor 107 = radio 53.5; espaciado 0.025 del grosor = 0.05 del radio.
+        assert_eq!(b.default_radius(), 53.5);
+        assert!((b.spacing() - 0.05).abs() < 1e-6);
+        assert_eq!(b.scatter(), 0.0);
+        assert_eq!(b.default_flow(), 1.0);
+        // Borde casi duro: pasa a opacidad plena a 0.1 del radio hacia adentro.
+        assert_eq!(b.falloff(0.1), 1.0);
+        assert!(b.falloff(0.05) < 1.0);
+        for k in BrushType::ALL {
+            assert_eq!(k.fades(), k == BrushType::Arcane, "{}", k.name());
+        }
     }
 
     #[test]
