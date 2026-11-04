@@ -8,7 +8,8 @@
 use glam::Vec3;
 
 use super::{
-    arcane, carboncillo, cincel, crayon, esponja, follaje, pastel, pasto, punteado, salpicadura,
+    arcane, carboncillo, crayon, esponja, follaje, gp_arco, gp_astillas, gp_cinta,
+    gp_gouache, gp_mancha, gp_nube, gp_puntos, gp_tinta, pastel, pasto, punteado, salpicadura,
     semitono,
 };
 
@@ -41,12 +42,30 @@ pub enum DryKind {
     /// Textura de esponja (Sponge Texture de photocraft): la esponja de poros con otra semilla, sin bordes mojados, y una
     /// opacidad distinta en cada toque (`esponja.rs`; la opacidad se aplica en `paint.rs` con `dry_mezcla_toque`).
     SpongeTexture,
-    /// Cincel plano: punta de paralelogramo aplastada que sigue la direccion del trazo, sin papel ni azar
-    /// (`cincel.rs`; deducido de una imagen, no de photocraft).
-    Chisel,
     /// Punta de Arcane (pincel de ibisPaint): elipse aplastada, ancha de lado a lado del trazo, que sigue su direccion, sin
     /// papel ni azar (`arcane.rs`). Sus desvanecidos de inicio y fin son aparte (`desvanecido.rs`).
     Arcane,
+    /// Astillas (GP_BRUSH_01 de Blender): fila de cuatro astillas de lado a lado del trazo, sin azar ni papel
+    /// (`gp_astillas.rs`).
+    GpShards,
+    /// Arco (GP_BRUSH_03 de Blender): pincelada curva de lado a lado del trazo, sin azar ni papel (`gp_arco.rs`).
+    GpArc,
+    /// Trama de puntos (GP_BRUSH_07 de Blender): cuadrado de puntitos que gira con el trazo, sin azar ni papel
+    /// (`gp_puntos.rs`).
+    GpDots,
+    /// Nube (GP_BRUSH_02 de Blender): mancha difusa de lado a lado del trazo, sin azar ni papel (`gp_nube.rs`).
+    GpCloud,
+    /// Gouache (GP_BRUSH_04 de Blender): golpe de brocha espeso con vetas que gira con el trazo, sin azar ni papel
+    /// (`gp_gouache.rs`).
+    GpGouache,
+    /// Mancha (GP_BRUSH_08 de Blender): mancha con grano para estampar que gira con el trazo, sin azar ni papel
+    /// (`gp_mancha.rs`).
+    GpBlot,
+    /// Cinta (GP_BRUSH_09 de Blender): banda con degradado que gira con el trazo, sin azar ni papel (`gp_cinta.rs`).
+    GpRibbon,
+    /// Tinta rugosa (Ink Pen Rough.001 de Blender): pincelada de tinta con vetas que gira con el trazo, sin azar ni papel
+    /// (`gp_tinta.rs`).
+    GpInk,
 }
 
 /// Cuanta cobertura RESTA el papel (carboncillo) o el lienzo (pastel) en un texel: `profundidad * t`, con `t` el patron
@@ -68,8 +87,15 @@ pub fn dry_subtract(kind: DryKind, pos: Vec3, tx: u32, ty: u32) -> f32 {
         | DryKind::Halftone
         | DryKind::Crayon
         | DryKind::SpongeTexture
-        | DryKind::Chisel
-        | DryKind::Arcane => 0.0,
+        | DryKind::Arcane
+        | DryKind::GpShards
+        | DryKind::GpArc
+        | DryKind::GpDots
+        | DryKind::GpCloud
+        | DryKind::GpGouache
+        | DryKind::GpBlot
+        | DryKind::GpRibbon
+        | DryKind::GpInk => 0.0,
     }
 }
 
@@ -109,7 +135,6 @@ pub fn dry_mezcla_toque(kind: DryKind, v: f32, dab: u32, pos: Vec3, tx: u32, ty:
 ///   (`semitono.rs`).
 /// - Crayon de cera: una elipse de borde suave que sigue la direccion del trazo, sin tamano ni dispersion al azar; su
 ///   punta llega mas alla del radio (`crayon.rs`).
-/// - Cincel plano: un paralelogramo aplastado que sigue la direccion del trazo, sin azar (`cincel.rs`).
 /// - Esponja de tinta y Textura de esponja: la punta de poros gira libre; la de tinta cambia de tamano y la textura
 ///   cambia de opacidad en cada toque (`esponja.rs`).
 pub struct DryDab {
@@ -146,12 +171,19 @@ impl DryDab {
             DryKind::Foliage => follaje::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Sponge => esponja::nuevo(dab, inv_radius, t0, b0),
             DryKind::SpongeTexture => esponja::nuevo_textura(dab, inv_radius, t0, b0),
-            DryKind::Chisel => cincel::nuevo(inv_radius, t0, n, along),
             DryKind::Arcane => arcane::nuevo(inv_radius, t0, n, along),
             DryKind::Spatter => salpicadura::nuevo(dab, inv_radius, radius, t0, b0),
             DryKind::Grass => pasto::nuevo(dab, inv_radius, radius, t0, b0, n, along),
             DryKind::Halftone => semitono::nuevo(inv_radius, t0, b0),
             DryKind::Crayon => crayon::nuevo(inv_radius, t0, n, along),
+            DryKind::GpShards => gp_astillas::nuevo(inv_radius, t0, n, along),
+            DryKind::GpArc => gp_arco::nuevo(inv_radius, t0, n, along),
+            DryKind::GpDots => gp_puntos::nuevo(inv_radius, t0, n, along),
+            DryKind::GpCloud => gp_nube::nuevo(inv_radius, t0, n, along),
+            DryKind::GpGouache => gp_gouache::nuevo(inv_radius, t0, n, along),
+            DryKind::GpBlot => gp_mancha::nuevo(inv_radius, t0, n, along),
+            DryKind::GpRibbon => gp_cinta::nuevo(inv_radius, t0, n, along),
+            DryKind::GpInk => gp_tinta::nuevo(inv_radius, t0, n, along),
         }
     }
 
@@ -190,12 +222,19 @@ impl DryDab {
             DryKind::Foliage => follaje::punta(),
             DryKind::Sponge => esponja::punta(),
             DryKind::SpongeTexture => esponja::punta_textura(),
-            DryKind::Chisel => cincel::punta(),
             DryKind::Arcane => arcane::punta(),
             DryKind::Spatter => salpicadura::punta(),
             DryKind::Grass => pasto::punta(),
             DryKind::Halftone => semitono::punta(),
             DryKind::Crayon => crayon::punta(),
+            DryKind::GpShards => gp_astillas::punta(),
+            DryKind::GpArc => gp_arco::punta(),
+            DryKind::GpDots => gp_puntos::punta(),
+            DryKind::GpCloud => gp_nube::punta(),
+            DryKind::GpGouache => gp_gouache::punta(),
+            DryKind::GpBlot => gp_mancha::punta(),
+            DryKind::GpRibbon => gp_cinta::punta(),
+            DryKind::GpInk => gp_tinta::punta(),
         };
         tip.sample(u * 0.5 + 0.5, v * 0.5 + 0.5)
     }

@@ -30,6 +30,10 @@ pub(super) const BTN_OPTIONS: u8 = 0;
 pub(super) const BTN_CUBE: u8 = 1;
 pub(super) const BTN_LAYERS: u8 = 2;
 pub(super) const BTN_MENU: u8 = 3;
+/// Botón nuevo de la barra (todavía sin función): va a la izquierda de todos.
+pub(super) const BTN_EXTRA: u8 = 4;
+/// Cuántos botones tiene la barra inferior.
+pub(super) const N_BTNS: usize = 5;
 /// Tamaño mínimo y máximo del icono de los botones.
 const MIN_ICON: f32 = 20.0;
 const MAX_ICON: f32 = 48.0;
@@ -70,6 +74,7 @@ pub(super) fn btn_name(id: u8) -> &'static str {
         BTN_OPTIONS => "Opciones",
         BTN_CUBE => "Mallas",
         BTN_LAYERS => "Capas",
+        BTN_EXTRA => "Reglas",
         _ => "Menú",
     }
 }
@@ -90,7 +95,7 @@ pub(super) struct BarStyle {
     /// Lado del icono de cada botón, en puntos (el botón crece con él).
     pub(super) icon_size: f32,
     /// Orden de los botones de izquierda a derecha (ids `BTN_*`); se cambia arrastrándolos en modo edición.
-    pub(super) order: [u8; 4],
+    pub(super) order: [u8; N_BTNS],
     /// Tamaño: anchura como fracción de la ventana (0.2 a 1; 1 = todo el ancho) y altura en puntos.
     pub(super) width_frac: f32,
     pub(super) height: f32,
@@ -99,7 +104,7 @@ pub(super) struct BarStyle {
     /// Desenfoque de la sombra de la barra, en puntos (0 = sin sombra).
     pub(super) shadow: u8,
     /// Qué lleva cada botón (texto, recuadro, puntito, insignia), indexado por su id `BTN_*`.
-    pub(super) btn: [BtnStyle; 4],
+    pub(super) btn: [BtnStyle; N_BTNS],
     /// Color de los botones mientras su panel está abierto (icono, texto, puntito y recuadro). Por defecto, el azul de
     /// siempre.
     pub(super) active: [u8; 4],
@@ -122,12 +127,12 @@ impl Default for BarStyle {
             radius: 0,
             icon: [205, 205, 205, 255],
             icon_size: LAYERS_ICON,
-            order: [BTN_OPTIONS, BTN_CUBE, BTN_LAYERS, BTN_MENU],
+            order: [BTN_EXTRA, BTN_OPTIONS, BTN_CUBE, BTN_LAYERS, BTN_MENU],
             width_frac: 1.0,
             height: BOTTOM_BAR_H,
             lift: 0.0,
             shadow: 0,
-            btn: [BtnStyle::default(); 4],
+            btn: [BtnStyle::default(); N_BTNS],
             active: ACCENT.to_array(),
             badge_color: [226, 48, 62, 255],
             curve_on: false,
@@ -140,19 +145,19 @@ impl Default for BarStyle {
 impl BarStyle {
     /// Un tema completo (colores, forma, tamaño, textos, puntito...) para elegir de un toque. Conserva el orden de los
     /// botones (`order`) que el usuario ya acomodó. `0` = el estilo de siempre.
-    pub(super) fn theme(i: usize, order: [u8; 4]) -> Self {
+    pub(super) fn theme(i: usize, order: [u8; N_BTNS]) -> Self {
         let base = BarStyle {
             order,
             ..BarStyle::default()
         };
-        // Los cuatro botones con lo mismo: texto, recuadro, puntito, insignia.
+        // Todos los botones con lo mismo: texto, recuadro, puntito, insignia.
         let all = |label, active_bg, dot, badge| {
             [BtnStyle {
                 label,
                 active_bg,
                 dot,
                 badge,
-            }; 4]
+            }; N_BTNS]
         };
         match i {
             // Claro: píldora blanca flotante, iconos grises y el rojo como color activo.
@@ -165,7 +170,7 @@ impl BarStyle {
                 icon: [70, 70, 72, 255],
                 active: [230, 0, 35, 255],
                 width_frac: 0.5,
-                height: 60.0,
+                height: 72.0,
                 lift: 14.0,
                 shadow: 24,
                 btn: all(true, false, true, false),
@@ -182,7 +187,7 @@ impl BarStyle {
                 active: [255, 255, 255, 255],
                 badge_color: [255, 255, 255, 255],
                 width_frac: 0.5,
-                height: 60.0,
+                height: 72.0,
                 lift: 14.0,
                 shadow: 24,
                 btn: all(true, true, true, false),
@@ -198,7 +203,7 @@ impl BarStyle {
                 icon: [190, 190, 192, 255],
                 active: [226, 48, 62, 255],
                 width_frac: 0.5,
-                height: 60.0,
+                height: 72.0,
                 lift: 14.0,
                 shadow: 28,
                 curve_on: true,
@@ -285,9 +290,9 @@ impl BarStyle {
         let (c, b, i, o, a) = (self.rgb, self.border, self.icon, self.order, self.active);
         let mut t = format!(
             "rgb={},{},{}\nalpha={}\nborder={},{},{},{}\nborder_w={}\nradius={}\nicon={},{},{},{}\nicon_size={}\n\
-             order={},{},{},{}\nwidth_frac={}\nheight={}\nlift={}\nshadow={}\nactive={},{},{},{}\n",
+             order={},{},{},{},{}\nwidth_frac={}\nheight={}\nlift={}\nshadow={}\nactive={},{},{},{}\n",
             c[0], c[1], c[2], self.alpha, b[0], b[1], b[2], b[3], self.border_w, self.radius, i[0], i[1], i[2], i[3],
-            self.icon_size, o[0], o[1], o[2], o[3], self.width_frac, self.height, self.lift, self.shadow,
+            self.icon_size, o[0], o[1], o[2], o[3], o[4], self.width_frac, self.height, self.lift, self.shadow,
             a[0], a[1], a[2], a[3],
         );
         let bc = self.badge_color;
@@ -324,12 +329,20 @@ impl BarStyle {
                 ("radius", 1) => s.radius = n[0].clamp(0.0, MAX_RADIUS) as u8,
                 ("icon", 4) => s.icon = [byte(0), byte(1), byte(2), byte(3)],
                 ("icon_size", 1) => s.icon_size = n[0].clamp(MIN_ICON, MAX_ICON),
+                ("order", 5) => {
+                    // Tiene que ser una permutación de los botones; si no, se queda el orden de siempre.
+                    let o = [byte(0), byte(1), byte(2), byte(3), byte(4)];
+                    let mut seen = [false; N_BTNS];
+                    if o.iter().all(|&x| (x as usize) < N_BTNS && !std::mem::replace(&mut seen[x as usize], true)) {
+                        s.order = o;
+                    }
+                }
                 ("order", 4) => {
-                    // Tiene que ser una permutación de los cuatro botones; si no, se queda el orden de siempre.
+                    // Archivo de antes del botón Extra: se respeta el orden de los cuatro y el nuevo va a la izquierda.
                     let o = [byte(0), byte(1), byte(2), byte(3)];
                     let mut seen = [false; 4];
                     if o.iter().all(|&x| x < 4 && !std::mem::replace(&mut seen[x as usize], true)) {
-                        s.order = o;
+                        s.order = [BTN_EXTRA, o[0], o[1], o[2], o[3]];
                     }
                 }
                 ("width_frac", 1) => s.width_frac = n[0].clamp(0.0, 1.0),
@@ -345,7 +358,7 @@ impl BarStyle {
                 ("curve_color", 4) => s.curve_color = [byte(0), byte(1), byte(2), byte(3)],
                 (k, 4) if k.starts_with("btn") => {
                     if let Ok(i) = k[3..].parse::<usize>() {
-                        if i < 4 {
+                        if i < N_BTNS {
                             s.btn[i] = BtnStyle {
                                 label: n[0] > 0.5,
                                 active_bg: n[1] > 0.5,
@@ -453,7 +466,10 @@ pub(super) fn edit_bar(ctx: &egui::Context, options: &mut OptionsPanel, bar: Rec
     let btn0 = btn_size(style0.icon_size);
     let btn_h0 = btn0.y + style0.label_extra();
     let step0 = btn0.x + 8.0;
-    let start_x0 = bar.max.x - style0.margin_x() - style0.border_w - (4.0 * btn0.x + 3.0 * 8.0);
+    let start_x0 = bar.max.x
+        - style0.margin_x()
+        - style0.border_w
+        - (N_BTNS as f32 * btn0.x + (N_BTNS as f32 - 1.0) * 8.0);
     #[allow(deprecated)]
     let id = egui::Id::new("edit_bottom_bar");
     let mut clicked = false;
@@ -516,8 +532,13 @@ pub(super) fn edit_bar(ctx: &egui::Context, options: &mut OptionsPanel, bar: Rec
     let btn = btn_size(style.icon_size);
     let step = btn.x + 8.0;
     // Los botones van pegados a la derecha, dentro del margen de 8 y del borde.
-    let start_x = bar.max.x - style.margin_x() - style.border_w - (4.0 * btn.x + 3.0 * 8.0);
-    let slot_of = |x: f32| -> usize { (((x - start_x) / step).floor().max(0.0) as usize).min(3) };
+    let start_x = bar.max.x
+        - style.margin_x()
+        - style.border_w
+        - (N_BTNS as f32 * btn.x + (N_BTNS as f32 - 1.0) * 8.0);
+    let slot_of = |x: f32| -> usize {
+        (((x - start_x) / step).floor().max(0.0) as usize).min(N_BTNS - 1)
+    };
     #[allow(deprecated)]
     let drag_id = egui::Id::new("edit_bar_drag");
     if drag_started {
@@ -573,7 +594,7 @@ pub(super) fn edit_bar(ctx: &egui::Context, options: &mut OptionsPanel, bar: Rec
         let on_button = click_pos.and_then(|p| {
             let slot = ((p.x - start_x) / step).floor();
             let inside = slot >= 0.0
-                && slot < 4.0
+                && slot < N_BTNS as f32
                 && (p.x - start_x - slot * step) <= btn.x
                 && (p.y - bar.center().y).abs() <= btn_h / 2.0;
             inside.then(|| style.order[slot as usize])

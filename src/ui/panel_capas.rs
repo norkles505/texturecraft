@@ -546,6 +546,9 @@ pub(super) fn layers_panel(
                     // Que lo que se dibuje con `ui` (los iconos) tambien se recorte a la lista.
                     let old_clip = ui.clip_rect();
                     ui.set_clip_rect(area.intersect(old_clip));
+                    // Arrastre de las tres rayas: +1 sube la capa elegida un puesto y -1 la baja (se hace al terminar de
+                    // recorrer las filas, porque mover capas cambia la lista que se esta recorriendo).
+                    let mut drag_step: Option<i32> = None;
                     for d in 0..n {
                         let idx = n - 1 - d;
                         let row = Rect::from_min_size(
@@ -563,6 +566,42 @@ pub(super) fn layers_panel(
                         if rr.clicked() {
                             stack.selected = idx;
                         }
+                        // Las tres rayas del extremo derecho: se arrastran para subir o bajar la capa. El id lleva el
+                        // identificador de la capa (no la fila) para que el arrastre no se pierda cuando la capa cambia
+                        // de fila. Se crea despues de la fila para tener prioridad donde se solapan.
+                        let handle = ui.interact(
+                            Rect::from_center_size(
+                                egui::pos2(row.right() - 20.0, row.center().y),
+                                vec2(30.0, LP_ROW_H),
+                            )
+                            .intersect(area),
+                            ui_id.with(("ldrag", stack.layers[idx].id)),
+                            Sense::drag(),
+                        );
+                        if handle.drag_started() {
+                            stack.selected = idx;
+                        }
+                        if handle.dragged() {
+                            ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                            // La capa se mueve un puesto por cuadro mientras el puntero este mas alla de su fila, y
+                            // tantos puestos mas lejos como salte (una carpeta entera): asi no rebota de un lado a otro.
+                            if let (true, Some(pt)) = (
+                                stack.selected == idx,
+                                ctx.input(|i| i.pointer.interact_pos()),
+                            ) {
+                                let up = stack.move_up_span().saturating_sub(1) as f32 * LP_ROW_H;
+                                let down = stack.move_down_span().saturating_sub(1) as f32 * LP_ROW_H;
+                                if stack.move_up_blocker().is_none() && pt.y < row.top() - up {
+                                    drag_step = Some(1);
+                                } else if stack.move_down_blocker().is_none()
+                                    && pt.y > row.bottom() + down
+                                {
+                                    drag_step = Some(-1);
+                                }
+                            }
+                        } else if handle.hovered() {
+                            ctx.set_cursor_icon(egui::CursorIcon::Grab);
+                        }
                         // Las capas de una carpeta van un poco metidas hacia la derecha.
                         let indent = if stack.layers[idx].parent.is_some() { 14.0 } else { 0.0 };
                         let th = Rect::from_min_size(
@@ -570,7 +609,7 @@ pub(super) fn layers_panel(
                             vec2(LP_THUMB_W, LP_THUMB_H),
                         );
                         // Con mascara, su miniatura va junto a la de la capa y empuja el nombre y el ojo a la derecha.
-                        let has_mask = stack.layers[idx].mask.is_some();
+                        let has_mask = stack.layers[idx].mask().is_some();
                         let mask_w = if has_mask { LP_MASK_W + 4.0 } else { 0.0 };
                         let mk = Rect::from_min_size(
                             egui::pos2(th.right() + 4.0, row.center().y - LP_MASK_W * 0.5),
@@ -603,9 +642,24 @@ pub(super) fn layers_panel(
                                 stack.selected = idx;
                                 stack.layers[idx].editing_mask = false;
                             }
+                            // Tocar la miniatura de la mascara: elige pintar en ella; si ya se estaba pintando en ella y la
+                            // capa tiene varias, pasa a la siguiente (el numerito de la esquina dice cual es).
                             if on_mask.clicked() {
+                                let ya_en_ella = stack.selected == idx && stack.layers[idx].editing_mask;
                                 stack.selected = idx;
-                                stack.layers[idx].editing_mask = true;
+                                let l = &mut stack.layers[idx];
+                                if ya_en_ella && l.masks.len() > 1 {
+                                    l.mask_sel = (l.mask_sel + 1) % l.masks.len();
+                                }
+                                l.editing_mask = true;
+                            }
+                            let n_masks = stack.layers[idx].masks.len();
+                            if n_masks > 1 {
+                                on_mask.on_hover_text(format!(
+                                    "Máscara {} de {} (toca otra vez para pasar a la siguiente)",
+                                    stack.layers[idx].mask_sel + 1,
+                                    n_masks
+                                ));
                             }
                         }
                         let selected = stack.selected == idx;
@@ -685,7 +739,7 @@ pub(super) fn layers_panel(
                         }
                         // Miniatura de la mascara: cuadro con un circulo (blanco sobre negro si esta invertida) y una
                         // raya roja si esta apagada.
-                        if let Some(m) = &l.mask {
+                        if let Some(m) = l.mask() {
                             let (back, front) = if m.invert {
                                 (Color32::BLACK, Color32::WHITE)
                             } else {
@@ -705,6 +759,25 @@ pub(super) fn layers_panel(
                                 Stroke::new(1.0, Color32::from_gray(170))
                             };
                             pa.rect_stroke(mk, CornerRadius::same(3), border, StrokeKind::Inside);
+                            // Con varias mascaras, un numerito en la esquina dice cual es la que se ve ("2/3").
+                            if l.masks.len() > 1 {
+                                let badge = Rect::from_min_size(
+                                    mk.right_bottom() - vec2(22.0, 12.0),
+                                    vec2(22.0, 12.0),
+                                );
+                                pa.rect_filled(
+                                    badge,
+                                    CornerRadius::same(3),
+                                    Color32::from_black_alpha(190),
+                                );
+                                pa.text(
+                                    badge.center(),
+                                    Align2::CENTER_CENTER,
+                                    format!("{}/{}", l.mask_sel + 1, l.masks.len()),
+                                    FontId::proportional(9.0),
+                                    Color32::WHITE,
+                                );
+                            }
                         }
                         pa.text(
                             egui::pos2(th.right() + 8.0 + mask_w, row.top() + 13.0),
@@ -749,10 +822,14 @@ pub(super) fn layers_panel(
                             ),
                             MENU_TEXT,
                         );
-                        // Icono de las tres rayas del extremo derecho (solo adorno por ahora: todavia no se reordena).
+                        // Icono de las tres rayas del extremo derecho: se arrastra para reordenar (azul mientras se arrastra).
                         // Es `assets/icons/layer_drag.svg`; basta con reemplazar el archivo para cambiarlo.
                         egui::Image::new(egui::include_image!("../../assets/icons/layer_drag.svg"))
-                            .tint(Color32::from_gray(150))
+                            .tint(if handle.dragged() {
+                                ACCENT
+                            } else {
+                                Color32::from_gray(150)
+                            })
                             .paint_at(
                                 ui,
                                 Rect::from_center_size(
@@ -767,6 +844,24 @@ pub(super) fn layers_panel(
                         );
                     }
                     ui.set_clip_rect(old_clip);
+                    // Aplicar el arrastre: la capa sube o baja un puesto y la lista se desplaza lo justo para que la fila
+                    // que se arrastra no se salga de la vista.
+                    if let Some(step) = drag_step {
+                        let moved = if step > 0 {
+                            stack.move_up()
+                        } else {
+                            stack.move_down()
+                        };
+                        if moved {
+                            recompose = true;
+                            let top = (n - 1 - stack.selected) as f32 * LP_ROW_H;
+                            if top < options.layers_scroll {
+                                options.layers_scroll = top;
+                            } else if top + LP_ROW_H > options.layers_scroll + area.height() {
+                                options.layers_scroll = top + LP_ROW_H - area.height();
+                            }
+                        }
+                    }
                     // Barrita de desplazamiento, solo si la lista no cabe.
                     if max_scroll > 0.0 {
                         let track_h = area.height() - 8.0;
@@ -1314,16 +1409,18 @@ pub(super) fn layers_panel(
             let mut close = false;
             // Fila que se toco (posicion en `items`); se hace al terminar de dibujar el menu.
             let mut clicked: Option<usize> = None;
-            // Las filas de la mascara, de las capas de color liso y de las carpetas van primero (cambian segun la capa
+            // Las filas de las mascaras, de las capas de color liso y de las carpetas van primero (cambian segun la capa
             // elegida) y despues las de siempre.
-            let (has_mask, mask_on, is_solid) = {
+            let (mask_count, mask_pos, mask_on, is_solid) = {
                 let l = &stack.layers[stack.selected];
                 (
-                    l.mask.is_some(),
-                    l.mask.as_ref().is_some_and(|m| m.enabled),
+                    l.masks.len(),
+                    l.mask_sel,
+                    l.mask().is_some_and(|m| m.enabled),
                     l.is_solid(),
                 )
             };
+            let has_mask = mask_count > 0;
             let (can_leave, can_enter) = (stack.can_leave_folder(), stack.can_enter_folder_above());
             let locked = stack.selected_layer().locked;
             let solo_on = stack.solo;
@@ -1334,12 +1431,20 @@ pub(super) fn layers_panel(
             let items: Vec<(String, bool)> = vec![
                 (
                     (if has_mask {
-                        "Borrar máscara"
+                        "Añadir otra máscara"
                     } else {
                         "Añadir máscara"
                     })
                     .to_string(),
-                    true,
+                    mask_count < crate::layers::MAX_MASKS,
+                ),
+                (
+                    if mask_count > 1 {
+                        format!("Borrar la máscara {} de {}", mask_pos + 1, mask_count)
+                    } else {
+                        "Borrar máscara".to_string()
+                    },
+                    has_mask,
                 ),
                 ("Invertir máscara".to_string(), has_mask),
                 (
@@ -1351,6 +1456,7 @@ pub(super) fn layers_panel(
                     .to_string(),
                     has_mask,
                 ),
+                ("Siguiente máscara".to_string(), mask_count > 1),
                 ("Nueva capa de color".to_string(), true),
                 ("Cambiar color de la capa".to_string(), is_solid),
                 ("Sacar de la carpeta".to_string(), can_leave),
@@ -1445,37 +1551,36 @@ pub(super) fn layers_panel(
                         });
                 });
             more_rect = Some(mo.response.rect);
-            // Filas de la mascara (las tres primeras), de las capas de color liso (la cuarta y la quinta), de las
-            // carpetas (la sexta y la septima), de subir y bajar la capa (la octava y la novena) y de bloquearla (la
-            // decima): hay que recomponer la textura para que se vea el cambio. Las de color liso usan el color del pincel.
+            // Filas del menu, en orden: 0 a 4 las mascaras (anadir, borrar la elegida, invertir, apagar o encender, pasar a la
+            // siguiente), 5 y 6 las capas de color liso, 7 y 8 las carpetas, 9 y 10 subir y bajar la capa, 11 bloquearla,
+            // 12 renombrarla y 13 el Modo Solo. Se recompone la textura cuando cambia lo que se ve. Las de color liso usan
+            // el color del pincel.
             match clicked {
-                Some(0) => {
-                    if has_mask {
-                        stack.remove_mask();
-                    } else {
-                        stack.add_mask();
-                    }
-                    recompose = true;
+                Some(0) => recompose |= stack.add_mask(),
+                Some(1) => recompose |= stack.remove_mask(),
+                Some(2) => recompose |= stack.invert_mask(),
+                Some(3) => recompose |= stack.toggle_mask_enabled(),
+                // Pasar a otra mascara solo cambia cual se ve y se pinta, no la textura.
+                Some(4) => {
+                    stack.next_mask();
                 }
-                Some(1) => recompose |= stack.invert_mask(),
-                Some(2) => recompose |= stack.toggle_mask_enabled(),
-                Some(3) => recompose |= stack.add_solid_layer(options.brush_color),
-                Some(4) => recompose |= stack.set_solid_color(options.brush_color),
-                Some(5) => recompose |= stack.leave_folder(),
-                Some(6) => recompose |= stack.enter_folder_above(),
-                Some(7) => recompose |= stack.move_up(),
-                Some(8) => recompose |= stack.move_down(),
+                Some(5) => recompose |= stack.add_solid_layer(options.brush_color),
+                Some(6) => recompose |= stack.set_solid_color(options.brush_color),
+                Some(7) => recompose |= stack.leave_folder(),
+                Some(8) => recompose |= stack.enter_folder_above(),
+                Some(9) => recompose |= stack.move_up(),
+                Some(10) => recompose |= stack.move_down(),
                 // Bloquear o desbloquear la capa elegida (igual que la tecla L). Se recompone para que se actualice la
                 // barra de titulo, que avisa cuando esta bloqueada.
-                Some(9) => {
+                Some(11) => {
                     let l = &mut stack.layers[stack.selected];
                     l.locked = !l.locked;
                     recompose = true;
                 }
                 // Renombrar: abre la ventanita para escribir el nombre nuevo (se dibuja mas abajo).
-                Some(10) => options.rename = Some((stack.selected_layer().id, String::new(), false)),
+                Some(12) => options.rename = Some((stack.selected_layer().id, String::new(), false)),
                 // Modo Solo: en pantalla solo se ve la capa elegida (`main` recompone al notar el cambio).
-                Some(11) => stack.solo = !stack.solo,
+                Some(13) => stack.solo = !stack.solo,
                 _ => {}
             }
             if close {

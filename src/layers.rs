@@ -8,6 +8,8 @@ use crate::paint::Rect;
 
 /// Capas con pixeles por pieza (4 MB cada una).
 pub const MAX_LAYERS: usize = 10;
+/// Mascaras por capa. Se combinan: donde cualquiera de las encendidas oculta la pintura, queda oculta.
+pub const MAX_MASKS: usize = 4;
 
 /// Intensidad del relieve del mapa de normales que se exporta a partir de la altura (como el "Strength" del Bump de
 /// Blender). Mas alto = relieve mas marcado.
@@ -83,8 +85,8 @@ impl ChannelKind {
 pub enum PaintTarget {
     /// Los pixeles de color de la capa.
     Layer,
-    /// La mascara de la capa.
-    Mask,
+    /// Una de las mascaras de la capa (posicion en `PaintLayer::masks`).
+    Mask(usize),
     /// Una hoja de canal extra (posicion en `PaintLayer::chans`).
     Channel(usize),
 }
@@ -129,9 +131,12 @@ pub struct PaintLayer {
     pub clip_to_below: bool,
     /// RGBA de 8 bits con alfa recto; la fila 0 es v = 0.
     pub pixels: Vec<u8>,
-    /// Mascara de la capa (una sola por ahora): decide en que parte se ve la pintura.
-    pub mask: Option<LayerMask>,
-    /// Se pinta en la mascara y no en los pixeles de la capa. Solo cuenta si la capa tiene mascara.
+    /// Mascaras de la capa (hasta `MAX_MASKS`): cada una decide en que parte se ve la pintura, y se combinan (donde
+    /// cualquiera de las encendidas oculta, queda oculta).
+    pub masks: Vec<LayerMask>,
+    /// Cual de las mascaras se ve en la lista y se edita (solo cuenta si la capa tiene mascaras).
+    pub mask_sel: usize,
+    /// Se pinta en la mascara elegida y no en los pixeles de la capa. Solo cuenta si la capa tiene mascaras.
     pub editing_mask: bool,
     /// Hojas de los canales extra (rugosidad, metalico, altura; ver `ChannelKind::slot`). RGBA como los pixeles de la
     /// capa: el alfa dice donde la capa pinta ese canal y el valor es la luminosidad del color. Se crean al pintar.
@@ -197,7 +202,8 @@ impl PaintLayer {
             blend: BlendMode::Normal,
             clip_to_below: false,
             pixels: vec![0; (size * size * 4) as usize],
-            mask: None,
+            masks: Vec::new(),
+            mask_sel: 0,
             editing_mask: false,
             chans: [None, None, None],
             source: LayerSource::Paint,
@@ -232,20 +238,43 @@ impl PaintLayer {
             }
     }
 
-    /// La mascara que se aplica al componer (la que existe y esta encendida).
-    pub fn active_mask(&self) -> Option<&LayerMask> {
-        self.mask.as_ref().filter(|m| m.enabled)
+    /// La mascara elegida (la que se ve en la lista y se pinta), si la capa tiene mascaras.
+    pub fn mask(&self) -> Option<&LayerMask> {
+        self.masks.get(self.mask_sel)
     }
 
-    /// El pincel pinta en la mascara de esta capa (y no en sus pixeles).
+    /// Lo mismo, para cambiarla.
+    pub fn mask_mut(&mut self) -> Option<&mut LayerMask> {
+        self.masks.get_mut(self.mask_sel)
+    }
+
+    /// Cuanto deja ver el conjunto de mascaras encendidas el texel `i` (indice en bytes, el mismo de los pixeles de la
+    /// capa): 0..=255, 255 si no hay mascaras. Se multiplican: donde cualquiera oculta, queda oculto.
+    #[inline]
+    pub fn mask_visibility(&self, i: usize) -> u32 {
+        let mut v = 255;
+        for m in self.masks.iter().filter(|m| m.enabled) {
+            v = v * m.value(i) / 255;
+        }
+        v
+    }
+
+    /// El pincel pinta en la mascara elegida de esta capa (y no en sus pixeles).
     pub fn painting_mask(&self) -> bool {
-        self.editing_mask && self.mask.is_some()
+        self.editing_mask && self.mask().is_some()
     }
 
-    /// A donde va el pincel: la mascara si se esta pintando en ella; si no, el canal elegido (color = la capa).
+    /// En esta capa la mascara que se pinta es la que "revela" el color: la primera de una capa de color liso, donde el
+    /// pincel siempre pinta de blanco (se ve el color) y empieza negra. En las demas mascaras el gris sale del color del
+    /// pincel y empiezan blancas.
+    pub fn mask_reveals(&self) -> bool {
+        self.is_solid() && self.mask_sel == 0
+    }
+
+    /// A donde va el pincel: la mascara elegida si se esta pintando en ella; si no, el canal elegido (color = la capa).
     pub fn target(&self, channel: ChannelKind) -> PaintTarget {
         if self.painting_mask() {
-            PaintTarget::Mask
+            PaintTarget::Mask(self.mask_sel)
         } else {
             match channel.slot() {
                 Some(s) => PaintTarget::Channel(s),
@@ -258,7 +287,7 @@ impl PaintLayer {
     pub fn target_pixels_mut(&mut self, target: PaintTarget) -> &mut Vec<u8> {
         let len = self.pixels.len();
         match target {
-            PaintTarget::Mask => match self.mask.as_mut() {
+            PaintTarget::Mask(k) => match self.masks.get_mut(k) {
                 Some(m) => &mut m.pixels,
                 None => &mut self.pixels,
             },
@@ -528,29 +557,48 @@ impl LayerStack {
         true
     }
 
-    /// Pone una mascara blanca (que no oculta nada) a la capa elegida y pasa a pintar en ella. false si ya tenia una.
-    /// Quien llama debe recomponer la textura.
+    /// Anade una mascara blanca (que no oculta nada) a la capa elegida, la elige y pasa a pintar en ella. false si la capa
+    /// ya tiene `MAX_MASKS`. Quien llama debe recomponer la textura.
     pub fn add_mask(&mut self) -> bool {
         let size = self.size;
         let layer = &mut self.layers[self.selected];
-        if layer.mask.is_some() {
+        if layer.masks.len() >= MAX_MASKS {
             return false;
         }
-        layer.mask = Some(LayerMask::new(size));
+        layer.masks.push(LayerMask::new(size));
+        layer.mask_sel = layer.masks.len() - 1;
         layer.editing_mask = true;
         true
     }
 
-    /// Quita la mascara de la capa elegida (la pintura de la capa no cambia) y vuelve a pintar en la capa.
+    /// Quita la mascara elegida de la capa elegida (la pintura de la capa no cambia), elige otra si queda alguna y vuelve a
+    /// pintar en la capa. false si no tenia mascaras.
     pub fn remove_mask(&mut self) -> bool {
         let layer = &mut self.layers[self.selected];
         layer.editing_mask = false;
-        layer.mask.take().is_some()
+        if layer.mask_sel >= layer.masks.len() {
+            return false;
+        }
+        layer.masks.remove(layer.mask_sel);
+        layer.mask_sel = layer.mask_sel.min(layer.masks.len().saturating_sub(1));
+        true
     }
 
-    /// Enciende o apaga la mascara de la capa elegida (apagada se conserva pero no oculta nada).
+    /// Elige la siguiente mascara de la capa elegida (despues de la ultima vuelve a la primera) y pasa a pintar en ella.
+    /// false si tiene menos de dos.
+    pub fn next_mask(&mut self) -> bool {
+        let layer = &mut self.layers[self.selected];
+        if layer.masks.len() < 2 {
+            return false;
+        }
+        layer.mask_sel = (layer.mask_sel + 1) % layer.masks.len();
+        layer.editing_mask = true;
+        true
+    }
+
+    /// Enciende o apaga la mascara elegida de la capa elegida (apagada se conserva pero no oculta nada).
     pub fn toggle_mask_enabled(&mut self) -> bool {
-        match self.layers[self.selected].mask.as_mut() {
+        match self.layers[self.selected].mask_mut() {
             Some(m) => {
                 m.enabled = !m.enabled;
                 true
@@ -559,9 +607,9 @@ impl LayerStack {
         }
     }
 
-    /// Invierte la mascara de la capa elegida (lo blanco pasa a ocultar y lo negro a mostrar).
+    /// Invierte la mascara elegida de la capa elegida (lo blanco pasa a ocultar y lo negro a mostrar).
     pub fn invert_mask(&mut self) -> bool {
-        match self.layers[self.selected].mask.as_mut() {
+        match self.layers[self.selected].mask_mut() {
             Some(m) => {
                 m.invert = !m.invert;
                 true
@@ -579,7 +627,8 @@ impl LayerStack {
         let size = self.size;
         let layer = &mut self.layers[self.selected];
         layer.source = LayerSource::Solid(color);
-        layer.mask = Some(LayerMask::filled(size, 0));
+        layer.masks = vec![LayerMask::filled(size, 0)];
+        layer.mask_sel = 0;
         layer.editing_mask = true;
         true
     }
@@ -689,6 +738,35 @@ impl LayerStack {
         self.layers[prev_start..=end].rotate_right(end - start + 1);
         self.selected = sel - (start - prev_start);
         true
+    }
+
+    /// Cuantos puestos de la lista salta la capa elegida al subir: 1, o mas si pasa por encima de una carpeta entera.
+    /// Sirve para arrastrar sin que la capa rebote (ver `ui::panel_capas`). Con `move_up_blocker` es indiferente.
+    pub fn move_up_span(&self) -> usize {
+        let sel = self.selected;
+        if self.layers[sel].parent.is_some() {
+            return 1;
+        }
+        let (_, end) = self.unit_range(sel);
+        if end + 1 >= self.layers.len() {
+            return 1;
+        }
+        let (_, next_end) = self.unit_range(end + 1);
+        next_end - end
+    }
+
+    /// Lo mismo al bajar.
+    pub fn move_down_span(&self) -> usize {
+        let sel = self.selected;
+        if self.layers[sel].parent.is_some() {
+            return 1;
+        }
+        let (start, _) = self.unit_range(sel);
+        if start == 0 {
+            return 1;
+        }
+        let (prev_start, _) = self.unit_range(start - 1);
+        start - prev_start
     }
 
     /// Por que no se puede duplicar la capa elegida (`None` si se puede).
@@ -801,7 +879,8 @@ impl LayerStack {
         merged.source = LayerSource::Paint;
         merged.pixels = pixels;
         merged.chans = chans;
-        merged.mask = None;
+        merged.masks.clear();
+        merged.mask_sel = 0;
         merged.editing_mask = false;
         merged.opacity = 100;
         self.layers.remove(sel);
@@ -882,11 +961,8 @@ impl LayerStack {
             };
             // En el Modo Solo la capa que se ve no se recorta contra una base que no se dibuja.
             let clipped = layer.clip_to_below && n > 0 && solo.is_none();
-            // Alfa del pixel ya con la mascara: asi una capa recortada tambien queda limitada por la mascara de su base.
-            let pa = match layer.active_mask() {
-                Some(m) => p[3] as u32 * m.value(i) / 255,
-                None => p[3] as u32,
-            };
+            // Alfa del pixel ya con las mascaras: asi una capa recortada tambien queda limitada por las de su base.
+            let pa = p[3] as u32 * layer.mask_visibility(i) / 255;
             if !clipped {
                 base_a = if layer.visible { pa } else { 0 };
             }
@@ -927,17 +1003,30 @@ impl LayerStack {
                     folder.chans[s] = None;
                 }
             }
-            for y in y0..=y1 {
-                for x in x0..=x1 {
-                    let i = ((y * size + x) * 4) as usize;
-                    let c = Self::blend_texel_in(kids, i, [0; 4], None, false, None);
-                    folder.pixels[i..i + 4].copy_from_slice(&c);
-                    for s in 0..3 {
-                        if let Some(buf) = folder.chans[s].as_mut() {
-                            let g = Self::blend_texel_in(kids, i, [0; 4], Some(s), false, None);
-                            buf[i..i + 4].copy_from_slice(&g);
-                        }
-                    }
+            let rows = (y1 - y0 + 1) as usize;
+            let area = (x1 - x0 + 1) as usize * rows;
+            let stride = (size * 4) as usize;
+            let band = y0 as usize * stride..(y1 as usize + 1) * stride;
+            for_row_bands(
+                &mut folder.pixels[band.clone()],
+                stride,
+                y0,
+                rows,
+                area,
+                &|ys: u32, chunk: &mut [u8]| group_rows(kids, None, size, ys, chunk, x0, x1),
+            );
+            for s in 0..3 {
+                if let Some(buf) = folder.chans[s].as_mut() {
+                    for_row_bands(
+                        &mut buf[band.clone()],
+                        stride,
+                        y0,
+                        rows,
+                        area,
+                        &|ys: u32, chunk: &mut [u8]| {
+                            group_rows(kids, Some(s), size, ys, chunk, x0, x1)
+                        },
+                    );
                 }
             }
         }
@@ -1086,6 +1175,60 @@ impl LayerStack {
     }
 }
 
+/// Reparte un grupo de filas completas (`out`, desde la fila `y0`) en franjas entre los hilos del procesador y llama a
+/// `f(fila_inicial, franja)` en cada una; cada hilo recibe su propia franja, asi que no se pisan. Si la zona es chica
+/// (`area` en texeles) se hace todo en un solo hilo, donde crear hilos no compensa.
+fn for_row_bands(
+    out: &mut [u8],
+    stride: usize,
+    y0: u32,
+    rows: usize,
+    area: usize,
+    f: &(dyn Fn(u32, &mut [u8]) + Sync),
+) {
+    let threads = if area < 65_536 {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(rows)
+    };
+    if threads <= 1 {
+        f(y0, out);
+        return;
+    }
+    let band = rows.div_ceil(threads);
+    std::thread::scope(|s| {
+        for (n, chunk) in out.chunks_mut(band * stride).enumerate() {
+            let y_start = y0 + (n * band) as u32;
+            s.spawn(move || f(y_start, chunk));
+        }
+    });
+}
+
+/// Compone, para las columnas `x0..=x1` de unas filas, las capas de una carpeta entre ellas sobre transparente (`slot`
+/// = `None` el color, `Some(s)` la hoja de un canal). Lo que guarda la carpeta; ver `update_group_caches`.
+fn group_rows(
+    kids: &[PaintLayer],
+    slot: Option<usize>,
+    size: u32,
+    y_start: u32,
+    rows: &mut [u8],
+    x0: u32,
+    x1: u32,
+) {
+    let stride = (size * 4) as usize;
+    for (k, row) in rows.chunks_mut(stride).enumerate() {
+        let y = y_start + k as u32;
+        for x in x0..=x1 {
+            let i = ((y * size + x) * 4) as usize;
+            let c = LayerStack::blend_texel_in(kids, i, [0; 4], slot, false, None);
+            let o = (x * 4) as usize;
+            row[o..o + 4].copy_from_slice(&c);
+        }
+    }
+}
+
 /// Compone las columnas `x0..=x1` de un grupo de filas de la textura. `rows` son las filas completas (RGBA) de la
 /// textura compuesta a partir de la fila `y_start`; cada hilo recibe su propia franja, asi que no se pisan.
 fn composite_rows(
@@ -1157,10 +1300,7 @@ fn baked_texel(layer: &PaintLayer, slot: Option<usize>, i: usize) -> [u8; 4] {
             None => [0, 0, 0, 0],
         },
     };
-    let mut a = p[3] as u32;
-    if let Some(m) = layer.active_mask() {
-        a = a * m.value(i) / 255;
-    }
+    let a = p[3] as u32 * layer.mask_visibility(i) / 255;
     p[3] = (a * layer.opacity as u32 / 100) as u8;
     p
 }
@@ -1267,7 +1407,7 @@ mod tests {
     /// Pone un texel de la mascara de la capa 0 a un gris (opaco).
     fn set_mask(stack: &mut LayerStack, x: u32, y: u32, v: u8) {
         let i = ((y * stack.size + x) * 4) as usize;
-        let m = stack.layers[0].mask.as_mut().unwrap();
+        let m = stack.layers[0].mask_mut().unwrap();
         m.pixels[i..i + 4].copy_from_slice(&[v, v, v, 255]);
     }
 
@@ -1276,8 +1416,12 @@ mod tests {
         let mut s = LayerStack::new(64);
         set_px(&mut s.layers[0], 64, 5, 5, [255, 0, 0, 255]);
         assert!(s.add_mask());
-        // Una capa solo tiene una mascara.
+        // Una capa puede tener varias mascaras, hasta MAX_MASKS.
+        for _ in 1..MAX_MASKS {
+            assert!(s.add_mask());
+        }
         assert!(!s.add_mask());
+        assert_eq!(s.layers[0].masks.len(), MAX_MASKS);
         assert!(s.layers[0].painting_mask());
         s.composite_all();
         assert_eq!(px(&s, 5, 5), [255, 0, 0, 255]);
@@ -1342,7 +1486,7 @@ mod tests {
         s.add_mask();
         // Mascara y capa tienen el mismo tamano; la mascara empieza blanca y la capa vacia.
         let t = s.layers[0].target(ChannelKind::Color);
-        assert_eq!(t, PaintTarget::Mask);
+        assert_eq!(t, PaintTarget::Mask(0));
         assert_eq!(s.layers[0].target_pixels_mut(t)[0], 255);
         s.layers[0].editing_mask = false;
         let t = s.layers[0].target(ChannelKind::Color);
@@ -1428,7 +1572,7 @@ mod tests {
         assert_eq!(px(&s, 5, 5), [255, 255, 255, 255]);
         // La mascara tiene prioridad sobre el canal.
         s.add_mask();
-        assert_eq!(s.layers[0].target(ChannelKind::Roughness), PaintTarget::Mask);
+        assert_eq!(s.layers[0].target(ChannelKind::Roughness), PaintTarget::Mask(0));
     }
 
     #[test]
@@ -1461,7 +1605,7 @@ mod tests {
         assert_eq!(px(&s, 5, 5), s.background.pixel(5, 5));
         // Se "pinta" blanco en la mascara en (5,5): ahi aparece el color, entero.
         let i = ((5 * 64 + 5) * 4) as usize;
-        s.layers[1].mask.as_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+        s.layers[1].mask_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
         s.composite_all();
         assert_eq!(px(&s, 5, 5), [200, 30, 40, 255]);
         assert_eq!(px(&s, 6, 5), s.background.pixel(6, 5));
@@ -1472,7 +1616,7 @@ mod tests {
         let mut s = LayerStack::new(64);
         s.add_solid_layer([200, 30, 40]);
         let i = ((5 * 64 + 5) * 4) as usize;
-        s.layers[1].mask.as_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+        s.layers[1].mask_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
         assert!(s.set_solid_color([10, 20, 250]));
         // Mismo color otra vez: nada que cambiar.
         assert!(!s.set_solid_color([10, 20, 250]));
@@ -1532,14 +1676,14 @@ mod tests {
         assert_eq!(s.layers[1].opacity, 40);
         assert_eq!(s.layers[1].chans[0], s.layers[0].chans[0]);
         assert_eq!(
-            s.layers[1].mask.as_ref().unwrap().pixels,
-            s.layers[0].mask.as_ref().unwrap().pixels
+            s.layers[1].mask().unwrap().pixels,
+            s.layers[0].mask().unwrap().pixels
         );
         // Cambiar la copia no toca la original.
         s.layers[1].pixels[0] = 9;
-        s.layers[1].mask.as_mut().unwrap().pixels[0] = 9;
+        s.layers[1].mask_mut().unwrap().pixels[0] = 9;
         assert_ne!(s.layers[0].pixels[0], 9);
-        assert_ne!(s.layers[0].mask.as_ref().unwrap().pixels[0], 9);
+        assert_ne!(s.layers[0].mask().unwrap().pixels[0], 9);
     }
 
     #[test]
@@ -1608,13 +1752,13 @@ mod tests {
         // La mascara negra de la capa lisa solo deja ver el color en (5,5) y (6,6).
         for (x, y) in [(5, 5), (6, 6)] {
             let i = ((y * 64 + x) * 4) as usize;
-            s.layers[1].mask.as_mut().unwrap().pixels[i..i + 4]
+            s.layers[1].mask_mut().unwrap().pixels[i..i + 4]
                 .copy_from_slice(&[255, 255, 255, 255]);
         }
         s.composite_all();
         let antes = s.composite.clone();
         assert!(s.merge_down());
-        assert!(s.layers[0].mask.is_none());
+        assert!(s.layers[0].mask().is_none());
         assert_eq!(s.layers[0].source, LayerSource::Paint);
         assert!(!s.layers[0].painting_mask());
         s.composite_all();
@@ -1728,7 +1872,7 @@ mod tests {
         s.add_folder();
         assert!(s.add_mask());
         let i = ((5 * 64 + 5) * 4) as usize;
-        s.layers[1].mask.as_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+        s.layers[1].mask_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
         s.composite_all();
         assert_eq!(px(&s, 5, 5), s.background.pixel(5, 5));
         assert_eq!(px(&s, 6, 6), [255, 0, 0, 255]);
@@ -2031,6 +2175,211 @@ mod tests {
         s.solo = true;
         s.composite_all();
         assert_eq!(px(&s, 5, 5), [0, 0, 255, 255]);
+    }
+
+    /// Medicion, no prueba: cuanto tarda recomponer la textura de verdad (1024x1024) con 9 capas, una carpeta con 4
+    /// dentro, una mascara y un canal de rugosidad. Se corre aparte:
+    /// `cargo test rendimiento_de_las_capas -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn rendimiento_de_las_capas() {
+        use std::time::Instant;
+        let size = 1024;
+        let llenar = |l: &mut PaintLayer, k: u8| {
+            for (j, p) in l.pixels.chunks_exact_mut(4).enumerate() {
+                p.copy_from_slice(&[(j % 251) as u8, k, (j / 7 % 255) as u8, 200]);
+            }
+        };
+        let mut s = LayerStack::new(size);
+        llenar(&mut s.layers[0], 10);
+        for k in 1..4u8 {
+            s.add_layer();
+            llenar(&mut s.layers[k as usize], 40 * k);
+        }
+        // Carpeta con 4 capas dentro (indices 4..=7) y la carpeta en el 8.
+        s.add_layer();
+        assert!(s.add_folder());
+        s.selected = 4;
+        for _ in 0..3 {
+            s.add_layer();
+        }
+        for k in 4..8usize {
+            llenar(&mut s.layers[k], 30 * k as u8);
+        }
+        s.layers[5].blend = BlendMode::Multiply;
+        s.layers[6].opacity = 60;
+        s.layers[5].chans[0] = Some(vec![200; (size * size * 4) as usize]);
+        s.selected = 8;
+        assert!(s.add_mask());
+        s.layers[8].editing_mask = false;
+        assert_eq!(s.layers.len(), 9);
+
+        let medir = |nombre: &str, s: &mut LayerStack, veces: u32| {
+            let t = Instant::now();
+            for _ in 0..veces {
+                s.composite_all();
+            }
+            println!("{nombre}: {:?} por recomposicion completa", t.elapsed() / veces);
+        };
+        medir("color, 9 capas con carpeta", &mut s, 5);
+        s.channel = ChannelKind::Roughness;
+        medir("rugosidad, 9 capas con carpeta", &mut s, 5);
+        s.channel = ChannelKind::Color;
+        s.solo = true;
+        s.selected = 6;
+        medir("modo solo en una capa de la carpeta", &mut s, 5);
+        s.solo = false;
+        // Un toque del pincel: un cuadro de 96x96 texeles dentro de la carpeta.
+        s.selected = 6;
+        let t = Instant::now();
+        for _ in 0..100 {
+            s.composite_rect((300, 300, 395, 395));
+        }
+        println!("toque de pincel 96x96: {:?}", t.elapsed() / 100);
+    }
+
+    #[test]
+    fn cuantos_puestos_salta_una_capa_al_moverse() {
+        let mut s = LayerStack::new(64);
+        s.add_layer();
+        s.add_layer(); // [A, B, C]
+        s.selected = 1;
+        assert!(s.add_folder()); // [A, B (en F), F, C]
+        // C baja saltando la carpeta con su capa de dentro: 2 puestos. Subir, 1.
+        s.selected = 3;
+        assert_eq!((s.move_up_span(), s.move_down_span()), (1, 2));
+        // A sube saltando la carpeta entera: 2 puestos.
+        s.selected = 0;
+        assert_eq!((s.move_up_span(), s.move_down_span()), (2, 1));
+        // La carpeta pasa por encima de C (1) y por debajo de A (1).
+        s.selected = 2;
+        assert_eq!((s.move_up_span(), s.move_down_span()), (1, 1));
+        // Una capa de dentro de la carpeta siempre salta de a una.
+        s.selected = 1;
+        assert_eq!((s.move_up_span(), s.move_down_span()), (1, 1));
+    }
+
+    #[test]
+    fn varias_mascaras_se_combinan_y_donde_cualquiera_oculta_queda_oculto() {
+        let mut s = LayerStack::new(64);
+        let i = |x: u32, y: u32| ((y * 64 + x) * 4) as usize;
+        for (x, y) in [(5, 5), (6, 6), (7, 7)] {
+            set_px(&mut s.layers[0], 64, x, y, [255, 0, 0, 255]);
+        }
+        assert!(s.add_mask());
+        assert!(s.add_mask());
+        assert_eq!(s.layers[0].masks.len(), 2);
+        // La primera oculta (5,5), la segunda oculta (6,6); (7,7) no lo oculta ninguna.
+        s.layers[0].masks[0].pixels[i(5, 5)..i(5, 5) + 4].copy_from_slice(&[0, 0, 0, 255]);
+        s.layers[0].masks[1].pixels[i(6, 6)..i(6, 6) + 4].copy_from_slice(&[0, 0, 0, 255]);
+        s.composite_all();
+        assert_eq!(px(&s, 5, 5), s.background.pixel(5, 5));
+        assert_eq!(px(&s, 6, 6), s.background.pixel(6, 6));
+        assert_eq!(px(&s, 7, 7), [255, 0, 0, 255]);
+        // Una a medias (gris) y otra a medias se multiplican: 50 % x 50 % = 25 %.
+        s.layers[0].masks[0].pixels[i(7, 7)..i(7, 7) + 4].copy_from_slice(&[128, 128, 128, 255]);
+        s.layers[0].masks[1].pixels[i(7, 7)..i(7, 7) + 4].copy_from_slice(&[128, 128, 128, 255]);
+        assert_eq!(s.layers[0].mask_visibility(i(7, 7)), 64);
+        // Apagar la elegida (la segunda) devuelve (6,6) y deja el resto como estaba.
+        assert!(s.toggle_mask_enabled());
+        s.composite_all();
+        assert_eq!(px(&s, 6, 6), [255, 0, 0, 255]);
+        assert_eq!(px(&s, 5, 5), s.background.pixel(5, 5));
+        assert_eq!(s.layers[0].mask_visibility(i(7, 7)), 128);
+    }
+
+    #[test]
+    fn elegir_y_quitar_mascaras() {
+        let mut s = LayerStack::new(64);
+        // Una sola: no hay otra a la que pasar.
+        assert!(!s.next_mask());
+        for _ in 0..3 {
+            assert!(s.add_mask());
+        }
+        // La nueva queda elegida y en edicion. Se marcan con `invert` para reconocerlas.
+        assert_eq!(s.layers[0].mask_sel, 2);
+        assert!(s.layers[0].editing_mask);
+        s.layers[0].masks[2].invert = true;
+        // Siguiente: da la vuelta (2 -> 0 -> 1) y pasa a pintar en ella.
+        s.layers[0].editing_mask = false;
+        assert!(s.next_mask());
+        assert_eq!(s.layers[0].mask_sel, 0);
+        assert!(s.layers[0].editing_mask);
+        assert!(s.next_mask());
+        assert_eq!(s.layers[0].mask_sel, 1);
+        // Quitar la elegida (la del medio): queda la que era la ultima, ya elegida, y se vuelve a pintar la capa.
+        assert!(s.remove_mask());
+        assert_eq!(s.layers[0].masks.len(), 2);
+        assert_eq!(s.layers[0].mask_sel, 1);
+        assert!(s.layers[0].masks[1].invert);
+        assert!(!s.layers[0].editing_mask);
+        // Quitar la ultima elegida: la eleccion baja a la que queda.
+        assert!(s.remove_mask());
+        assert_eq!((s.layers[0].masks.len(), s.layers[0].mask_sel), (1, 0));
+        assert!(s.remove_mask());
+        assert!(s.layers[0].masks.is_empty());
+        assert!(!s.remove_mask() && !s.invert_mask() && !s.toggle_mask_enabled());
+    }
+
+    #[test]
+    fn el_pincel_apunta_a_la_mascara_elegida() {
+        let mut s = LayerStack::new(16);
+        s.add_mask();
+        s.add_mask();
+        let l = &mut s.layers[0];
+        assert_eq!(l.target(ChannelKind::Color), PaintTarget::Mask(1));
+        l.target_pixels_mut(PaintTarget::Mask(1))[0] = 7;
+        assert_eq!(l.masks[1].pixels[0], 7);
+        assert_ne!(l.masks[0].pixels[0], 7);
+        // Eligiendo la primera, el destino es la primera; sin editar mascara, vuelve a la capa.
+        l.mask_sel = 0;
+        assert_eq!(l.target(ChannelKind::Color), PaintTarget::Mask(0));
+        l.editing_mask = false;
+        assert_eq!(l.target(ChannelKind::Color), PaintTarget::Layer);
+    }
+
+    #[test]
+    fn solo_la_primera_mascara_de_una_capa_de_color_revela() {
+        let mut s = LayerStack::new(16);
+        s.add_solid_layer([1, 2, 3]);
+        assert!(s.layers[1].mask_reveals());
+        // Una segunda mascara empieza blanca y se pinta con grises normales.
+        assert!(s.add_mask());
+        assert_eq!(s.layers[1].mask_sel, 1);
+        assert!(!s.layers[1].mask_reveals());
+        s.layers[1].mask_sel = 0;
+        assert!(s.layers[1].mask_reveals());
+        // En una capa de pintura nunca.
+        assert!(!s.layers[0].mask_reveals());
+    }
+
+    #[test]
+    fn combinar_y_duplicar_conservan_todas_las_mascaras() {
+        let mut s = LayerStack::new(64);
+        let i = |x: u32, y: u32| ((y * 64 + x) * 4) as usize;
+        s.add_layer(); // [A, B]
+        set_px(&mut s.layers[0], 64, 5, 5, [255, 0, 0, 255]);
+        for (x, y) in [(5, 5), (6, 6)] {
+            set_px(&mut s.layers[1], 64, x, y, [0, 0, 255, 255]);
+        }
+        // B tiene dos mascaras: una oculta (6,6) y otra (5,5) a medias.
+        s.add_mask();
+        s.add_mask();
+        s.layers[1].masks[0].pixels[i(6, 6)..i(6, 6) + 4].copy_from_slice(&[0, 0, 0, 255]);
+        s.layers[1].masks[1].pixels[i(5, 5)..i(5, 5) + 4].copy_from_slice(&[128, 128, 128, 255]);
+        s.composite_all();
+        let antes = s.composite.clone();
+        // Duplicar: la copia trae las dos mascaras (y no cambia nada a la vista si se apaga).
+        assert!(s.duplicate_layer());
+        assert_eq!(s.layers[2].masks.len(), 2);
+        assert_eq!(s.layers[2].masks[1].pixels, s.layers[1].masks[1].pixels);
+        assert!(s.remove_layer());
+        s.selected = 1;
+        // Combinar hacia abajo hornea las dos mascaras en los pixeles: se ve igual y la capa queda sin mascaras.
+        assert!(s.merge_down());
+        assert!(s.layers[0].masks.is_empty());
+        s.composite_all();
+        assert!(parecido(&s.composite, &antes, 1));
     }
 
     #[test]

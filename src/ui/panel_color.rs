@@ -58,6 +58,8 @@ pub struct ColorPanel {
     drag: Option<WheelDrag>,
     /// Texto del codigo hex editable (se rehace desde el color cuando no se esta escribiendo).
     hex: String,
+    /// El campo del codigo hex tiene el foco (se esta escribiendo): las teclas del programa no deben actuar.
+    typing: bool,
 }
 
 impl Default for ColorPanel {
@@ -71,6 +73,7 @@ impl Default for ColorPanel {
             recent: Vec::new(),
             drag: None,
             hex: String::new(),
+            typing: false,
         }
     }
 }
@@ -486,6 +489,11 @@ pub(crate) fn slider_row_with(
 // ---------------------------------------------------------------- panel
 
 impl ColorPanel {
+    /// true si se esta escribiendo en el campo del codigo hex.
+    pub fn typing(&self) -> bool {
+        self.typing
+    }
+
     /// Dibuja el panel si esta abierto. `color` y `opacity` (0..1) son los del pincel. Devuelve true si algo cambio.
     pub fn show(&mut self, ctx: &egui::Context, color: &mut [u8; 3], opacity: &mut f32) -> bool {
         self.show_in(ctx, color, opacity, None)
@@ -502,6 +510,7 @@ impl ColorPanel {
         place: Option<(egui::Id, egui::Pos2, Align2)>,
     ) -> bool {
         if !self.open {
+            self.typing = false;
             return false;
         }
         // Si el color cambio desde fuera (cuentagotas, tecla K), el HSB se pone al dia.
@@ -563,6 +572,8 @@ impl ColorPanel {
 
     fn contents(&mut self, ui: &mut Ui, color: &mut [u8; 3], opacity: &mut f32, done: &mut bool) {
         ui.spacing_mut().item_spacing = vec2(0.0, 6.0);
+        // Se vuelve a poner en true en `wheel` si el campo hex tiene el foco (en la pestana Paleta ese campo no se ve).
+        self.typing = false;
         let base = ui.scope_id().with("panel");
 
         // Encabezado: "Color" y los dos cuadros (actual | anterior).
@@ -795,6 +806,7 @@ impl ColorPanel {
         // Se dibuja en un Ui hijo para no mover el cursor del panel (con `ui.put` las pestanas subian y tapaban los sliders).
         let mut hex_ui = ui.new_child(egui::UiBuilder::new().max_rect(hex_rect));
         let resp = hex_ui.add(edit);
+        self.typing = resp.has_focus();
         // Mientras se escribe se aplica en cuanto hay 6 digitos; al terminar (Enter o clic fuera) tambien vale el de 3.
         let typed = if resp.changed() && self.hex.trim_start_matches('#').len() == 6 {
             parse_hex(&self.hex)

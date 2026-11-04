@@ -19,6 +19,7 @@ mod panel_mallas;
 mod panel_menu;
 mod panel_opciones;
 mod panel_pinceles;
+mod panel_reglas;
 mod ventana_referencia;
 
 use std::time::Duration;
@@ -49,6 +50,7 @@ use panel_edicion::*;
 use panel_mallas::*;
 use panel_menu::*;
 use panel_opciones::*;
+use panel_reglas::*;
 use ventana_referencia::*;
 
 /// true si en este cuadro se apreto el boton principal del raton fuera de `panel` y fuera de la barra de herramientas
@@ -93,6 +95,16 @@ struct OptionsPanel {
     /// Opacidad (0..1) del deslizador del panel de mallas. `None` = 1 (100 %). Todavia solo se muestra: no cambia el
     /// dibujo del modelo.
     meshes_opacity: Option<f32>,
+    /// Panel de reglas (el que abre el boton de las reglas de la barra inferior) y la regla elegida en el. Cada regla
+    /// guarda su geometria en puntos de egui (`None` = aun no se coloco): la recta sus dos puntas, el circulo su centro y
+    /// un punto del aro, la elipse su centro y sus semiejes. `ruler_snapping` dice si el trazo en curso esta pegado a la
+    /// regla elegida.
+    rules_open: bool,
+    rule: RuleKind,
+    ruler_line: Option<[egui::Pos2; 2]>,
+    ruler_circle: Option<(egui::Pos2, egui::Pos2)>,
+    ruler_ellipse: Option<RulerEllipse>,
+    ruler_snapping: bool,
     /// Mientras el selector de archivos del boton Importar esta abierto: canal por donde llega la ruta elegida
     /// (`None` = cancelado). Cuando llega, queda en `pending_import` hasta que `UiLayer::take_import` la entrega.
     mesh_import: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
@@ -214,6 +226,16 @@ impl UiLayer {
         self.options.edit_mode
     }
 
+    /// true si un campo de texto de la interfaz tiene el teclado (por ejemplo al renombrar una capa): las teclas del
+    /// programa no deben actuar.
+    ///
+    /// Solo cuentan los campos de texto reales (renombrar capa y el codigo hex del panel de color), no cualquier widget
+    /// con el foco: egui deja enfocado un boton despues de un clic o de un Tab, y con eso Tab y las letras dejaban de
+    /// funcionar.
+    pub fn wants_keyboard(&self) -> bool {
+        self.options.rename.is_some() || self.panel.typing()
+    }
+
     /// El .obj que se eligio con el boton Importar del panel de mallas o con el "+" de la galeria, si ya llego (se
     /// entrega una sola vez).
     pub fn take_import(&mut self) -> Option<std::path::PathBuf> {
@@ -286,6 +308,8 @@ impl UiLayer {
                 bottom_bar(ui, layers, parts, selected_part, options);
             layers_dirty |= layers_changed;
             parts_dirty |= parts_changed;
+            // Regla recta: su linea y sus agarraderas (solo si esa regla esta elegida).
+            ruler_overlay(ui.ctx(), options);
             edit_mode_pill(ui.ctx(), options);
             changed |= reference_window(ui.ctx(), options, *tool, color);
             view_axis = nav_gizmo(ui.ctx(), camera);

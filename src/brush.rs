@@ -18,9 +18,7 @@ pub enum BrushType {
     #[default]
     Soft,
     Hard,
-    Airbrush,
     Pencil,
-    PencilSoft,
     MarkerSoft,
     MarkerHard,
     /// Tiza (portada del Chalk de photocraft): punta de bitmap con grano, que gira en cada toque, y papel (`pinceles/tiza.rs`).
@@ -60,13 +58,42 @@ pub enum BrushType {
     /// que se mezcla en modo HardMix con cada toque, asi el borde sale granulado y el interior con pequenos huecos
     /// (`pinceles/crayon.rs`).
     WaxCrayon,
-    /// Cincel plano (deducido de la imagen de un pincel plano del Grease Pencil de Blender, no de photocraft): punta de
-    /// paralelogramo aplastada que sigue la direccion del trazo y deja una banda recta, sin papel (`pinceles/cincel.rs`).
-    Chisel,
     /// Arcane (pincel de cara y cuerpo de ibisPaint, leido de su QR y de capturas de sus trazos): punta de elipse aplastada (ancha de lado a
     /// lado del trazo) de borde casi duro y espaciado muy denso, que nace casi transparente y al soltar se desvanece en un trazo largo
     /// (`pinceles/desvanecido.rs`). Sin papel ni grano.
     Arcane,
+    /// Astillas (GP_BRUSH_01 del paquete de Blender `GP_Brushes_3.blend`, Grease Pencil): una fila de cuatro astillas
+    /// finas de lado a lado del trazo, sin azar ni papel (`pinceles/gp_astillas.rs`).
+    GpShards,
+    /// Arco (GP_BRUSH_03 del mismo paquete): una pincelada curva de borde irregular de lado a lado del trazo, sin azar
+    /// ni papel (`pinceles/gp_arco.rs`).
+    GpArc,
+    /// Trama de puntos (GP_BRUSH_07 del mismo paquete): un cuadrado de puntitos que gira con el trazo, sin azar ni papel
+    /// (`pinceles/gp_puntos.rs`).
+    GpDots,
+    /// Nube (GP_BRUSH_02 del mismo paquete): una mancha difusa de borde deshilachado de lado a lado del trazo, sin azar
+    /// ni papel (`pinceles/gp_nube.rs`).
+    GpCloud,
+    /// Gouache (GP_BRUSH_04 del mismo paquete): un golpe de brocha espeso con vetas y huecos que gira con el trazo, sin
+    /// azar ni papel (`pinceles/gp_gouache.rs`).
+    GpGouache,
+    /// Mancha (GP_BRUSH_08 del mismo paquete): una mancha con grano para estampar, con mas espacio entre toques que su
+    /// tamano, sin azar ni papel (`pinceles/gp_mancha.rs`).
+    GpBlot,
+    /// Cinta (GP_BRUSH_09 del mismo paquete): una banda con degradado, muy densa para que el trazo salga continuo, sin
+    /// azar ni papel (`pinceles/gp_cinta.rs`).
+    GpRibbon,
+    /// Tinta rugosa (Ink Pen Rough.001 del mismo paquete): una pincelada de tinta con vetas, de flujo 0.3757 y con mucho
+    /// espacio entre toques, sin azar ni papel (`pinceles/gp_tinta.rs`).
+    GpInk,
+    /// Ink Pen Rough del paquete esencial de Grease Pencil de Blender (`essentials_brushes-gp_draw.blend`): un punto
+    /// redondo liso de borde duro (dureza 1, sin textura), de 16 de diametro y fuerza 1. Es un pincel de falloff, no
+    /// de bitmap: no tiene `DryKind`. Lo "rugoso" de Blender sale de la presion del lapiz, que aqui no existe.
+    GpPen,
+    /// Marker Bold del paquete esencial de Grease Pencil de Blender (`essentials_brushes-gp_draw.blend`): un punto
+    /// redondo liso de borde duro (dureza 1, sin textura, sin presion), de 42 de diametro y fuerza 0.3 (flujo 0.3).
+    /// Es un pincel de falloff, no de bitmap: no tiene `DryKind`.
+    GpMarker,
 }
 
 /// Categorias del panel de pinceles (la columna de la izquierda).
@@ -75,17 +102,15 @@ pub enum BrushGroup {
     Basic,
     Pencil,
     Marker,
-    Airbrush,
     Chalk,
     Dry,
 }
 
 impl BrushGroup {
-    pub const ALL: [BrushGroup; 6] = [
+    pub const ALL: [BrushGroup; 5] = [
         BrushGroup::Basic,
         BrushGroup::Pencil,
         BrushGroup::Marker,
-        BrushGroup::Airbrush,
         BrushGroup::Chalk,
         BrushGroup::Dry,
     ];
@@ -95,7 +120,6 @@ impl BrushGroup {
             BrushGroup::Basic => "Simple",
             BrushGroup::Pencil => "Lápiz",
             BrushGroup::Marker => "Rotulador",
-            BrushGroup::Airbrush => "Aerógrafo",
             BrushGroup::Chalk => "Tiza",
             BrushGroup::Dry => "Seco",
         }
@@ -104,15 +128,15 @@ impl BrushGroup {
 
 impl BrushType {
     /// En el orden en que salen en el panel.
-    pub const ALL: [BrushType; 21] = [
+    pub const ALL: [BrushType; 28] = [
         BrushType::Soft,
         BrushType::Hard,
         BrushType::Arcane,
-        BrushType::Airbrush,
         BrushType::Pencil,
-        BrushType::PencilSoft,
+        BrushType::GpPen,
         BrushType::MarkerSoft,
         BrushType::MarkerHard,
+        BrushType::GpMarker,
         BrushType::Chalk,
         BrushType::Charcoal,
         BrushType::Pastel,
@@ -125,18 +149,25 @@ impl BrushType {
         BrushType::Spatter,
         BrushType::Grass,
         BrushType::Halftone,
-        BrushType::Chisel,
+        BrushType::GpShards,
+        BrushType::GpArc,
+        BrushType::GpDots,
+        BrushType::GpCloud,
+        BrushType::GpGouache,
+        BrushType::GpBlot,
+        BrushType::GpRibbon,
+        BrushType::GpInk,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
             BrushType::Soft => "Suave",
             BrushType::Hard => "Duro",
-            BrushType::Airbrush => "Aerógrafo",
             BrushType::Pencil => "Lápiz",
-            BrushType::PencilSoft => "Lápiz (Difuminado)",
+            BrushType::GpPen => "Ink Pen Rough (Blender)",
             BrushType::MarkerSoft => "Rotulador (Suave)",
             BrushType::MarkerHard => "Rotulador (Fuerte)",
+            BrushType::GpMarker => "Marker Bold (Blender)",
             BrushType::Chalk => "Tiza",
             BrushType::Charcoal => "Carboncillo",
             BrushType::Pastel => "Pastel",
@@ -149,17 +180,25 @@ impl BrushType {
             BrushType::Grass => "Pasto",
             BrushType::Halftone => "Puntos de semitono",
             BrushType::WaxCrayon => "Crayón de cera",
-            BrushType::Chisel => "Cincel plano",
             BrushType::Arcane => "Arcane (cara y cuerpo)",
+            BrushType::GpShards => "Astillas (GP 01)",
+            BrushType::GpArc => "Arco (GP 03)",
+            BrushType::GpDots => "Trama de puntos (GP 07)",
+            BrushType::GpCloud => "Nube (GP 02)",
+            BrushType::GpGouache => "Gouache (GP 04)",
+            BrushType::GpBlot => "Mancha (GP 08)",
+            BrushType::GpRibbon => "Cinta (GP 09)",
+            BrushType::GpInk => "Tinta rugosa (GP Ink Pen Rough)",
         }
     }
 
     pub fn group(self) -> BrushGroup {
         match self {
             BrushType::Soft | BrushType::Hard | BrushType::Arcane => BrushGroup::Basic,
-            BrushType::Pencil | BrushType::PencilSoft => BrushGroup::Pencil,
-            BrushType::MarkerSoft | BrushType::MarkerHard => BrushGroup::Marker,
-            BrushType::Airbrush => BrushGroup::Airbrush,
+            BrushType::Pencil | BrushType::GpPen => BrushGroup::Pencil,
+            BrushType::MarkerSoft | BrushType::MarkerHard | BrushType::GpMarker => {
+                BrushGroup::Marker
+            }
             BrushType::Chalk => BrushGroup::Chalk,
             BrushType::Charcoal
             | BrushType::Pastel
@@ -172,18 +211,28 @@ impl BrushType {
             | BrushType::Grass
             | BrushType::Halftone
             | BrushType::WaxCrayon
-            | BrushType::Chisel => BrushGroup::Dry,
+            | BrushType::GpShards
+            | BrushType::GpArc
+            | BrushType::GpDots
+            | BrushType::GpCloud
+            | BrushType::GpGouache
+            | BrushType::GpBlot
+            | BrushType::GpRibbon
+            | BrushType::GpInk => BrushGroup::Dry,
         }
     }
 
     /// Radio inicial (texeles).
     pub fn default_radius(self) -> f32 {
         match self {
-            BrushType::Soft | BrushType::Hard | BrushType::Airbrush => 18.0,
+            BrushType::Soft | BrushType::Hard => 18.0,
             BrushType::Pencil => 3.0,
-            BrushType::PencilSoft => 48.0,
+            // Ink Pen Rough de Blender mide 16 de diametro: el radio es la mitad.
+            BrushType::GpPen => 8.0,
             BrushType::MarkerSoft => 6.0,
             BrushType::MarkerHard => 14.0,
+            // Marker Bold de Blender mide 42 de diametro: el radio es la mitad.
+            BrushType::GpMarker => 21.0,
             BrushType::Chalk => 20.0,
             // Los presets de photocraft miden 45 y 50 de diametro: aqui el radio es la mitad.
             BrushType::Charcoal => 22.0,
@@ -206,21 +255,34 @@ impl BrushType {
             BrushType::Halftone => 40.0,
             // Wax Crayon de photocraft mide 22 de diametro.
             BrushType::WaxCrayon => 11.0,
-            // Cincel plano: estimado de la imagen (la punta mide unos 1.4 radios de largo).
-            BrushType::Chisel => 25.0,
             // Arcane: grosor 107 px en el QR de ibisPaint = radio 53.5.
             BrushType::Arcane => 53.5,
+            // Los pinceles de Blender miden su tamano en diametro: GP_BRUSH_01 52, GP_BRUSH_03 82 y GP_BRUSH_07 134.
+            BrushType::GpShards => 26.0,
+            BrushType::GpArc => 41.0,
+            BrushType::GpDots => 67.0,
+            // GP_BRUSH_02 132, GP_BRUSH_04 60, GP_BRUSH_08 52, GP_BRUSH_09 144 e Ink Pen Rough 90 (diametros).
+            BrushType::GpCloud => 66.0,
+            BrushType::GpGouache => 30.0,
+            BrushType::GpBlot => 26.0,
+            BrushType::GpRibbon => 72.0,
+            BrushType::GpInk => 45.0,
         }
     }
 
     /// Distancia entre toques como fraccion del radio.
     pub fn spacing(self) -> f32 {
         match self {
-            BrushType::Soft | BrushType::Hard | BrushType::Airbrush => 0.25,
+            BrushType::Soft | BrushType::Hard => 0.25,
             BrushType::Pencil => 0.15,
-            BrushType::PencilSoft => 0.20,
+            // Ink Pen Rough de Blender: su espaciado (100) no se tradujo, porque alla el trazo es continuo; se uso el
+            // 0.12 del Rotulador (Fuerte), que tiene el mismo borde duro, para que no se noten los toques.
+            BrushType::GpPen => 0.12,
             BrushType::MarkerSoft => 0.15,
             BrushType::MarkerHard => 0.12,
+            // Marker Bold de Blender: su espaciado (100) no se tradujo, porque alla el trazo es continuo; se uso el 0.12
+            // del Rotulador (Fuerte), que tiene el mismo borde duro.
+            BrushType::GpMarker => 0.12,
             BrushType::Chalk => 0.20,
             // photocraft mide el espaciado en fraccion del diametro (0.12 y 0.15): aqui es del radio, el doble.
             BrushType::Charcoal => 0.24,
@@ -244,10 +306,18 @@ impl BrushType {
             BrushType::Halftone => 0.5,
             // Wax Crayon: 0.08 del diametro en photocraft = 0.16 del radio.
             BrushType::WaxCrayon => 0.16,
-            // Cincel plano: estimado, parejo para que no se noten los toques.
-            BrushType::Chisel => 0.12,
             // Arcane: espaciado 0.025 del grosor (QR) = 0.05 del radio. Si pinta lento, subirlo a 0.1 no cambia lo que se ve.
             BrushType::Arcane => 0.05,
+            // Blender mide el espaciado en % del diametro (7, 11 y 6): aqui es del radio, el doble.
+            BrushType::GpShards => 0.14,
+            BrushType::GpArc => 0.22,
+            BrushType::GpDots => 0.12,
+            // Espaciado de Blender en % del diametro: 38, 6, 122, 3 y 100.
+            BrushType::GpCloud => 0.76,
+            BrushType::GpGouache => 0.12,
+            BrushType::GpBlot => 2.44,
+            BrushType::GpRibbon => 0.06,
+            BrushType::GpInk => 2.0,
         }
     }
 
@@ -266,8 +336,15 @@ impl BrushType {
             BrushType::Grass => Some(DryKind::Grass),
             BrushType::Halftone => Some(DryKind::Halftone),
             BrushType::WaxCrayon => Some(DryKind::Crayon),
-            BrushType::Chisel => Some(DryKind::Chisel),
             BrushType::Arcane => Some(DryKind::Arcane),
+            BrushType::GpShards => Some(DryKind::GpShards),
+            BrushType::GpArc => Some(DryKind::GpArc),
+            BrushType::GpDots => Some(DryKind::GpDots),
+            BrushType::GpCloud => Some(DryKind::GpCloud),
+            BrushType::GpGouache => Some(DryKind::GpGouache),
+            BrushType::GpBlot => Some(DryKind::GpBlot),
+            BrushType::GpRibbon => Some(DryKind::GpRibbon),
+            BrushType::GpInk => Some(DryKind::GpInk),
             _ => None,
         }
     }
@@ -297,13 +374,15 @@ impl BrushType {
         match self {
             BrushType::Soft => (2.0 * t).min(1.0),
             BrushType::Hard => (8.0 * t).min(1.0),
-            BrushType::Airbrush => t * t,
             BrushType::Pencil => (10.0 * t).min(1.0),
+            // Ink Pen Rough de Blender: dureza 1 (borde duro), como el Rotulador (Fuerte).
+            BrushType::GpPen => (20.0 * t).min(1.0),
             // Arcane: borde casi duro (en las capturas pasa de 0 a 1 en unos 2 px de 27: 0.1 del radio).
             BrushType::Arcane => (10.0 * t).min(1.0),
-            BrushType::PencilSoft => t * t * (3.0 - 2.0 * t),
             BrushType::MarkerSoft => (4.0 * t).min(1.0),
             BrushType::MarkerHard => (20.0 * t).min(1.0),
+            // Marker Bold de Blender: dureza 1 (borde duro), como el Rotulador (Fuerte).
+            BrushType::GpMarker => (20.0 * t).min(1.0),
             // La tiza no usa el falloff radial: su forma sale de la punta de bitmap (`pinceles/tiza.rs`). Este valor solo
             // existe para que la funcion este definida para todos los pinceles.
             BrushType::Chalk => (6.0 * t).min(1.0),
@@ -319,7 +398,14 @@ impl BrushType {
             | BrushType::Grass
             | BrushType::Halftone
             | BrushType::WaxCrayon
-            | BrushType::Chisel => (6.0 * t).min(1.0),
+            | BrushType::GpShards
+            | BrushType::GpArc
+            | BrushType::GpDots
+            | BrushType::GpCloud
+            | BrushType::GpGouache
+            | BrushType::GpBlot
+            | BrushType::GpRibbon
+            | BrushType::GpInk => (6.0 * t).min(1.0),
             // Doble grano: tampoco usa el falloff radial (su disco y sus gotas salen de `pinceles/dual_grain.rs`).
             BrushType::DualGrain => (6.0 * t).min(1.0),
         }
@@ -342,7 +428,9 @@ impl BrushType {
 
     /// true si el pincel sigue depositando pintura con el puntero quieto (un toque cada `BUILD_UP_INTERVAL`).
     pub fn build_up(self) -> bool {
-        matches!(self, BrushType::Airbrush)
+        // Hoy ningun pincel lo usa (solo lo tenia el Aerografo de fabrica, ya eliminado); el temporizador de `main.rs` sigue
+        // listo para cuando alguno vuelva a necesitarlo.
+        false
     }
 
     /// Flujo con el que arranca el pincel al elegirlo (el deslizador "Flujo" lo puede cambiar). Casi todos arrancan en
@@ -350,6 +438,10 @@ impl BrushType {
     pub fn default_flow(self) -> f32 {
         match self {
             BrushType::InkSponge => 0.6,
+            // Ink Pen Rough.001 de Blender: fuerza 0.3757.
+            BrushType::GpInk => 0.3757,
+            // Marker Bold de Blender: fuerza 0.3.
+            BrushType::GpMarker => 0.3,
             _ => 1.0,
         }
     }
@@ -389,7 +481,7 @@ mod tests {
     fn el_falloff_va_de_0_en_el_borde_a_1_en_el_centro() {
         for b in BrushType::ALL {
             assert_eq!(b.falloff(0.0), 0.0, "{}", b.name());
-            // Airbrush (t^2) y los difuminados llegan a 1 justo en el centro.
+            // Los de t^2 y los difuminados llegan a 1 justo en el centro.
             assert!((b.falloff(1.0) - 1.0).abs() < 1e-6, "{}", b.name());
         }
     }
@@ -404,7 +496,6 @@ mod tests {
     fn los_valores_iniciales_son_los_de_la_especificacion() {
         assert_eq!(BrushType::Soft.default_radius(), 18.0);
         assert_eq!(BrushType::Pencil.default_radius(), 3.0);
-        assert_eq!(BrushType::PencilSoft.default_radius(), 48.0);
         assert_eq!(BrushType::MarkerHard.spacing(), 0.12);
         assert_eq!(Brush::default().radius, 18.0);
     }
@@ -419,10 +510,10 @@ mod tests {
     }
 
     #[test]
-    fn el_flujo_inicial_es_1_y_solo_el_aerografo_deposita_con_el_puntero_quieto() {
+    fn el_flujo_inicial_es_1_y_ningun_pincel_deposita_con_el_puntero_quieto() {
         assert_eq!(Brush::default().flow, 1.0);
         for b in BrushType::ALL {
-            assert_eq!(b.build_up(), b == BrushType::Airbrush, "{}", b.name());
+            assert!(!b.build_up(), "{}", b.name());
         }
     }
 
@@ -438,14 +529,14 @@ mod tests {
         // Su dispersion cubre el 60 % del radio en cada eje: la esquina esta a 0.6 * raiz de 2.
         assert!((b.scatter() - 0.6 * 2f32.sqrt()).abs() < 1e-6);
         assert!(b.scatter() > BrushType::Pastel.scatter());
-        // Solo los doce de medio seco (carboncillo, pastel, crayon, punteado, follaje, esponja de tinta, textura de
-        // esponja, salpicadura, pasto, semitono, cincel y Arcane) tienen punta propia.
+        // Solo los diecinueve de medio seco (carboncillo, pastel, crayon, punteado, follaje, esponja de tinta, textura de
+        // esponja, salpicadura, pasto, semitono, Arcane y los ocho de Blender) tienen punta propia.
         assert_eq!(
             BrushType::ALL
                 .iter()
                 .filter(|k| k.dry_kind().is_some())
                 .count(),
-            12
+            19
         );
     }
 
@@ -492,7 +583,10 @@ mod tests {
         assert_eq!(b.scatter(), 0.0);
         // El resto de pinceles arranca con flujo 1.
         for k in BrushType::ALL {
-            if k != BrushType::InkSponge {
+            if !matches!(
+                k,
+                BrushType::InkSponge | BrushType::GpInk | BrushType::GpMarker
+            ) {
                 assert_eq!(k.default_flow(), 1.0, "{}", k.name());
             }
         }
@@ -574,19 +668,6 @@ mod tests {
     }
 
     #[test]
-    fn el_cincel_plano_es_de_medio_seco_con_valores_estimados() {
-        let b = BrushType::Chisel;
-        assert_eq!(b.name(), "Cincel plano");
-        assert_eq!(b.group(), BrushGroup::Dry);
-        assert_eq!(b.dry_kind(), Some(DryKind::Chisel));
-        assert_eq!(b.default_radius(), 25.0);
-        assert!((b.spacing() - 0.12).abs() < 1e-6);
-        // Su punta cabe en el radio y el flujo arranca en 1.
-        assert_eq!(b.scatter(), 0.0);
-        assert_eq!(b.default_flow(), 1.0);
-    }
-
-    #[test]
     fn arcane_es_un_pincel_simple_con_los_valores_del_qr_y_es_el_unico_con_desvanecido() {
         let b = BrushType::Arcane;
         assert_eq!(b.name(), "Arcane (cara y cuerpo)");
@@ -603,6 +684,91 @@ mod tests {
         for k in BrushType::ALL {
             assert_eq!(k.fades(), k == BrushType::Arcane, "{}", k.name());
         }
+    }
+
+    #[test]
+    fn los_pinceles_de_blender_son_de_medio_seco_con_los_valores_del_blend() {
+        // (pincel, nombre, tipo, diametro de Blender, espaciado de Blender en % del diametro)
+        for (b, nombre, kind, diametro, espaciado) in [
+            (BrushType::GpShards, "Astillas (GP 01)", DryKind::GpShards, 52.0, 7.0),
+            (BrushType::GpArc, "Arco (GP 03)", DryKind::GpArc, 82.0, 11.0),
+            (BrushType::GpDots, "Trama de puntos (GP 07)", DryKind::GpDots, 134.0, 6.0),
+        ] {
+            assert_eq!(b.name(), nombre);
+            assert_eq!(b.group(), BrushGroup::Dry);
+            assert_eq!(b.dry_kind(), Some(kind));
+            // El radio es la mitad del diametro y el espaciado, del radio, el doble del porcentaje del diametro.
+            assert_eq!(b.default_radius(), diametro / 2.0);
+            assert!((b.spacing() - espaciado * 2.0 / 100.0).abs() < 1e-6, "{nombre}");
+            // Sin dispersion (la punta cabe en el radio), flujo 1 y sin desvanecido.
+            assert_eq!(b.scatter(), 0.0);
+            assert_eq!(b.default_flow(), 1.0);
+            assert!(!b.fades());
+        }
+    }
+
+    #[test]
+    fn los_otros_cinco_pinceles_de_blender_son_de_medio_seco_con_los_valores_del_blend() {
+        // (pincel, nombre, tipo, diametro de Blender, espaciado de Blender en % del diametro, flujo)
+        for (b, nombre, kind, diametro, espaciado, flujo) in [
+            (BrushType::GpCloud, "Nube (GP 02)", DryKind::GpCloud, 132.0, 38.0, 1.0),
+            (BrushType::GpGouache, "Gouache (GP 04)", DryKind::GpGouache, 60.0, 6.0, 1.0),
+            (BrushType::GpBlot, "Mancha (GP 08)", DryKind::GpBlot, 52.0, 122.0, 1.0),
+            (BrushType::GpRibbon, "Cinta (GP 09)", DryKind::GpRibbon, 144.0, 3.0, 1.0),
+            (
+                BrushType::GpInk,
+                "Tinta rugosa (GP Ink Pen Rough)",
+                DryKind::GpInk,
+                90.0,
+                100.0,
+                0.3757,
+            ),
+        ] {
+            assert_eq!(b.name(), nombre);
+            assert_eq!(b.group(), BrushGroup::Dry);
+            assert_eq!(b.dry_kind(), Some(kind));
+            assert_eq!(b.default_radius(), diametro / 2.0);
+            assert!((b.spacing() - espaciado * 2.0 / 100.0).abs() < 1e-6, "{nombre}");
+            assert_eq!(b.scatter(), 0.0);
+            assert!((b.default_flow() - flujo).abs() < 1e-6, "{nombre}");
+            assert_eq!(Brush::new(b).flow, b.default_flow());
+            assert!(!b.fades());
+        }
+    }
+
+    #[test]
+    fn el_ink_pen_rough_de_blender_es_un_pincel_de_falloff_con_los_valores_del_blend() {
+        let b = BrushType::GpPen;
+        assert_eq!(b.name(), "Ink Pen Rough (Blender)");
+        assert_eq!(b.group(), BrushGroup::Pencil);
+        // No es de bitmap: su forma sale del falloff.
+        assert_eq!(b.dry_kind(), None);
+        // 16 de diametro en Blender = radio 8; fuerza 1 = flujo 1.
+        assert_eq!(b.default_radius(), 8.0);
+        assert!((b.spacing() - 0.12).abs() < 1e-6);
+        assert_eq!(b.scatter(), 0.0);
+        assert_eq!(b.default_flow(), 1.0);
+        // Dureza 1: llega a opacidad plena a 0.05 del radio hacia adentro.
+        assert_eq!(b.falloff(0.05), 1.0);
+        assert!(b.falloff(0.02) < 1.0);
+        assert!(!b.build_up() && !b.fades());
+    }
+
+    #[test]
+    fn el_marker_bold_de_blender_es_un_pincel_de_falloff_con_los_valores_del_blend() {
+        let b = BrushType::GpMarker;
+        assert_eq!(b.name(), "Marker Bold (Blender)");
+        assert_eq!(b.group(), BrushGroup::Marker);
+        assert_eq!(b.dry_kind(), None);
+        // 42 de diametro en Blender = radio 21; fuerza 0.3 = flujo inicial 0.3.
+        assert_eq!(b.default_radius(), 21.0);
+        assert!((b.spacing() - 0.12).abs() < 1e-6);
+        assert_eq!(b.scatter(), 0.0);
+        assert!((b.default_flow() - 0.3).abs() < 1e-6);
+        assert_eq!(Brush::new(b).flow, b.default_flow());
+        // Dureza 1: borde duro.
+        assert_eq!(b.falloff(0.05), 1.0);
+        assert!(!b.build_up() && !b.fades());
     }
 
     #[test]

@@ -8,8 +8,12 @@ pub(super) const BOTTOM_BAR_H: f32 = 40.0;
 pub(super) const LAYERS_BTN_W: f32 = 48.0;
 pub(super) const LAYERS_BTN_H: f32 = 36.0;
 pub(super) const LAYERS_ICON: f32 = 31.0;
-/// Alto extra que se le da a TODOS los botones cuando alguno muestra su nombre debajo del icono.
-pub(super) const LABEL_H: f32 = 16.0;
+/// Alto extra que se le da a TODOS los botones cuando alguno muestra su nombre debajo del icono: un colchón arriba
+/// (`LABEL_TOP`, para que la curva del botón activo pase por encima del icono sin tocarlo) y el sitio del puntito y del
+/// nombre debajo.
+pub(super) const LABEL_H: f32 = 32.0;
+/// Parte de `LABEL_H` que va arriba del icono.
+const LABEL_TOP: f32 = 5.0;
 
 /// Como se dibuja un boton de la barra: lo que el modo edicion deja cambiar (color, tamano, texto, recuadro, puntito e
 /// insignia). Se arma con `btn_look`.
@@ -82,9 +86,9 @@ fn button_chrome(
         } else {
             look.normal
         };
-        // Con texto, el icono va arriba y el texto debajo; sin texto, el icono queda centrado en el boton.
+        // Con texto, el icono va arriba (con su colchón) y el texto debajo; sin texto, el icono queda centrado.
         let cy = if look.label.is_some() {
-            rect.min.y + base.y / 2.0
+            rect.min.y + LABEL_TOP + base.y / 2.0
         } else {
             rect.center().y
         };
@@ -93,9 +97,10 @@ fn button_chrome(
             vec2(look.icon, look.icon),
         );
         egui::Image::new(icon).tint(color).paint_at(ui, icon_rect);
+        // Con texto, de arriba abajo: el icono, el puntito del botón activo (si lo lleva) y el nombre.
         if let Some(text) = look.label {
             ui.painter().text(
-                egui::pos2(rect.center().x, rect.bottom() - 11.0),
+                egui::pos2(rect.center().x, rect.min.y + LABEL_TOP + base.y + 11.0),
                 Align2::CENTER_CENTER,
                 text,
                 FontId::proportional(10.0),
@@ -103,8 +108,13 @@ fn button_chrome(
             );
         }
         if open && look.dot {
+            let dot_y = if look.label.is_some() {
+                rect.min.y + LABEL_TOP + base.y + 2.0
+            } else {
+                rect.bottom() - 2.5
+            };
             ui.painter().circle_filled(
-                egui::pos2(rect.center().x, rect.bottom() - 2.5),
+                egui::pos2(rect.center().x, dot_y),
                 2.0,
                 look.active,
             );
@@ -196,6 +206,18 @@ pub(super) fn options_button(ui: &mut egui::Ui, open: bool, look: BtnLook) -> eg
     response.on_hover_text("Opciones")
 }
 
+/// Boton de reglas de la barra inferior (a la izquierda de todos). Abre el panel de reglas; se pinta de azul mientras
+/// ese panel esta abierto. Devuelve la respuesta para que la barra lo abra o cierre.
+pub(super) fn extra_button(ui: &mut egui::Ui, open: bool, look: BtnLook) -> egui::Response {
+    let (response, _) = button_chrome(
+        ui,
+        look,
+        open,
+        egui::include_image!("../../assets/icons/extra.svg"),
+    );
+    response.on_hover_text("Reglas")
+}
+
 /// Boton del cubo de la barra inferior (a la izquierda del de capas): muestra cuantas mallas (partes) tiene el modelo.
 /// Abre el panel de mallas; se pinta de azul mientras ese panel esta abierto.
 pub(super) fn cube_button(
@@ -226,9 +248,10 @@ pub(super) fn cube_button(
 fn paint_curve(p: &egui::Painter, bar: Rect, b: Rect, st: &BarStyle) {
     let color = st.curve_color32();
     let w = st.curve_w;
-    // Altura de la línea abajo y arriba (dentro del borde de la barra).
-    let y_b = bar.bottom() - st.border_w - 7.0 - w / 2.0;
-    let y_t = bar.top() + st.border_w + 6.0 + w / 2.0;
+    // Altura de la línea abajo y arriba (dentro del borde de la barra). Abajo va casi pegada al borde: más arriba
+    // atravesaba el nombre de los botones ("Mallas", "Capas"...).
+    let y_b = bar.bottom() - st.border_w - 4.0 - w / 2.0;
+    let y_t = bar.top() + st.border_w + 3.0 + w / 2.0;
     if y_b - y_t < 8.0 {
         return;
     }
@@ -245,12 +268,15 @@ fn paint_curve(p: &egui::Painter, bar: Rect, b: Rect, st: &BarStyle) {
     let hi = bar.right() - inset - 6.0;
     // Lóbulo en forma de pestaña: lados casi verticales, esquinas de arriba redondeadas y, abajo, empalmes cóncavos que
     // lo unen con la línea del borde. Todo en un solo trazo (uniones lisas, sin huecos entre segmentos).
-    let pad = 8.0;
+    // Los lados del lóbulo van justo en el borde del botón: a la altura de los nombres, el pie de la curva queda a unos
+    // 7 px del lado, y con más holgura que esto atraviesa el nombre del botón vecino (el de "Opciones", que es largo, o
+    // "Mallas") porque entre botones hay solo 8 px.
+    let pad = 0.0;
     // Si el botón está en la punta de la barra, el lóbulo se acerca al botón en vez de pasarse del borde.
     let x_l = (b.left() - pad).max(lo + 4.0);
     let x_r = (b.right() + pad).min(hi - 4.0);
     // Radio de las esquinas de arriba y de cada empalme de abajo (el del lado de la punta se achica si no hay sitio).
-    let r = ((y_b - y_t) / 2.0).min((x_r - x_l) / 2.0).min(18.0).max(1.0);
+    let r = ((y_b - y_t) / 2.0).min((x_r - x_l) / 2.0).min(24.0).max(1.0);
     let rl = (x_l - lo).clamp(0.0, r);
     let rr = (hi - x_r).clamp(0.0, r);
     let xc = x_r + rr;
@@ -263,45 +289,52 @@ fn paint_curve(p: &egui::Painter, bar: Rect, b: Rect, st: &BarStyle) {
         }
     };
     let mut lobe: Vec<egui::Pos2> = Vec::new();
+    // Las esquinas de arriba un poco más cerradas que los pies: la cúpula queda con un tramo casi plano, como en la
+    // referencia, en vez de un medio círculo.
+    let rt = r.min(20.0);
     arc(&mut lobe, egui::pos2(x_l - rl, y_b - rl), rl, 90.0, 0.0);
-    arc(&mut lobe, egui::pos2(x_l + r, y_t + r), r, 180.0, 270.0);
-    arc(&mut lobe, egui::pos2(x_r - r, y_t + r), r, 270.0, 360.0);
+    arc(&mut lobe, egui::pos2(x_l + rt, y_t + rt), rt, 180.0, 270.0);
+    arc(&mut lobe, egui::pos2(x_r - rt, y_t + rt), rt, 270.0, 360.0);
     arc(&mut lobe, egui::pos2(x_r + rr, y_b - rr), rr, 180.0, 90.0);
     let x_in = x_l - rl;
-    let xs = (x_in - 40.0).max(lo);
+    let xs = (x_in - 90.0).max(lo);
     let xe = hi;
-    // Tres pasadas: dos trazos anchos y casi transparentes (el brillo suave) y, encima, la línea nítida.
-    for (sw, am) in [(w + 6.0, 0.08), (w + 3.0, 0.18), (w, 1.0)] {
+    // Tres pasadas: dos trazos algo más anchos y casi transparentes (un brillo muy suave) y, encima, la línea nítida.
+    for (sw, am) in [(w + 4.0, 0.05), (w + 2.0, 0.12), (w, 1.0)] {
         p.add(egui::epaint::PathShape::line(
             lobe.clone(),
             Stroke::new(sw, color.gamma_multiply(am)),
         ));
         // Entrada corta por la izquierda: la línea aparece de a poco antes de subir.
         if x_in > xs {
-            const L: usize = 12;
-            let mut prev = egui::pos2(xs, y_b);
-            for i in 1..=L {
-                let cur = egui::pos2(xs + (x_in - xs) * i as f32 / L as f32, y_b);
-                let alpha = (i as f32 - 0.5) / L as f32 * am;
-                p.line_segment([prev, cur], Stroke::new(sw, color.gamma_multiply(alpha)));
-                prev = cur;
-            }
+            fade_line(p, xs, x_in, y_b, sw, color, 0.0, am);
         }
-        // Cola por el borde de abajo, que se apaga hacia la derecha.
+        // Cola por el borde de abajo: se mantiene firme la mayor parte del camino y se apaga al final, hacia la derecha.
         if xe > xc {
-            const M: usize = 28;
-            let mut prev = egui::pos2(xc, y_b);
-            for i in 1..=M {
-                let cur = egui::pos2(xc + (xe - xc) * i as f32 / M as f32, y_b);
-                let alpha = (1.0 - (i as f32 - 0.5) / M as f32) * am;
-                p.line_segment([prev, cur], Stroke::new(sw, color.gamma_multiply(alpha)));
-                prev = cur;
-            }
+            let xm = xc + (xe - xc) * 0.6;
+            fade_line(p, xc, xm, y_b, sw, color, am, am);
+            fade_line(p, xm, xe, y_b, sw, color, am, 0.0);
         }
     }
 }
 
-/// Anchura mínima de la barra: justo lo que ocupan sus cuatro botones con la separación normal (8) entre ellos, el
+/// Tramo horizontal de `x0` a `x1`, a la altura `y`, con grosor `sw` y una opacidad que pasa de `a0` a `a1`. Es un solo
+/// rectángulo con el color de cada extremo, así que el degradado sale liso. (Antes eran 12 y 28 segmentos de un color
+/// cada uno, y en cada empalme las puntas redondeadas se sumaban: la línea se veía como un collar de cuentas.)
+fn fade_line(p: &egui::Painter, x0: f32, x1: f32, y: f32, sw: f32, color: Color32, a0: f32, a1: f32) {
+    let (c0, c1) = (color.gamma_multiply(a0), color.gamma_multiply(a1));
+    let h = sw / 2.0;
+    let mut m = egui::epaint::Mesh::default();
+    m.colored_vertex(egui::pos2(x0, y - h), c0);
+    m.colored_vertex(egui::pos2(x0, y + h), c0);
+    m.colored_vertex(egui::pos2(x1, y + h), c1);
+    m.colored_vertex(egui::pos2(x1, y - h), c1);
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(0, 2, 3);
+    p.add(egui::Shape::mesh(m));
+}
+
+/// Anchura mínima de la barra: justo lo que ocupan sus cinco botones con la separación normal (8) entre ellos, el
 /// margen de 8 a cada lado y el borde. Más angosta que esto los botones no caben; más ancha deja un vacío.
 pub(super) fn bar_min_width(border_w: f32, icon: f32) -> f32 {
     bar_min_width_m(border_w, icon, 8.0)
@@ -309,7 +342,7 @@ pub(super) fn bar_min_width(border_w: f32, icon: f32) -> f32 {
 
 /// Lo mismo con el margen horizontal elegido (`BarStyle::margin_x`: crece con las esquinas redondeadas).
 pub(super) fn bar_min_width_m(border_w: f32, icon: f32, margin_x: f32) -> f32 {
-    4.0 * btn_size(icon).x + 3.0 * 8.0 + 2.0 * margin_x + 2.0 * border_w
+    N_BTNS as f32 * btn_size(icon).x + (N_BTNS as f32 - 1.0) * 8.0 + 2.0 * margin_x + 2.0 * border_w
 }
 
 /// Tamaño del botón para un icono de lado `icon`: con el icono normal (31) da los 48x36 de siempre y crece con él.
@@ -348,6 +381,7 @@ pub(super) fn bottom_bar(
     let mut menu_rect = None;
     let mut layers_rect = None;
     let mut mesh_rect = None;
+    let mut rules_rect = None;
     // Estilo de la barra: el del modo edición (por defecto, el de siempre).
     let style = options.bottom_bar;
     // Anchura de la barra: una fracción de la ventana (con un mínimo para que quepan los cuatro botones).
@@ -420,6 +454,7 @@ pub(super) fn bottom_bar(
                                     let m = menu_button(ui, options.menu_open, look);
                                     if m.clicked() {
                                         options.menu_open = !options.menu_open;
+                                        options.rules_open = false;
                                         options.open = false;
                                         options.layers_open = false;
                                         options.meshes_open = false;
@@ -436,6 +471,7 @@ pub(super) fn bottom_bar(
                                     );
                                     if l.clicked() {
                                         options.layers_open = !options.layers_open;
+                                        options.rules_open = false;
                                         options.menu_open = false;
                                         options.open = false;
                                         options.meshes_open = false;
@@ -452,6 +488,7 @@ pub(super) fn bottom_bar(
                                     );
                                     if c.clicked() {
                                         options.meshes_open = !options.meshes_open;
+                                        options.rules_open = false;
                                         options.menu_open = false;
                                         options.open = false;
                                         options.layers_open = false;
@@ -463,12 +500,25 @@ pub(super) fn bottom_bar(
                                     let r = options_button(ui, options.open, look);
                                     if r.clicked() {
                                         options.open = !options.open;
+                                        options.rules_open = false;
                                         options.menu_open = false;
                                         options.layers_open = false;
                                         options.meshes_open = false;
                                         options.blend_open = false;
                                     }
                                     options_rect = Some(r.rect);
+                                }
+                                BTN_EXTRA => {
+                                    let e = extra_button(ui, options.rules_open, look);
+                                    if e.clicked() {
+                                        options.rules_open = !options.rules_open;
+                                        options.menu_open = false;
+                                        options.open = false;
+                                        options.layers_open = false;
+                                        options.meshes_open = false;
+                                        options.blend_open = false;
+                                    }
+                                    rules_rect = Some(e.rect);
                                 }
                                 _ => {}
                             }
@@ -484,6 +534,8 @@ pub(super) fn bottom_bar(
                     menu_rect
                 } else if options.layers_open {
                     layers_rect
+                } else if options.rules_open {
+                    rules_rect
                 } else if options.meshes_open {
                     mesh_rect
                 } else {
@@ -498,6 +550,9 @@ pub(super) fn bottom_bar(
     edit_bar(ui.ctx(), options, bar_rect);
     if let Some(button) = options_rect {
         options_panel(ui.ctx(), options, button);
+    }
+    if let Some(button) = rules_rect {
+        rules_panel(ui.ctx(), options, button);
     }
     if let Some(button) = menu_rect {
         menu_panel(ui.ctx(), options, button);

@@ -319,9 +319,7 @@ El desplazamiento cambia en cada toque (como la punta de ibisPaint que gira al a
 |---|---|---|---|
 | Suave (SOFT) | 18 | 0.25 | `min(1, 2t)` |
 | Duro (HARD) | 18 | 0.25 | `min(1, 8t)` |
-| Aerógrafo (AIRBRUSH) | 18 | 0.25 | `t²` |
 | Lápiz (PENCIL) | 3 | 0.15 | `min(1, 10t)` |
-| Lápiz (Difuminado) | 48 | 0.20 | `t²(3-2t)` |
 | Rotulador (Suave) | 6 | 0.15 | `min(1, 4t)` |
 | Rotulador (Fuerte) | 14 | 0.12 | `min(1, 20t)` |
 

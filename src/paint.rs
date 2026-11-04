@@ -1103,19 +1103,23 @@ mod tests {
         assert!(baja, "la profundidad no se reinicio en la pasada nueva");
     }
 
-    /// Texel (37, 32) con el aerografo (`t * t`) y radio 10 desde el centro (32, 32): `t` = 0.5, cobertura 0.25.
+    /// Radio con el que el texel (37, 32), a 5 texeles del centro (32, 32), queda a `t` = 1 - 5 / (40 / 7) = 0.125 y el
+    /// pincel Suave (`min(1, 2t)`) le da una cobertura de 0.25.
+    const RADIO_COBERTURA_025: f32 = 40.0 / 7.0;
+
+    /// Texel (37, 32) con el pincel Suave y radio `RADIO_COBERTURA_025` desde el centro (32, 32): cobertura 0.25.
     fn alfa_tras(n: usize, ceiling: bool) -> u8 {
         let mut s = StrokeState::new(64);
         let mut pixels = layer(64, [0, 0, 0, 0]);
         s.begin_stroke();
         let c = 32.0 / 63.0;
         let opts = DabOptions {
-            brush: BrushType::Airbrush,
+            brush: BrushType::Soft,
             ceiling,
             ..Default::default()
         };
         for _ in 0..n {
-            s.dab(&mut pixels, c, c, 10.0, [255, 0, 0], 1.0, opts);
+            s.dab(&mut pixels, c, c, RADIO_COBERTURA_025, [255, 0, 0], 1.0, opts);
         }
         px(&pixels, 64, 37, 32)[3]
     }
@@ -1161,13 +1165,13 @@ mod tests {
         s.begin_stroke();
         let c = 32.0 / 63.0;
         let opts = DabOptions {
-            brush: BrushType::Airbrush,
+            brush: BrushType::Soft,
             ceiling: true,
             flow,
             ..Default::default()
         };
         for _ in 0..n {
-            s.dab(&mut pixels, c, c, 10.0, [255, 0, 0], 1.0, opts);
+            s.dab(&mut pixels, c, c, RADIO_COBERTURA_025, [255, 0, 0], 1.0, opts);
         }
         px(&pixels, 64, 37, 32)[3]
     }
@@ -1181,7 +1185,7 @@ mod tests {
 
     #[test]
     fn con_flujo_bajo_cada_toque_suma_poco_y_se_acerca_al_techo() {
-        // Cobertura del texel = 0.25 (aerografo) * 0.5 (flujo) = 0.125; luego c + 0.125 * (1 - c) = 0.234...
+        // Cobertura del texel = 0.25 (pincel Suave, radio `RADIO_COBERTURA_025`) * 0.5 (flujo) = 0.125; luego c + 0.125 * (1 - c) = 0.234...
         let (a1, a2, a40) = (
             alfa_con_flujo(1, 0.5),
             alfa_con_flujo(2, 0.5),

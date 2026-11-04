@@ -18,6 +18,7 @@ mod brush;
 mod bvh;
 mod camera;
 mod export;
+mod face_edit;
 mod fill;
 mod layers;
 mod obj;
@@ -46,6 +47,7 @@ use blend::BlendMode;
 use brush::{BUILD_UP_INTERVAL, Brush};
 use bvh::TriBvh;
 use camera::{Camera, ViewAxis};
+use face_edit::FaceEdit;
 use glam::Vec3;
 use layers::{ChannelKind, LayerOp, LayerStack, NORMAL_STRENGTH, PaintTarget};
 use obj::{
@@ -255,6 +257,15 @@ struct Gpu {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    /// Una bandera (f32) por vertice para el shader: 0 normal, 1 cara elegida, 2 cara oculta (modo edicion de caras).
+    flag_buffer: wgpu::Buffer,
+    /// Modo edicion de caras (Tab): caras elegidas y ocultas.
+    faces: FaceEdit,
+    /// Dibujo de las aristas de las caras en el modo edicion: lineas negras (naranjas las de caras elegidas).
+    line_pipeline: wgpu::RenderPipeline,
+    /// Vertices de las aristas (`x y z flag`, 2 por arista); `None` fuera del modo o si no hay aristas que dibujar.
+    edge_buffer: Option<wgpu::Buffer>,
+    edge_vertex_count: u32,
     /// Llamadas de dibujo (pieza y tramo de vertices) de las mallas visibles; las ocultas no entran.
     draw_ranges: Vec<(usize, std::ops::Range<u32>)>,
     uniform_buffer: wgpu::Buffer,
@@ -330,6 +341,15 @@ struct App {
     /// El puntero se movio desde el ultimo toque del temporizador: ese tramo ya deposito pintura al moverse, asi que
     /// el temporizador se salta ese toque (solo deposita cuando el puntero esta quieto).
     moved_since_tick: bool,
+}
+
+/// Buffer con una bandera (f32) por vertice para el modo edicion de caras; empieza todo en 0 (normal).
+fn new_flag_buffer(device: &wgpu::Device, vertex_count: usize) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("banderas"),
+        contents: bytemuck::cast_slice(&vec![0.0f32; vertex_count]),
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    })
 }
 
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
@@ -596,6 +616,8 @@ impl Gpu {
         });
 
         let vertex_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
+        // Segundo buffer: una bandera por vertice (modo edicion de caras).
+        let flag_attrs = wgpu::vertex_attr_array![3 => Float32];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("modelo"),
             layout: Some(&pipeline_layout),
@@ -603,11 +625,18 @@ impl Gpu {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 32,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &vertex_attrs,
-                })],
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: 32,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &vertex_attrs,
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: 4,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &flag_attrs,
+                    }),
+                ],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -629,6 +658,56 @@ impl Gpu {
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
+                // Las superficies se empujan un poco hacia atras en la profundidad (mas cuanto mas de canto se ven):
+                // asi las aristas del modo edicion, que van sobre la superficie, ganan a la superficie sin tener que
+                // acercarlas a la camara (con eso se colaban las aristas de la parte de atras en los bordes).
+                bias: wgpu::DepthBiasState {
+                    constant: 4,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // Aristas del modo edicion: lineas con un solo buffer de posicion (x y z flag). Se dibujan en el mismo pase que el
+        // modelo, sin escribir profundidad (para no taparse entre ellas) y con la misma prueba que el modelo.
+        let line_attrs = wgpu::vertex_attr_array![0 => Float32x4];
+        let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("aristas"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_line"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 16,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &line_attrs,
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_line"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
                 bias: Default::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
@@ -642,6 +721,7 @@ impl Gpu {
             usage: wgpu::BufferUsages::VERTEX,
         });
         let depth_view = create_depth_view(&device, config.width, config.height);
+        let flag_buffer = new_flag_buffer(&device, mesh.vertex_count());
 
         let ui = UiLayer::new(&window, &device, config.format.remove_srgb_suffix());
         let parts = mesh.scene_parts(model_name);
@@ -669,6 +749,11 @@ impl Gpu {
             config,
             pipeline,
             vertex_buffer,
+            flag_buffer,
+            faces: FaceEdit::new(mesh),
+            line_pipeline,
+            edge_buffer: None,
+            edge_vertex_count: 0,
             draw_ranges,
             uniform_buffer,
             bind_group_layout,
@@ -754,6 +839,9 @@ impl Gpu {
             });
         self.bvh = TriBvh::new(mesh);
         self.uvs = mesh.uvs.clone();
+        // Modelo nuevo: sus caras empiezan sin elegir ni ocultar, fuera del modo edicion.
+        self.flag_buffer = new_flag_buffer(&self.device, mesh.vertex_count());
+        self.faces = FaceEdit::new(mesh);
         self.parts = mesh.scene_parts(model_name);
         self.pieces = piece_ranges(&self.parts)
             .into_iter()
@@ -778,8 +866,68 @@ impl Gpu {
     fn apply_visibility(&mut self) {
         self.draw_ranges = draw_calls(self.pieces.len(), &self.parts);
         let tris = self.bvh.triangle_count();
-        self.bvh.set_visible(triangle_visibility(&self.parts, tris));
+        // Un triangulo se puede pintar si su malla es visible Y su cara no esta oculta en el modo edicion.
+        let mut vis = triangle_visibility(&self.parts, tris);
+        for (t, v) in vis.iter_mut().enumerate() {
+            *v = *v && self.faces.tri_visible(t);
+        }
+        self.rebuild_edges(&vis);
+        self.bvh.set_visible(vis);
+        self.upload_face_flags();
         self.window.request_redraw();
+    }
+
+    /// Rearma las aristas que se dibujan en el modo edicion (`vis` = triangulos que se ven). Fuera del modo no hay
+    /// ninguna. Se llama al entrar al modo y cada vez que cambia la seleccion o lo oculto.
+    fn rebuild_edges(&mut self, vis: &[bool]) {
+        self.edge_buffer = None;
+        self.edge_vertex_count = 0;
+        if !self.faces.active {
+            return;
+        }
+        let bvh = &self.bvh;
+        let lines = self.faces.edge_lines(
+            |t| {
+                let (p, _) = bvh.tri(t);
+                [p[0].to_array(), p[1].to_array(), p[2].to_array()]
+            },
+            |t| vis.get(t).copied().unwrap_or(false),
+        );
+        if lines.is_empty() {
+            return;
+        }
+        self.edge_vertex_count = (lines.len() / 4) as u32;
+        self.edge_buffer = Some(self.device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("aristas"),
+                contents: bytemuck::cast_slice(&lines),
+                usage: wgpu::BufferUsages::VERTEX,
+            },
+        ));
+    }
+
+    /// Sube a la GPU la bandera de cada vertice (cara elegida u oculta) tras cambiar la seleccion o el modo.
+    fn upload_face_flags(&self) {
+        self.queue.write_buffer(
+            &self.flag_buffer,
+            0,
+            bytemuck::cast_slice(&self.faces.vertex_flags()),
+        );
+    }
+
+    /// Tab: entra o sale del modo edicion de caras. Las caras ocultas siguen ocultas al salir.
+    fn toggle_face_edit(&mut self) {
+        self.faces.active = !self.faces.active;
+        // Entrar o salir cambia las banderas y las aristas dibujadas (`apply_visibility` rehace ambas).
+        self.apply_visibility();
+        self.window.set_title(&self.status());
+        self.window.request_redraw();
+    }
+
+    /// Cambio de la seleccion o de lo oculto en el modo edicion: recalcula lo que se ve y se puede pintar.
+    fn faces_changed(&mut self) {
+        self.apply_visibility();
+        self.window.set_title(&self.status());
     }
 
     /// Abre un .obj (arrastrado a la ventana o elegido en el panel de mallas o con el "+" de la galeria) y reemplaza el
@@ -976,6 +1124,9 @@ impl Gpu {
     /// Texto de estado (en la barra de titulo, mientras no haya panel): herramienta, color y capa elegida (de la
     /// pieza activa; con varias piezas, tambien su nombre).
     fn status(&self) -> String {
+        if self.faces.active {
+            return format!("texturecraft - {}", self.faces.status());
+        }
         let a = self.active();
         let stack = &self.pieces[a].layers;
         let l = stack.selected_layer();
@@ -1135,14 +1286,14 @@ impl Gpu {
         // En un canal (rugosidad, metalico, altura) tambien se pinta en grises, pero ahi si hay bloqueo alfa y borrador:
         // la hoja del canal guarda el alfa de donde la capa pinta ese canal.
         let target = layer.target(channel);
-        let on_mask = target == PaintTarget::Mask;
+        let on_mask = matches!(target, PaintTarget::Mask(_));
         let alpha_lock = layer.alpha_lock && !on_mask;
         let (color, erase) = if on_mask {
             // En la mascara de una capa de color liso el pincel siempre "pinta el color" (blanco = se ve) y el
             // borrador lo quita; en una mascara normal el gris sale del color del pincel.
             let g = if self.tool == Tool::Eraser {
                 0
-            } else if layer.is_solid() {
+            } else if layer.mask_reveals() {
                 255
             } else {
                 luma(self.brush_color)
@@ -1284,14 +1435,15 @@ impl Gpu {
         // En la mascara y en los canales se rellena con el gris del color del pincel; la mascara no lleva bloqueo alfa.
         // En la mascara de una capa de color liso se rellena de blanco (se ve el color).
         let (layer_id, target) = (layer.id, layer.target(channel));
-        let solid = layer.is_solid();
+        let solid = layer.mask_reveals();
         let (color, alpha_lock) = if target != PaintTarget::Layer {
-            let g = if target == PaintTarget::Mask && solid {
+            let on_mask = matches!(target, PaintTarget::Mask(_));
+            let g = if on_mask && solid {
                 255
             } else {
                 luma(color)
             };
-            ([g, g, g], layer.alpha_lock && target != PaintTarget::Mask)
+            ([g, g, g], layer.alpha_lock && !on_mask)
         } else {
             (color, layer.alpha_lock)
         };
@@ -1547,6 +1699,15 @@ impl Gpu {
         }
     }
 
+    /// Levanta el pincel sin soltar el boton: el trazo en curso sigue, pero lo que se pinte a continuacion no se une con
+    /// lo anterior (ni en direccion ni en espaciado). Se usa cuando una regla curva hace saltar el punto de un lado a
+    /// otro y no debe quedar una cuerda recta entre los dos.
+    fn stroke_lift(&mut self) {
+        self.stroke_dir = Vec3::ZERO;
+        self.last_dab_pos = None;
+        self.stroke_to_next = self.dab_spacing();
+    }
+
     /// Mover con el boton apretado: rellena el tramo `from` -> `to` con toques espaciados (seccion 7.4).
     fn stroke_move(&mut self, camera: &Camera, from: (f32, f32), to: (f32, f32)) -> bool {
         if self.tool == Tool::Eyedropper {
@@ -1657,7 +1818,8 @@ impl Gpu {
                 } else {
                     0.0
                 },
-                0.0,
+                // Modo edicion de caras: la malla se ve gris liso, sin textura.
+                if self.faces.active { 1.0 } else { 0.0 },
                 0.0,
                 0.0,
             ],
@@ -1704,16 +1866,29 @@ impl Gpu {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.set_vertex_buffer(1, self.flag_buffer.slice(..));
             // Solo las mallas visibles, cada una con la textura de su pieza.
             for (piece, range) in &self.draw_ranges {
                 pass.set_bind_group(0, &self.pieces[*piece].bind_group, &[]);
                 pass.draw(range.clone(), 0..1);
             }
+            // Modo edicion de caras: las aristas encima de la malla (el bind group solo aporta los uniforms).
+            if self.faces.active {
+                if let Some(edges) = &self.edge_buffer {
+                    pass.set_pipeline(&self.line_pipeline);
+                    pass.set_bind_group(0, &self.pieces[0].bind_group, &[]);
+                    pass.set_vertex_buffer(0, edges.slice(..));
+                    pass.draw(0..self.edge_vertex_count, 0..1);
+                }
+            }
         }
         // Cursor propio sobre el modelo: circulo del pincel (pincel y borrador) o la chincheta del cuentagotas.
         // Sin círculo del pincel en modo edición (no se pinta).
+        // Con un trazo pegado a la regla recta, el circulo sigue la linea (donde cae el toque), no al raton.
+        let mouse = self.ui.ruler_snap(mouse);
         let ring = if cursor_in_window
             && !self.ui.edit_mode()
+            && !self.faces.active
             && matches!(self.tool, Tool::Brush | Tool::Eraser | Tool::Eyedropper)
         {
             let pin = self.tool == Tool::Eyedropper;
@@ -1864,8 +2039,10 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         let due = *self.next_build_up.get_or_insert(now + BUILD_UP_INTERVAL);
         let next = if now >= due {
+            // Pegado a la regla recta, el toque cae sobre su linea.
+            let at = gpu.ui.ruler_snap(self.mouse);
             if !std::mem::take(&mut self.moved_since_tick)
-                && gpu.stroke_hold(&self.camera, self.mouse.0, self.mouse.1)
+                && gpu.stroke_hold(&self.camera, at.0, at.1)
             {
                 gpu.window.request_redraw();
             }
@@ -1917,7 +2094,21 @@ impl ApplicationHandler for App {
         let Some(gpu) = self.gpu.as_mut() else { return };
         // egui ve cada evento primero. Si lo "consume" (cursor sobre la barra, etc.), la camara y el pincel no
         // reaccionan. Los gestos que empezaron fuera de la interfaz siguen su curso aunque pasen por encima.
-        let response = gpu.ui.on_window_event(&gpu.window, &event);
+        // Tab no se le pasa a egui (salvo que se este escribiendo en un campo de texto): egui lo usa para mover el foco
+        // entre widgets y despues de eso marca como "usadas" las demas teclas (A, H, Ctrl+I...), que dejarian de llegar.
+        let is_tab = matches!(
+            &event,
+            WindowEvent::KeyboardInput { event: k, .. }
+                if k.logical_key == Key::Named(NamedKey::Tab)
+        );
+        let response = if is_tab && !gpu.ui.wants_keyboard() {
+            egui_winit::EventResponse {
+                repaint: false,
+                consumed: false,
+            }
+        } else {
+            gpu.ui.on_window_event(&gpu.window, &event)
+        };
         if response.repaint {
             gpu.window.request_redraw();
         }
@@ -1943,17 +2134,46 @@ impl ApplicationHandler for App {
                         if down && gpu.ui.edit_mode() {
                             return;
                         }
+                        // Modo edicion de caras: el clic elige la cara tocada (Mayus suma o quita) y no pinta. Con Alt
+                        // elige el bucle de caras (la fila o columna) que pasa por ella, hacia la arista mas cercana. Con
+                        // Ctrl elige el camino mas corto desde la ultima cara tocada (Mayus+Ctrl lo suma a lo elegido).
+                        if gpu.faces.active {
+                            if down {
+                                let pick = gpu.pick_uv(&self.camera, self.mouse.0, self.mouse.1);
+                                let shift = self.modifiers.shift_key();
+                                if self.modifiers.alt_key() {
+                                    gpu.faces.click_loop(
+                                        pick.map(|p| p.tri),
+                                        pick.map(|p| p.pos.to_array()),
+                                        shift,
+                                    );
+                                } else if self.modifiers.control_key() {
+                                    gpu.faces.click_path(pick.map(|p| p.tri), shift);
+                                } else {
+                                    gpu.faces.click(pick.map(|p| p.tri), shift);
+                                }
+                                gpu.faces_changed();
+                            }
+                            return;
+                        }
                         let was_down = self.left_down;
                         self.left_down = down;
                         if down {
-                            self.last_paint = Some(self.mouse);
+                            // Con la regla recta, un trazo que empieza cerca de ella queda pegado a su linea.
+                            let start = if matches!(gpu.tool, Tool::Brush | Tool::Eraser) {
+                                gpu.ui.ruler_begin(self.mouse)
+                            } else {
+                                self.mouse
+                            };
+                            self.last_paint = Some(start);
                             self.moved_since_tick = false;
                             self.next_build_up = None;
-                            if gpu.stroke_begin(&self.camera, self.mouse.0, self.mouse.1) {
+                            if gpu.stroke_begin(&self.camera, start.0, start.1) {
                                 gpu.window.request_redraw();
                             }
                         } else if was_down {
                             self.last_paint = None;
+                            gpu.ui.ruler_end();
                             gpu.stroke_end();
                         }
                     }
@@ -1975,12 +2195,25 @@ impl ApplicationHandler for App {
                         gpu.window.request_redraw();
                     }
                 } else if self.left_down {
-                    let from = self.last_paint.unwrap_or((x, y));
-                    self.last_paint = Some((x, y));
+                    let mut from = self.last_paint.unwrap_or((x, y));
                     if dx != 0.0 || dy != 0.0 {
                         self.moved_since_tick = true;
                     }
-                    if gpu.stroke_move(&self.camera, from, (x, y)) {
+                    // Pegado a una regla, el recorrido del raton (de la posicion anterior a esta) se corrige punto por
+                    // punto: sobre la recta es un solo tramo; sobre el circulo o la elipse, varios pasos chicos.
+                    let mut changed = false;
+                    for (to, jump) in gpu.ui.ruler_path((x - dx, y - dy), (x, y)) {
+                        if jump {
+                            // El raton cruzo el centro de un circulo o elipse y el punto de la regla paso al otro lado:
+                            // no se pinta la cuerda entre los dos, el trazo se retoma desde el punto nuevo.
+                            gpu.stroke_lift();
+                        } else {
+                            changed |= gpu.stroke_move(&self.camera, from, to);
+                        }
+                        from = to;
+                    }
+                    self.last_paint = Some(from);
+                    if changed {
                         gpu.window.request_redraw();
                     }
                 } else if self.middle_down && !gpu.view_locked {
@@ -2017,10 +2250,23 @@ impl ApplicationHandler for App {
                 self.camera.zoom(steps);
                 gpu.window.request_redraw();
             }
+            // Tab: entra o sale del modo edicion de caras (como en Blender). Va aparte porque egui marca la tecla Tab
+            // como "usada" siempre (la usa para pasar de un control a otro) y el filtro de abajo la dejaria pasar sin
+            // hacer nada.
+            WindowEvent::KeyboardInput { ref event, .. }
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.logical_key == Key::Named(NamedKey::Tab)
+                    && !gpu.ui.wants_keyboard() =>
+            {
+                gpu.toggle_face_edit();
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !ui_has_it =>
             {
                 match event.logical_key {
+                    // Esc dentro del modo edicion solo sale del modo; fuera de el cierra el programa.
+                    Key::Named(NamedKey::Escape) if gpu.faces.active => gpu.toggle_face_edit(),
                     Key::Named(NamedKey::Escape) => event_loop.exit(),
                     Key::Character(ref c) if c == "1" && !gpu.view_locked => {
                         // Vista frontal ortografica (como el boton de vistas de la app).
@@ -2033,6 +2279,48 @@ impl ApplicationHandler for App {
                     Key::Character(ref c) if c == "2" && !gpu.view_locked => {
                         self.camera.orthographic = false;
                         gpu.window.request_redraw();
+                    }
+                    // Alt+H: muestra todas las caras ocultas (dentro y fuera del modo edicion).
+                    Key::Character(ref c)
+                        if self.modifiers.alt_key() && c.eq_ignore_ascii_case("h") =>
+                    {
+                        if gpu.faces.reveal_all() {
+                            gpu.faces_changed();
+                        }
+                    }
+                    // Dentro del modo edicion de caras las letras valen las de Blender; las demas no hacen nada.
+                    Key::Character(ref c) if gpu.faces.active => {
+                        let (shift, ctrl, alt) = (
+                            self.modifiers.shift_key(),
+                            self.modifiers.control_key(),
+                            self.modifiers.alt_key(),
+                        );
+                        let handled = match (c.to_lowercase().as_str(), ctrl, alt, shift) {
+                            ("a", false, false, _) => {
+                                gpu.faces.select_all();
+                                true
+                            }
+                            ("a", false, true, _) => {
+                                gpu.faces.deselect_all();
+                                true
+                            }
+                            ("i", true, false, _) => {
+                                gpu.faces.invert();
+                                true
+                            }
+                            ("h", false, false, false) => {
+                                gpu.faces.hide_selected();
+                                true
+                            }
+                            ("h", false, false, true) => {
+                                gpu.faces.hide_unselected();
+                                true
+                            }
+                            _ => false,
+                        };
+                        if handled {
+                            gpu.faces_changed();
+                        }
                     }
                     // Teclas de prueba de las capas (hasta tener el panel); actuan sobre la pieza activa.
                     Key::Character(ref c) => {

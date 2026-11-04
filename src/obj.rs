@@ -26,6 +26,9 @@ pub struct ObjMesh {
     pub has_uvs: bool,
     /// Vacio si el OBJ no trae partes (o trae una sola).
     pub parts: Vec<MeshPart>,
+    /// Para cada triangulo, el numero de la cara del OBJ de la que sale (un cuadrado = 2 triangulos con el mismo
+    /// numero). Se usa en el modo edicion para elegir la cara completa. Los numeros van de 0 a `face_count() - 1`.
+    pub face_of_tri: Vec<u32>,
 }
 
 impl ObjMesh {
@@ -35,6 +38,21 @@ impl ObjMesh {
 
     pub fn triangle_count(&self) -> usize {
         self.vertex_count() / 3
+    }
+
+    /// Cantidad de caras (poligonos) del modelo, contando como una sola las que se triangularon en varias.
+    pub fn face_count(&self) -> usize {
+        self.face_of_tri.last().map_or(0, |&f| f as usize + 1)
+    }
+
+    /// Triangulos de cada cara: `result[cara]` = lista de triangulos. Los triangulos de una cara van seguidos en la
+    /// malla, asi que basta recorrerla una vez.
+    pub fn triangles_by_face(&self) -> Vec<Vec<u32>> {
+        let mut out: Vec<Vec<u32>> = vec![Vec::new(); self.face_count()];
+        for (tri, &face) in self.face_of_tri.iter().enumerate() {
+            out[face as usize].push(tri as u32);
+        }
+        out
     }
 
     /// Las mallas del modelo tal como las muestra el panel de mallas: las partes del OBJ o, si no trae partes (o trae
@@ -68,6 +86,7 @@ impl ObjMesh {
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut uvs = Vec::new();
+        let mut face_of_tri: Vec<u32> = Vec::new();
         let radius = 0.5_f32;
         let point = |seg: usize, ring: usize| -> ([f32; 3], [f32; 2]) {
             let u = seg as f32 / segments as f32;
@@ -85,7 +104,10 @@ impl ObjMesh {
         };
         for ring in 0..rings {
             for seg in 0..segments {
-                // Dos triangulos por casilla, con el mismo sentido de giro.
+                // Dos triangulos por casilla, con el mismo sentido de giro; la casilla es una cara.
+                let face = (ring * segments + seg) as u32;
+                face_of_tri.push(face);
+                face_of_tri.push(face);
                 push(seg, ring);
                 push(seg, ring + 1);
                 push(seg + 1, ring);
@@ -100,6 +122,7 @@ impl ObjMesh {
             uvs,
             has_uvs: true,
             parts: Vec::new(),
+            face_of_tri,
         }
     }
 }
@@ -140,6 +163,9 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
     let mut out_n: Vec<f32> = Vec::new();
     let mut out_t: Vec<f32> = Vec::new();
     let mut any_uv = false;
+    // Numero de cara de cada triangulo de salida (un poligono triangulado en abanico comparte numero).
+    let mut out_f: Vec<u32> = Vec::new();
+    let mut next_face: u32 = 0;
     // En que vertice de salida empieza cada parte (lineas o/g) y su nombre.
     let mut part_starts: Vec<usize> = Vec::new();
     let mut part_names: Vec<String> = Vec::new();
@@ -215,8 +241,9 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
                         ni[k] = resolve(int(tok[2], line_no)?, nor.len() / 3, line_no)? as i64;
                     }
                 }
-                // Abanico: (0, k, k+1).
+                // Abanico: (0, k, k+1). Todos los triangulos del abanico son la misma cara.
                 for k in 1..n - 1 {
+                    out_f.push(next_face);
                     let c = [0usize, k, k + 1];
                     // Normal plana por si algun vertice de este triangulo no trae normal propia.
                     let a = vi[c[0]] * 3;
@@ -259,6 +286,7 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
                         }
                     }
                 }
+                next_face += 1;
             }
             _ => {}
         }
@@ -334,6 +362,7 @@ pub fn load_obj(text: &str, fit_size: f32, y_up: bool) -> Result<ObjMesh, ObjErr
         uvs: out_t,
         has_uvs: any_uv,
         parts,
+        face_of_tri: out_f,
     })
 }
 
@@ -492,5 +521,33 @@ mod tests {
         ];
         let of: Vec<usize> = (0..5).map(|t| part_of_triangle(&parts, t)).collect();
         assert_eq!(of, vec![0, 0, 1, 2, 2]);
+    }
+
+    #[test]
+    fn un_cuadrado_son_dos_triangulos_de_la_misma_cara() {
+        // Un cuadrado (2 triangulos) y un triangulo suelto: 2 caras en total.
+        let obj = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 2 0 0\nf 1 2 3 4\nf 2 5 3\n";
+        let mesh = load_obj(obj, 0.0, false).unwrap();
+        assert_eq!(mesh.triangle_count(), 3);
+        assert_eq!(mesh.face_of_tri, vec![0, 0, 1]);
+        assert_eq!(mesh.face_count(), 2);
+        assert_eq!(mesh.triangles_by_face(), vec![vec![0, 1], vec![2]]);
+    }
+
+    #[test]
+    fn un_poligono_de_cinco_lados_es_una_sola_cara() {
+        let obj = "v 0 0 0\nv 1 0 0\nv 2 1 0\nv 1 2 0\nv 0 1 0\nf 1 2 3 4 5\n";
+        let mesh = load_obj(obj, 0.0, false).unwrap();
+        assert_eq!(mesh.triangle_count(), 3);
+        assert_eq!(mesh.face_count(), 1);
+        assert_eq!(mesh.face_of_tri, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn la_esfera_tiene_una_cara_por_casilla() {
+        let mesh = ObjMesh::uv_sphere(8, 4);
+        assert_eq!(mesh.face_of_tri.len(), mesh.triangle_count());
+        assert_eq!(mesh.face_count(), 8 * 4);
+        assert!(mesh.triangles_by_face().iter().all(|t| t.len() == 2));
     }
 }

@@ -11,7 +11,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::blend::BlendMode;
 use crate::export::write_png;
-use crate::layers::{Background, ChannelKind, LayerMask, LayerSource, LayerStack, PaintLayer};
+use crate::layers::{
+    Background, ChannelKind, LayerMask, LayerSource, LayerStack, MAX_MASKS, PaintLayer,
+};
+
+/// Archivo de la mascara `k` de la capa `li` de la pieza `pi`: la primera se llama como siempre (`_mascara.png`).
+fn mask_file_name(pi: usize, li: usize, k: usize) -> String {
+    if k == 0 {
+        format!("pieza{pi}_capa{li}_mascara.png")
+    } else {
+        format!("pieza{pi}_capa{li}_mascara{k}.png")
+    }
+}
 
 /// Lado (en pixeles) de la miniatura.
 pub const THUMB: u32 = 256;
@@ -122,17 +133,32 @@ fn save_in(
                 let _ = fs::remove_file(&file);
             }
             // La mascara va en su propio PNG (siempre entera: es opaca). Sin mascara, se borra el archivo de antes.
-            let mask_file = dir.join(format!("pieza{pi}_capa{li}_mascara.png"));
-            let (has_mask, mask_on, mask_inv) = match &l.mask {
-                Some(m) => {
-                    write_png(&mask_file, stack.size, &m.pixels, false)?;
-                    (true, m.enabled, m.invert)
+            // La primera mascara conserva el formato de siempre (`_mascara.png` y los campos `mascara*`) para que los
+            // proyectos viejos y nuevos se abran igual; las demas van en `_mascara<k>.png` con `m<k>_activa` y `m<k>_inv`.
+            let (mut has_mask, mut mask_on, mut mask_inv) = (false, true, false);
+            let mut extra_masks = String::new();
+            for k in 0..MAX_MASKS {
+                let mask_file = dir.join(mask_file_name(pi, li, k));
+                match l.masks.get(k) {
+                    Some(m) => {
+                        write_png(&mask_file, stack.size, &m.pixels, false)?;
+                        if k == 0 {
+                            (has_mask, mask_on, mask_inv) = (true, m.enabled, m.invert);
+                        } else {
+                            extra_masks.push_str(&format!(
+                                "\tm{k}_activa={}\tm{k}_inv={}",
+                                m.enabled, m.invert
+                            ));
+                        }
+                    }
+                    None => {
+                        let _ = fs::remove_file(&mask_file);
+                    }
                 }
-                None => {
-                    let _ = fs::remove_file(&mask_file);
-                    (false, true, false)
-                }
-            };
+            }
+            if l.masks.len() > 1 {
+                extra_masks.push_str(&format!("\tmascaras={}", l.masks.len()));
+            }
             // Hojas de los canales extra (rugosidad, metalico, altura): un PNG por canal pintado.
             let mut chan_flags = String::new();
             for k in ChannelKind::EXTRA {
@@ -160,7 +186,7 @@ fn save_in(
                 chan_flags.push_str(&format!("\ten_carpeta={p}"));
             }
             meta.push_str(&format!(
-                "capa\t{pi}\t{li}\tid={}\tnombre={}\tvisible={}\topacidad={}\tbloqueada={}\tbloqueo_alfa={}\tmezcla={}\trecorte={}\tpixeles={}\tmascara={}\tmascara_activa={}\tmascara_invertida={}{}\n",
+                "capa\t{pi}\t{li}\tid={}\tnombre={}\tvisible={}\topacidad={}\tbloqueada={}\tbloqueo_alfa={}\tmezcla={}\trecorte={}\tpixeles={}\tmascara={}\tmascara_activa={}\tmascara_invertida={}{}{}\n",
                 l.id,
                 clean(&l.name),
                 l.visible,
@@ -173,6 +199,7 @@ fn save_in(
                 has_mask,
                 mask_on,
                 mask_inv,
+                extra_masks,
                 chan_flags
             ));
         }
@@ -312,18 +339,31 @@ fn load_in(root: &Path, id: &str, size: u32) -> Result<Loaded, String> {
                 vec![0u8; (size * size * 4) as usize]
             };
             // Mascara (los proyectos guardados antes de que existieran no traen el campo: capa sin mascara).
-            let mask = if field(&f, "mascara=") == Some("true") {
-                Some(LayerMask {
-                    enabled: field(&f, "mascara_activa=") != Some("false"),
-                    invert: field(&f, "mascara_invertida=") == Some("true"),
-                    pixels: read_layer_png(
-                        &dir.join(format!("pieza{pi}_capa{li}_mascara.png")),
-                        size,
-                    )?,
-                })
-            } else {
-                None
-            };
+            let mut masks: Vec<LayerMask> = Vec::new();
+            if field(&f, "mascara=") == Some("true") {
+                let count = field(&f, "mascaras=")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(1)
+                    .clamp(1, MAX_MASKS);
+                for k in 0..count {
+                    let (enabled, invert) = if k == 0 {
+                        (
+                            field(&f, "mascara_activa=") != Some("false"),
+                            field(&f, "mascara_invertida=") == Some("true"),
+                        )
+                    } else {
+                        (
+                            field(&f, &format!("m{k}_activa=")) != Some("false"),
+                            field(&f, &format!("m{k}_inv=")) == Some("true"),
+                        )
+                    };
+                    masks.push(LayerMask {
+                        enabled,
+                        invert,
+                        pixels: read_layer_png(&dir.join(mask_file_name(pi, li, k)), size)?,
+                    });
+                }
+            }
             // Canales extra (los proyectos viejos no traen estos campos: sin canales).
             let mut chans: [Option<Vec<u8>>; 3] = [None, None, None];
             for k in ChannelKind::EXTRA {
@@ -358,7 +398,8 @@ fn load_in(root: &Path, id: &str, size: u32) -> Result<Loaded, String> {
                 blend: BlendMode::from_name(field(&f, "mezcla=").unwrap_or("NORMAL")),
                 clip_to_below: field(&f, "recorte=") == Some("true"),
                 pixels,
-                mask,
+                masks,
+                mask_sel: 0,
                 editing_mask: false,
                 chans,
                 source,
@@ -439,7 +480,7 @@ mod tests {
         rugosidad[i(6, 6)..i(6, 6) + 4].copy_from_slice(&[200, 200, 200, 255]);
         s.layers[0].chans[0] = Some(rugosidad);
         assert!(s.add_mask());
-        let m = s.layers[0].mask.as_mut().unwrap();
+        let m = s.layers[0].mask_mut().unwrap();
         m.pixels[i(7, 7)..i(7, 7) + 4].copy_from_slice(&[0, 0, 0, 255]);
         m.enabled = false;
         m.invert = true;
@@ -447,7 +488,7 @@ mod tests {
         s.selected = 0;
         assert!(s.add_solid_layer([10, 20, 30]));
         s.layers[1].name = "color".to_string();
-        s.layers[1].mask.as_mut().unwrap().pixels[i(8, 8)..i(8, 8) + 4]
+        s.layers[1].mask_mut().unwrap().pixels[i(8, 8)..i(8, 8) + 4]
             .copy_from_slice(&[255, 255, 255, 255]);
         // Carpeta con la capa base dentro y una capa mas: [base, nueva, carpeta, color].
         s.selected = 0;
@@ -488,8 +529,8 @@ mod tests {
         assert_eq!(t.layers[0].pixels, s.layers[0].pixels);
         assert_eq!(t.layers[0].chans[0], s.layers[0].chans[0]);
         let (ma, mb) = (
-            s.layers[0].mask.as_ref().unwrap(),
-            t.layers[0].mask.as_ref().unwrap(),
+            s.layers[0].mask().unwrap(),
+            t.layers[0].mask().unwrap(),
         );
         assert_eq!(ma.pixels, mb.pixels);
         assert_eq!((ma.enabled, ma.invert), (mb.enabled, mb.invert));
@@ -500,8 +541,8 @@ mod tests {
         assert_eq!(t.layers[1].parent, Some(carpeta_id));
         assert_eq!(t.layers[3].source, LayerSource::Solid([10, 20, 30]));
         assert_eq!(
-            t.layers[3].mask.as_ref().unwrap().pixels,
-            s.layers[3].mask.as_ref().unwrap().pixels
+            t.layers[3].mask().unwrap().pixels,
+            s.layers[3].mask().unwrap().pixels
         );
         // Lo que importa: al componer sale exactamente la misma imagen.
         assert_eq!(t.composite, antes);
@@ -526,10 +567,53 @@ mod tests {
         let capas = &c.stacks[0].layers;
         assert_eq!(capas.len(), 1);
         assert_eq!(capas[0].opacity, 80);
-        assert!(capas[0].mask.is_none());
+        assert!(capas[0].mask().is_none());
         assert_eq!(capas[0].source, LayerSource::Paint);
         assert_eq!(capas[0].parent, None);
         assert!(capas[0].chans.iter().all(|c| c.is_none()));
+    }
+
+    #[test]
+    fn varias_mascaras_se_guardan_y_se_abren_en_su_orden_y_con_sus_ajustes() {
+        let root = carpeta_de_prueba("mascaras");
+        let size = 64;
+        let i = |x: u32, y: u32| ((y * size + x) * 4) as usize;
+        let mut s = LayerStack::new(size);
+        s.background = Background::White;
+        for (x, y) in [(5, 5), (6, 6), (7, 7)] {
+            s.layers[0].pixels[i(x, y)..i(x, y) + 4].copy_from_slice(&[255, 0, 0, 255]);
+        }
+        for _ in 0..3 {
+            assert!(s.add_mask());
+        }
+        // Tres mascaras distintas: la primera oculta (5,5); la segunda oculta (6,6) pero esta apagada; la tercera esta
+        // invertida (el negro muestra) y por eso solo deja ver (7,7).
+        let negro = [0, 0, 0, 255];
+        s.layers[0].masks[0].pixels[i(5, 5)..i(5, 5) + 4].copy_from_slice(&negro);
+        s.layers[0].masks[1].pixels[i(6, 6)..i(6, 6) + 4].copy_from_slice(&negro);
+        s.layers[0].masks[1].enabled = false;
+        s.layers[0].masks[2].pixels[i(7, 7)..i(7, 7) + 4].copy_from_slice(&negro);
+        s.layers[0].masks[2].invert = true;
+        s.composite_all();
+        let antes = s.composite.clone();
+
+        save_in(&root, "m1", "Mascaras", None, &[&s], 0).unwrap();
+        let abierto = load_in(&root, "m1", size);
+        let _ = fs::remove_dir_all(&root);
+        let mut c = abierto.unwrap();
+        let t = &mut c.stacks[0];
+        t.composite_all();
+
+        assert_eq!(t.layers[0].masks.len(), 3);
+        for k in 0..3 {
+            let (a, b) = (&s.layers[0].masks[k], &t.layers[0].masks[k]);
+            assert_eq!(a.pixels, b.pixels, "pixeles de la mascara {k}");
+            assert_eq!(a.enabled, b.enabled, "encendida la mascara {k}");
+            assert_eq!(a.invert, b.invert, "invertida la mascara {k}");
+        }
+        // Al abrir, la elegida es la primera y se pinta la capa (no se guarda la edicion).
+        assert_eq!((t.layers[0].mask_sel, t.layers[0].editing_mask), (0, false));
+        assert_eq!(t.composite, antes);
     }
 
     #[test]

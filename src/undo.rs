@@ -64,7 +64,7 @@ fn apply(edit: &mut StrokeEdit, layers: &mut LayerStack) -> Option<Rect> {
     let size = layers.size;
     let layer = &mut layers.layers[idx];
     let pixels = match edit.target {
-        PaintTarget::Mask => &mut layer.mask.as_mut()?.pixels,
+        PaintTarget::Mask(k) => &mut layer.masks.get_mut(k)?.pixels,
         PaintTarget::Channel(s) => layer.chans[s].as_mut()?,
         PaintTarget::Layer => &mut layer.pixels,
     };
@@ -194,7 +194,7 @@ fn edit_whole_sheet(
         return None;
     }
     let (id, target) = (layer.id, layer.target(channel));
-    let mask_rest = if layer.is_solid() { 0 } else { 255 };
+    let mask_rest = if layer.mask_reveals() { 0 } else { 255 };
     let pixels = layer.target_pixels_mut(target);
     if !needed(pixels, target, mask_rest) {
         return None;
@@ -215,13 +215,13 @@ pub fn clear_selected(layers: &mut LayerStack, history: &mut History) -> Option<
         layers,
         history,
         |px, target, rest| match target {
-            PaintTarget::Mask => px
+            PaintTarget::Mask(_) => px
                 .chunks_exact(4)
                 .any(|p| p[0] != rest || p[1] != rest || p[2] != rest),
             _ => px.chunks_exact(4).any(|p| p[3] != 0),
         },
         |px, target, rest| match target {
-            PaintTarget::Mask => {
+            PaintTarget::Mask(_) => {
                 for p in px.chunks_exact_mut(4) {
                     p.copy_from_slice(&[rest, rest, rest, 255]);
                 }
@@ -238,10 +238,13 @@ pub fn invert_selected(layers: &mut LayerStack, history: &mut History) -> Option
     edit_whole_sheet(
         layers,
         history,
-        |px, target, _| target == PaintTarget::Mask || px.chunks_exact(4).any(|p| p[3] != 0),
         |px, target, _| {
+            matches!(target, PaintTarget::Mask(_)) || px.chunks_exact(4).any(|p| p[3] != 0)
+        },
+        |px, target, _| {
+            let on_mask = matches!(target, PaintTarget::Mask(_));
             for p in px.chunks_exact_mut(4) {
-                if target == PaintTarget::Mask || p[3] != 0 {
+                if on_mask || p[3] != 0 {
                     p[0] = 255 - p[0];
                     p[1] = 255 - p[1];
                     p[2] = 255 - p[2];
@@ -318,18 +321,18 @@ mod tests {
         let id = layers.layers[0].id;
         let size = layers.size;
         // Trazo en la mascara: un texel pasa de blanco a negro.
-        h.begin(id, PaintTarget::Mask);
+        h.begin(id, PaintTarget::Mask(0));
         let i = ((5 * size + 70) * 4) as usize;
-        h.save_tiles(&layers.layers[0].mask.as_ref().unwrap().pixels, size, (70, 5, 70, 5));
-        layers.layers[0].mask.as_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+        h.save_tiles(&layers.layers[0].mask().unwrap().pixels, size, (70, 5, 70, 5));
+        layers.layers[0].mask_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
         h.end();
         assert!(h.undo(&mut layers).is_some());
-        let m = &layers.layers[0].mask.as_ref().unwrap().pixels;
+        let m = &layers.layers[0].mask().unwrap().pixels;
         assert_eq!(&m[i..i + 4], &[255, 255, 255, 255]);
         // La capa no se toco.
         assert_eq!(px(&layers, 70, 5), [0, 0, 0, 0]);
         assert!(h.redo(&mut layers).is_some());
-        let m = &layers.layers[0].mask.as_ref().unwrap().pixels;
+        let m = &layers.layers[0].mask().unwrap().pixels;
         assert_eq!(&m[i..i + 4], &[0, 0, 0, 255]);
         // Si la mascara ya no existe, el paso se descarta sin fallar.
         layers.remove_mask();
@@ -404,16 +407,16 @@ mod tests {
         layers.add_mask();
         let mut h = History::default();
         let i = ((3 * 64 + 3) * 4) as usize;
-        layers.layers[0].mask.as_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+        layers.layers[0].mask_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
         assert!(clear_selected(&mut layers, &mut h).is_some());
-        let m = &layers.layers[0].mask.as_ref().unwrap().pixels;
+        let m = &layers.layers[0].mask().unwrap().pixels;
         assert_eq!(&m[i..i + 4], &[255, 255, 255, 255]);
         // La capa en si no se toco y la mascara sigue ahi.
         assert_eq!(px(&layers, 3, 3), [0, 0, 0, 0]);
         // Ya estaba limpia: no hay segundo paso.
         assert!(clear_selected(&mut layers, &mut h).is_none());
         assert!(h.undo(&mut layers).is_some());
-        let m = &layers.layers[0].mask.as_ref().unwrap().pixels;
+        let m = &layers.layers[0].mask().unwrap().pixels;
         assert_eq!(&m[i..i + 4], &[0, 0, 0, 255]);
     }
 
@@ -423,10 +426,10 @@ mod tests {
         layers.add_solid_layer([10, 20, 30]);
         let mut h = History::default();
         let i = ((3 * 64 + 3) * 4) as usize;
-        layers.layers[1].mask.as_mut().unwrap().pixels[i..i + 4]
+        layers.layers[1].mask_mut().unwrap().pixels[i..i + 4]
             .copy_from_slice(&[255, 255, 255, 255]);
         assert!(clear_selected(&mut layers, &mut h).is_some());
-        let m = &layers.layers[1].mask.as_ref().unwrap().pixels;
+        let m = &layers.layers[1].mask().unwrap().pixels;
         assert_eq!(&m[i..i + 4], &[0, 0, 0, 255]);
     }
 
@@ -494,14 +497,14 @@ mod tests {
         layers.add_mask();
         let mut h = History::default();
         let i = ((3 * 64 + 3) * 4) as usize;
-        layers.layers[0].mask.as_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+        layers.layers[0].mask_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
         assert!(invert_selected(&mut layers, &mut h).is_some());
-        let m = &layers.layers[0].mask.as_ref().unwrap().pixels;
+        let m = &layers.layers[0].mask().unwrap().pixels;
         // El negro paso a blanco y el resto (blanco) a negro; sigue siendo opaca.
         assert_eq!(&m[i..i + 4], &[255, 255, 255, 255]);
         assert_eq!(&m[0..4], &[0, 0, 0, 255]);
         assert!(h.undo(&mut layers).is_some());
-        let m = &layers.layers[0].mask.as_ref().unwrap().pixels;
+        let m = &layers.layers[0].mask().unwrap().pixels;
         assert_eq!(&m[i..i + 4], &[0, 0, 0, 255]);
         assert_eq!(&m[0..4], &[255, 255, 255, 255]);
     }
@@ -519,6 +522,32 @@ mod tests {
         assert!(invert_selected(&mut layers, &mut h).is_some());
         assert_eq!(&layers.layers[0].chans[0].as_ref().unwrap()[i..i + 4], &[55, 55, 55, 255]);
         assert_eq!(px(&layers, 5, 5), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn deshacer_en_una_de_varias_mascaras_no_toca_las_otras() {
+        let mut layers = LayerStack::new(128);
+        layers.add_mask();
+        layers.add_mask(); // la elegida es la segunda (indice 1)
+        let mut h = History::default();
+        let id = layers.layers[0].id;
+        let size = layers.size;
+        let i = ((5 * size + 70) * 4) as usize;
+        h.begin(id, PaintTarget::Mask(1));
+        h.save_tiles(&layers.layers[0].masks[1].pixels, size, (70, 5, 70, 5));
+        layers.layers[0].masks[1].pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+        h.end();
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(&layers.layers[0].masks[1].pixels[i..i + 4], &[255, 255, 255, 255]);
+        // La otra mascara y la capa no se tocaron.
+        assert_eq!(&layers.layers[0].masks[0].pixels[i..i + 4], &[255, 255, 255, 255]);
+        assert_eq!(px(&layers, 70, 5), [0, 0, 0, 0]);
+        assert!(h.redo(&mut layers).is_some());
+        assert_eq!(&layers.layers[0].masks[1].pixels[i..i + 4], &[0, 0, 0, 255]);
+        // Si esa mascara ya no existe, el paso se descarta sin fallar.
+        layers.remove_mask();
+        layers.remove_mask();
+        assert!(h.undo(&mut layers).is_none());
     }
 
     #[test]
