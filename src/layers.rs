@@ -211,6 +211,44 @@ impl PaintLayer {
         }
     }
 
+    /// Los ajustes de la capa tal como estan ahora (ver `LayerSettings`).
+    pub fn settings(&self) -> LayerSettings {
+        LayerSettings {
+            id: self.id,
+            name: self.name.clone(),
+            visible: self.visible,
+            opacity: self.opacity,
+            locked: self.locked,
+            alpha_lock: self.alpha_lock,
+            blend: self.blend,
+            clip_to_below: self.clip_to_below,
+            solid: match self.source {
+                LayerSource::Solid(c) => Some(c),
+                _ => None,
+            },
+            masks: self.masks.iter().map(|m| (m.enabled, m.invert)).collect(),
+        }
+    }
+
+    /// Pone en la capa los ajustes de `s` (el color liso solo si la capa es de color liso; los de las mascaras, por
+    /// posicion y hasta las que tenga).
+    pub fn apply_settings(&mut self, s: &LayerSettings) {
+        self.name = s.name.clone();
+        self.visible = s.visible;
+        self.opacity = s.opacity;
+        self.locked = s.locked;
+        self.alpha_lock = s.alpha_lock;
+        self.blend = s.blend;
+        self.clip_to_below = s.clip_to_below;
+        if let (LayerSource::Solid(_), Some(c)) = (self.source, s.solid) {
+            self.source = LayerSource::Solid(c);
+        }
+        for (m, &(enabled, invert)) in self.masks.iter_mut().zip(&s.masks) {
+            m.enabled = enabled;
+            m.invert = invert;
+        }
+    }
+
     /// Se puede pintar en ella: ni oculta ni bloqueada.
     pub fn paintable(&self) -> bool {
         self.visible && !self.locked
@@ -341,6 +379,220 @@ impl Background {
     }
 }
 
+/// Como esta armada la lista de capas: de abajo hacia arriba, el id de cada una y la carpeta en que va; y el id de la
+/// elegida. Es lo que cambian crear, duplicar, borrar y mover capas (no sus pixeles).
+type LayoutState = (Vec<(u32, Option<u32>)>, u32);
+
+/// Un paso de ESTRUCTURA de la pila (crear, duplicar, borrar y mover capas, meterlas o sacarlas de una carpeta) para el
+/// historial. Guarda como estaba la lista ANTES del cambio; aplicarlo INTERCAMBIA ese estado con el actual, asi el mismo
+/// paso sirve para deshacer y para rehacer (como los trazos en `undo`). Las capas que un estado tiene y el otro no
+/// (borradas, o recien creadas y deshechas) se guardan enteras en `parked`, movidas y no copiadas, con su pintura,
+/// mascaras y canales.
+pub struct LayoutEdit {
+    order: Vec<(u32, Option<u32>)>,
+    selected: u32,
+    parked: Vec<PaintLayer>,
+}
+
+impl LayoutEdit {
+    /// Bytes de pintura que guardan las capas aparcadas (para el limite de memoria del historial).
+    pub fn bytes(&self) -> usize {
+        self.parked
+            .iter()
+            .map(|l| {
+                l.pixels.len()
+                    + l.masks.iter().map(|m| m.pixels.len()).sum::<usize>()
+                    + l.chans.iter().flatten().map(Vec::len).sum::<usize>()
+            })
+            .sum()
+    }
+
+    /// Intercambia la estructura actual de `stack` con la guardada y recompone la textura. false, sin tocar nada, si el
+    /// estado guardado pide una capa que ya no esta ni en la pila ni aparcada aqui (por ejemplo, la borro "Combinar
+    /// hacia abajo", que no se deshace): el historial descarta ese paso.
+    pub fn swap(&mut self, stack: &mut LayerStack) -> bool {
+        let known = |id: u32| {
+            stack.layers.iter().any(|l| l.id == id) || self.parked.iter().any(|l| l.id == id)
+        };
+        if self.order.is_empty() || !self.order.iter().all(|&(id, _)| known(id)) {
+            return false;
+        }
+        let (now_order, now_selected) = stack.layout_state();
+        let mut pool: std::collections::HashMap<u32, PaintLayer> =
+            stack.layers.drain(..).map(|l| (l.id, l)).collect();
+        pool.extend(self.parked.drain(..).map(|l| (l.id, l)));
+        let mut layers = Vec::with_capacity(self.order.len());
+        for &(id, parent) in &self.order {
+            if let Some(mut l) = pool.remove(&id) {
+                l.parent = parent;
+                layers.push(l);
+            }
+        }
+        stack.selected = layers
+            .iter()
+            .position(|l| l.id == self.selected)
+            .unwrap_or(0);
+        stack.layers = layers;
+        // Lo que la pila tenia y el estado guardado no: pasa a ser lo aparcado (para el paso contrario).
+        self.parked = pool.into_values().collect();
+        self.order = now_order;
+        self.selected = now_selected;
+        stack.composite_all();
+        true
+    }
+}
+
+/// Un paso de la pila que se guarda en el historial sin ser un trazo: un cambio de estructura de la lista de capas o
+/// anadir o quitar una mascara. Los recoge `main` con `LayerStack::take_layout_log` y los pasa a `History::push_layout`.
+pub enum StackEdit {
+    Layout(LayoutEdit),
+    Mask(MaskEdit),
+}
+
+impl StackEdit {
+    /// Bytes que guarda (para el limite de memoria del historial).
+    pub fn bytes(&self) -> usize {
+        match self {
+            StackEdit::Layout(l) => l.bytes(),
+            StackEdit::Mask(m) => m.bytes(),
+        }
+    }
+
+    /// Intercambia lo guardado con el estado actual (deshacer y rehacer son lo mismo). false si ya no se puede aplicar.
+    pub fn swap(&mut self, stack: &mut LayerStack) -> bool {
+        match self {
+            StackEdit::Layout(l) => l.swap(stack),
+            StackEdit::Mask(m) => m.swap(stack),
+        }
+    }
+}
+
+/// Anadir o quitar una mascara de una capa, para el historial. `parked` es la mascara que NO esta en la capa ahora
+/// (`Some` = quitada, con su pintura; `None` = ahora esta y deshacer la quita). Aplicarlo intercambia los dos estados, asi
+/// el mismo paso sirve para deshacer y rehacer. Tambien guarda cual mascara estaba elegida y si se pintaba en ella.
+pub struct MaskEdit {
+    layer_id: u32,
+    /// Posicion de la mascara en la lista de mascaras de la capa.
+    index: usize,
+    parked: Option<LayerMask>,
+    mask_sel: usize,
+    editing: bool,
+}
+
+impl MaskEdit {
+    /// Bytes de pintura de la mascara guardada.
+    pub fn bytes(&self) -> usize {
+        self.parked.as_ref().map_or(0, |m| m.pixels.len())
+    }
+
+    /// Intercambia el estado de la mascara. false, sin tocar nada, si la capa ya no existe o la lista de mascaras ya no
+    /// admite el cambio.
+    pub fn swap(&mut self, stack: &mut LayerStack) -> bool {
+        let Some(idx) = stack.index_of(self.layer_id) else {
+            return false;
+        };
+        let layer = &mut stack.layers[idx];
+        let (cur_sel, cur_editing) = (layer.mask_sel, layer.editing_mask);
+        match self.parked.take() {
+            Some(m) => {
+                if self.index > layer.masks.len() || layer.masks.len() >= MAX_MASKS {
+                    self.parked = Some(m);
+                    return false;
+                }
+                layer.masks.insert(self.index, m);
+            }
+            None => {
+                if self.index >= layer.masks.len() {
+                    return false;
+                }
+                self.parked = Some(layer.masks.remove(self.index));
+            }
+        }
+        layer.mask_sel = self.mask_sel.min(layer.masks.len().saturating_sub(1));
+        layer.editing_mask = self.editing && !layer.masks.is_empty();
+        self.mask_sel = cur_sel;
+        self.editing = cur_editing;
+        stack.selected = idx;
+        stack.composite_all();
+        true
+    }
+}
+
+/// Los ajustes de una capa que se cambian desde el panel (todo menos sus pixeles): nombre, ojo, opacidad, candados,
+/// modo de mezcla, recorte, el color de una capa de color liso y, por cada mascara, si esta encendida e invertida.
+#[derive(Clone, PartialEq, Debug)]
+pub struct LayerSettings {
+    pub id: u32,
+    name: String,
+    visible: bool,
+    opacity: u8,
+    locked: bool,
+    alpha_lock: bool,
+    blend: BlendMode,
+    clip_to_below: bool,
+    solid: Option<[u8; 3]>,
+    /// Por mascara: (encendida, invertida).
+    masks: Vec<(bool, bool)>,
+}
+
+/// Un paso de AJUSTES para el historial: guarda como estaban los de las capas que cambiaron. Aplicarlo intercambia esos
+/// ajustes con los actuales, asi el mismo paso sirve para deshacer y rehacer. `main` lo arma comparando los ajustes de
+/// cada cuadro (`settings_diff`).
+pub struct SettingsEdit {
+    items: Vec<LayerSettings>,
+}
+
+impl SettingsEdit {
+    /// Cambio las mismas capas que `other` (sirve para unir en un solo paso un arrastre de deslizador).
+    pub fn same_layers(&self, other: &SettingsEdit) -> bool {
+        self.items.len() == other.items.len()
+            && self
+                .items
+                .iter()
+                .all(|a| other.items.iter().any(|b| b.id == a.id))
+    }
+
+    /// Intercambia los ajustes guardados con los actuales y recompone la textura. false, sin tocar nada, si alguna capa ya
+    /// no existe.
+    pub fn swap(&mut self, stack: &mut LayerStack) -> bool {
+        if self.items.is_empty() || self.items.iter().any(|s| stack.index_of(s.id).is_none()) {
+            return false;
+        }
+        for item in self.items.iter_mut() {
+            let idx = stack.index_of(item.id).unwrap_or(0);
+            let now = stack.layers[idx].settings();
+            stack.layers[idx].apply_settings(item);
+            *item = now;
+        }
+        stack.composite_all();
+        true
+    }
+}
+
+/// Compara los ajustes de `before` y `after` (los de toda la pila, ver `LayerStack::settings_snapshot`) y arma el paso
+/// que guarda como estaban en las capas que cambiaron. `None` si no cambio nada o si la pila no tiene las mismas capas
+/// (eso es un cambio de estructura, que ya registra `LayoutEdit`) o una capa gano o perdio mascaras (`MaskEdit`).
+pub fn settings_diff(before: &[LayerSettings], after: &[LayerSettings]) -> Option<SettingsEdit> {
+    if before.len() != after.len() {
+        return None;
+    }
+    let mut items = Vec::new();
+    for a in after {
+        let b = before.iter().find(|b| b.id == a.id)?;
+        if b.masks.len() != a.masks.len() {
+            return None;
+        }
+        if b != a {
+            items.push(b.clone());
+        }
+    }
+    if items.is_empty() {
+        None
+    } else {
+        Some(SettingsEdit { items })
+    }
+}
+
 pub struct LayerStack {
     pub size: u32,
     /// De abajo hacia arriba.
@@ -362,6 +614,9 @@ pub struct LayerStack {
     pub solo: bool,
     /// Lo que se mostraba (`solo_top`) la ultima vez que se compuso todo: sirve para saber si hay que recomponer.
     solo_seen: Option<u32>,
+    /// Pasos de estructura que hicieron las operaciones de la pila y que aun no estan en el historial. Quien tiene el
+    /// historial de la pieza (`main`) los recoge con `take_layout_log` y los pasa a `History::push_layout`.
+    pending_layout: Vec<StackEdit>,
 }
 
 impl LayerStack {
@@ -379,6 +634,7 @@ impl LayerStack {
             op_requested: None,
             solo: false,
             solo_seen: None,
+            pending_layout: Vec::new(),
         };
         s.composite_all();
         s
@@ -417,13 +673,43 @@ impl LayerStack {
             op_requested: None,
             solo: false,
             solo_seen: None,
+            pending_layout: Vec::new(),
         };
         s.composite_all();
         s
     }
 
+    /// Los ajustes de todas las capas, de abajo hacia arriba (para compararlos con `settings_diff`).
+    pub fn settings_snapshot(&self) -> Vec<LayerSettings> {
+        self.layers.iter().map(PaintLayer::settings).collect()
+    }
+
     pub fn selected_layer(&self) -> &PaintLayer {
         &self.layers[self.selected]
+    }
+
+    /// Como esta armada la lista ahora (ver `LayoutState`).
+    fn layout_state(&self) -> LayoutState {
+        (
+            self.layers.iter().map(|l| (l.id, l.parent)).collect(),
+            self.layers[self.selected].id,
+        )
+    }
+
+    /// Anota un paso de estructura: `before` es como estaba la lista antes del cambio y `parked` las capas que el cambio
+    /// quito de la pila (borrar).
+    fn log_layout(&mut self, before: LayoutState, parked: Vec<PaintLayer>) {
+        self.pending_layout.push(StackEdit::Layout(LayoutEdit {
+            order: before.0,
+            selected: before.1,
+            parked,
+        }));
+    }
+
+    /// Entrega los pasos de estructura hechos desde la ultima vez, del mas viejo al mas nuevo, para que entren al
+    /// historial. Hay que pedirlos antes de pintar o deshacer, para que queden en orden con los trazos.
+    pub fn take_layout_log(&mut self) -> Vec<StackEdit> {
+        std::mem::take(&mut self.pending_layout)
     }
 
     /// Posicion actual de la capa con ese identificador (`None` si ya no existe).
@@ -437,12 +723,14 @@ impl LayerStack {
         if self.layers.len() >= MAX_LAYERS {
             return false;
         }
+        let before = self.layout_state();
         let mut layer = PaintLayer::new(self.next_id, self.next_name.to_string(), self.size);
         layer.parent = self.layers[self.selected].parent;
         self.next_id += 1;
         self.next_name += 1;
         self.layers.insert(self.selected + 1, layer);
         self.selected += 1;
+        self.log_layout(before, Vec::new());
         true
     }
 
@@ -475,6 +763,7 @@ impl LayerStack {
         if self.add_folder_blocker().is_some() {
             return false;
         }
+        let before = self.layout_state();
         let mut folder = PaintLayer::new(
             self.next_id,
             format!("Carpeta {}", self.next_name),
@@ -488,6 +777,7 @@ impl LayerStack {
         self.layers[sel].parent = Some(folder_id);
         self.layers.insert(sel + 1, folder);
         self.selected = sel + 1;
+        self.log_layout(before, Vec::new());
         true
     }
 
@@ -519,7 +809,9 @@ impl LayerStack {
         let Some(f) = self.folder_above() else {
             return false;
         };
+        let before = self.layout_state();
         self.layers[self.selected].parent = Some(self.layers[f].id);
+        self.log_layout(before, Vec::new());
         true
     }
 
@@ -534,9 +826,11 @@ impl LayerStack {
         let Some(folder_id) = self.layers[sel].parent else {
             return false;
         };
+        let before = self.layout_state();
         let Some(f) = self.index_of(folder_id) else {
             // No deberia pasar (la carpeta ya no existe): la capa queda suelta donde esta.
             self.layers[sel].parent = None;
+            self.log_layout(before, Vec::new());
             return true;
         };
         let mut layer = self.layers.remove(sel);
@@ -544,6 +838,7 @@ impl LayerStack {
         // Al quitarla, la carpeta paso de `f` a `f - 1`: la capa se pone justo encima.
         self.layers.insert(f, layer);
         self.selected = f;
+        self.log_layout(before, Vec::new());
         true
     }
 
@@ -565,9 +860,18 @@ impl LayerStack {
         if layer.masks.len() >= MAX_MASKS {
             return false;
         }
+        let (mask_sel, editing) = (layer.mask_sel, layer.editing_mask);
         layer.masks.push(LayerMask::new(size));
         layer.mask_sel = layer.masks.len() - 1;
         layer.editing_mask = true;
+        let edit = MaskEdit {
+            layer_id: layer.id,
+            index: layer.masks.len() - 1,
+            parked: None,
+            mask_sel,
+            editing,
+        };
+        self.pending_layout.push(StackEdit::Mask(edit));
         true
     }
 
@@ -575,12 +879,21 @@ impl LayerStack {
     /// pintar en la capa. false si no tenia mascaras.
     pub fn remove_mask(&mut self) -> bool {
         let layer = &mut self.layers[self.selected];
+        let (mask_sel, editing) = (layer.mask_sel, layer.editing_mask);
         layer.editing_mask = false;
         if layer.mask_sel >= layer.masks.len() {
             return false;
         }
-        layer.masks.remove(layer.mask_sel);
+        let removed = layer.masks.remove(layer.mask_sel);
         layer.mask_sel = layer.mask_sel.min(layer.masks.len().saturating_sub(1));
+        let edit = MaskEdit {
+            layer_id: layer.id,
+            index: mask_sel,
+            parked: Some(removed),
+            mask_sel,
+            editing,
+        };
+        self.pending_layout.push(StackEdit::Mask(edit));
         true
     }
 
@@ -682,15 +995,17 @@ impl LayerStack {
 
     /// Sube la capa elegida un puesto (una carpeta sube con todas sus capas de dentro; una capa suelta salta por encima
     /// de una carpeta entera). La capa sigue elegida y no cambia de id, asi que el historial sigue valiendo. false si
-    /// `move_up_blocker` dice que no se puede. Quien llama debe recomponer la textura.
+    /// `move_up_blocker` dice que no se puede. Quien llama debe recomponer la textura. Se puede deshacer.
     pub fn move_up(&mut self) -> bool {
         if self.move_up_blocker().is_some() {
             return false;
         }
+        let before = self.layout_state();
         let sel = self.selected;
         if self.layers[sel].parent.is_some() {
             self.layers.swap(sel, sel + 1);
             self.selected = sel + 1;
+            self.log_layout(before, Vec::new());
             return true;
         }
         let (start, end) = self.unit_range(sel);
@@ -698,6 +1013,7 @@ impl LayerStack {
         // La de arriba (end + 1 ..= next_end) pasa a ir debajo de la nuestra.
         self.layers[start..=next_end].rotate_left(end - start + 1);
         self.selected = sel + (next_end - end);
+        self.log_layout(before, Vec::new());
         true
     }
 
@@ -726,10 +1042,12 @@ impl LayerStack {
         if self.move_down_blocker().is_some() {
             return false;
         }
+        let before = self.layout_state();
         let sel = self.selected;
         if self.layers[sel].parent.is_some() {
             self.layers.swap(sel, sel - 1);
             self.selected = sel - 1;
+            self.log_layout(before, Vec::new());
             return true;
         }
         let (start, end) = self.unit_range(sel);
@@ -737,6 +1055,7 @@ impl LayerStack {
         // La de abajo (prev_start ..= start - 1) pasa a ir encima de la nuestra.
         self.layers[prev_start..=end].rotate_right(end - start + 1);
         self.selected = sel - (start - prev_start);
+        self.log_layout(before, Vec::new());
         true
     }
 
@@ -782,11 +1101,12 @@ impl LayerStack {
 
     /// Duplica la capa elegida (pintura, mascara, canales y ajustes) justo encima de ella y elige la copia, que lleva un
     /// identificador y un nombre nuevos (y queda en la misma carpeta, si estaba en una). Falla en `MAX_LAYERS` y con las
-    /// carpetas (`duplicate_blocker`). Quien llama debe recomponer la textura.
+    /// carpetas (`duplicate_blocker`). Quien llama debe recomponer la textura. Se puede deshacer.
     pub fn duplicate_layer(&mut self) -> bool {
         if self.duplicate_blocker().is_some() {
             return false;
         }
+        let before = self.layout_state();
         let mut copy = self.layers[self.selected].clone();
         copy.id = self.next_id;
         copy.name = self.next_name.to_string();
@@ -794,12 +1114,13 @@ impl LayerStack {
         self.next_name += 1;
         self.layers.insert(self.selected + 1, copy);
         self.selected += 1;
+        self.log_layout(before, Vec::new());
         true
     }
 
     /// Borra la capa elegida y elige la de abajo (o la de arriba si era la primera). Una carpeta se borra con todas las
-    /// capas que tiene dentro. Siempre queda al menos una capa: false si borrar dejaria la lista vacia. No se puede
-    /// deshacer; los pasos del historial de lo borrado se descartan solos.
+    /// capas que tiene dentro. Siempre queda al menos una capa: false si borrar dejaria la lista vacia. Se puede
+    /// deshacer: las capas borradas quedan guardadas enteras en el paso del historial.
     pub fn remove_layer(&mut self) -> bool {
         let sel = self.selected;
         let first = if self.layers[sel].is_group() {
@@ -810,8 +1131,10 @@ impl LayerStack {
         if self.layers.len() <= sel - first + 1 {
             return false;
         }
-        self.layers.drain(first..=sel);
+        let before = self.layout_state();
+        let removed: Vec<PaintLayer> = self.layers.drain(first..=sel).collect();
         self.selected = first.saturating_sub(1).min(self.layers.len() - 1);
+        self.log_layout(before, removed);
         true
     }
 

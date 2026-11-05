@@ -115,6 +115,9 @@ fn save_in(
         meta.push_str(&format!("modelo={}\n", clean(&full.display().to_string())));
     }
     meta.push_str(&format!("pieza_activa={active}\n"));
+    // Lado de las texturas del proyecto (los guardados antes de poder elegirlo no traen la linea: se abren como 1024).
+    let side = stacks.first().map_or(crate::paint::TEX_SIZE, |s| s.size);
+    meta.push_str(&format!("tamano={side}\n"));
     for (pi, stack) in stacks.iter().enumerate() {
         meta.push_str(&format!(
             "pieza\t{pi}\tfondo={:?}\tseleccionada={}\tcapas={}\n",
@@ -260,6 +263,8 @@ pub struct Loaded {
     pub model: Option<PathBuf>,
     /// Pieza que estaba activa al guardar.
     pub active: usize,
+    /// Lado (en pixeles) de las texturas del proyecto.
+    pub size: u32,
     /// Capas de cada pieza, en el mismo orden en que se guardaron.
     pub stacks: Vec<LayerStack>,
 }
@@ -294,8 +299,9 @@ fn read_layer_png(file: &Path, size: u32) -> Result<Vec<u8>, String> {
     Ok(img.into_raw())
 }
 
-/// Lee el proyecto `id` (lo que escribio `save`). `size` es el lado de las texturas de la app: una capa guardada con
-/// otro tamano no se puede usar y da error.
+/// Lee el proyecto `id` (lo que escribio `save`). El lado de las texturas lo dice el proyecto (`tamano=`); `size` es el
+/// que se usa si no lo dice (los guardados antes de poder elegirlo). Una capa guardada con otro lado no se puede usar y
+/// da error.
 pub fn load(id: &str, size: u32) -> Result<Loaded, String> {
     load_in(&projects_dir(), id, size)
 }
@@ -305,6 +311,13 @@ fn load_in(root: &Path, id: &str, size: u32) -> Result<Loaded, String> {
     let dir = root.join(id);
     let text = fs::read_to_string(dir.join("proyecto.txt"))
         .map_err(|e| format!("No se pudo leer el proyecto {id}: {e}"))?;
+    // El lado que dice el proyecto manda sobre el de `size` (solo se acepta un valor razonable).
+    let size = text
+        .lines()
+        .find_map(|l| l.strip_prefix("tamano="))
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|s| (8..=8192).contains(s))
+        .unwrap_or(size);
 
     let mut name = String::from("Sin nombre");
     let mut model = None;
@@ -419,6 +432,7 @@ fn load_in(root: &Path, id: &str, size: u32) -> Result<Loaded, String> {
         name,
         model,
         active,
+        size,
         stacks,
     })
 }
@@ -614,6 +628,40 @@ mod tests {
         // Al abrir, la elegida es la primera y se pinta la capa (no se guarda la edicion).
         assert_eq!((t.layers[0].mask_sel, t.layers[0].editing_mask), (0, false));
         assert_eq!(t.composite, antes);
+    }
+
+    #[test]
+    fn el_proyecto_recuerda_su_tamano_de_textura() {
+        let root = carpeta_de_prueba("tamano");
+        let mut s = LayerStack::new(32);
+        s.layers[0].pixels[0..4].copy_from_slice(&[1, 2, 3, 255]);
+        save_in(&root, "z1", "Chico", None, &[&s], 0).unwrap();
+        // Se abre con otro lado "por defecto": manda el que dice el proyecto.
+        let abierto = load_in(&root, "z1", 1024);
+        let _ = fs::remove_dir_all(&root);
+        let c = abierto.unwrap();
+        assert_eq!(c.size, 32);
+        assert_eq!(c.stacks[0].size, 32);
+        assert_eq!(c.stacks[0].layers[0].pixels[0..4], [1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn un_proyecto_sin_tamano_usa_el_de_por_defecto() {
+        let root = carpeta_de_prueba("sin_tamano");
+        let dir = root.join("v2");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("proyecto.txt"),
+            "nombre=Viejo\npieza_activa=0\n\
+             pieza\t0\tfondo=White\tseleccionada=0\tcapas=1\n\
+             capa\t0\t0\tid=0\tnombre=1\tvisible=true\topacidad=80\tbloqueada=false\tbloqueo_alfa=false\tmezcla=NORMAL\trecorte=false\tpixeles=false\n",
+        )
+        .unwrap();
+        let abierto = load_in(&root, "v2", 48);
+        let _ = fs::remove_dir_all(&root);
+        let c = abierto.unwrap();
+        assert_eq!(c.size, 48);
+        assert_eq!(c.stacks[0].size, 48);
     }
 
     #[test]

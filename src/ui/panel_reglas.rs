@@ -121,6 +121,38 @@ pub(super) fn rules_panel(ctx: &egui::Context, options: &mut OptionsPanel, butto
                             options.rule = kind;
                         }
                     }
+
+                    // Simetria: cada letra enciende el espejo del trazo en ese plano del modelo (el modelo esta
+                    // centrado en el origen). Con dos o tres encendidos se pinta en todas las combinaciones.
+                    ui.add_space(8.0);
+                    let (sym_title, _) = ui.allocate_exact_size(vec2(RP_W, RP_TITLE_H), Sense::hover());
+                    p.text(
+                        egui::pos2(sym_title.left() + 6.0, sym_title.center().y),
+                        Align2::LEFT_CENTER,
+                        "Simetría",
+                        FontId::proportional(15.0),
+                        Color32::WHITE,
+                    );
+                    let (sym_bar, _) = ui.allocate_exact_size(vec2(RP_W, RP_BAR_H), Sense::hover());
+                    p.rect_filled(sym_bar, CornerRadius::same(8), Color32::BLACK);
+                    for (i, name) in ["X", "Y", "Z"].iter().enumerate() {
+                        let cell = Rect::from_min_size(
+                            egui::pos2(sym_bar.left() + 6.0 + i as f32 * RP_CELL_W, sym_bar.top()),
+                            vec2(RP_CELL_W, RP_BAR_H),
+                        );
+                        let r = ui.interact(cell, ui_id.with(("simetria", i)), Sense::click());
+                        let on = options.symmetry[i];
+                        p.text(
+                            cell.center(),
+                            Align2::CENTER_CENTER,
+                            *name,
+                            FontId::proportional(20.0),
+                            color_for(on, r.hovered()),
+                        );
+                        if r.on_hover_text(format!("Espejo en {name}")).clicked() {
+                            options.symmetry[i] = !on;
+                        }
+                    }
                 });
         });
     // Un clic fuera del panel (y fuera del boton, que ya lo abre/cierra) lo cierra.
@@ -510,6 +542,11 @@ impl UiLayer {
                 .map(|q| (q.x * ppp, q.y * ppp))
         };
         snapped_steps(snap, prev, cur)
+    }
+
+    /// Planos de simetria encendidos en el panel de reglas: espejo del trazo en X, Y y Z.
+    pub fn symmetry(&self) -> [bool; 3] {
+        self.options.symmetry
     }
 
     /// Soltar el boton: el trazo deja de estar pegado a la regla.

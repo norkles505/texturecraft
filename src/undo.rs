@@ -3,11 +3,14 @@
 //! (copia al escribir). Un registro pertenece a UNA sola capa. Aplicar un registro INTERCAMBIA los pixeles actuales
 //! con los guardados, asi que el mismo registro sirve para rehacer.
 //!
-//! Por ahora trazos y "limpiar capa" (mover capas e invertir vendran con esas operaciones).
+//! Por ahora trazos, "limpiar capa", "invertir colores", los cambios de estructura de la pila (crear, duplicar, borrar y
+//! mover capas, meterlas o sacarlas de una carpeta; ver `layers::LayoutEdit`), anadir y quitar mascaras
+//! (`layers::MaskEdit`) y los ajustes de las capas (opacidad, modo de mezcla, nombre, ojo, candados, recorte, color liso,
+//! mascara encendida o invertida; ver `layers::SettingsEdit`). Combinar hacia abajo todavia no se deshace.
 
 use std::collections::HashSet;
 
-use crate::layers::{LayerStack, PaintTarget};
+use crate::layers::{LayerStack, PaintTarget, SettingsEdit, StackEdit};
 use crate::paint::Rect;
 
 pub const TILE: u32 = 64;
@@ -35,14 +38,53 @@ impl StrokeEdit {
     }
 }
 
+/// Un paso del historial: un trazo (o una operacion sobre toda la hoja) o un cambio de estructura de la pila de capas.
+/// Los dos tipos van en la misma lista, en el orden en que se hicieron.
+enum Step {
+    Stroke(StrokeEdit),
+    /// Cambio de estructura de la lista de capas o mascara anadida o quitada.
+    Layout(StackEdit),
+    /// Cambio de los ajustes de una o mas capas.
+    Settings(SettingsEdit),
+}
+
+impl Step {
+    fn bytes(&self) -> usize {
+        match self {
+            Step::Stroke(s) => s.bytes(),
+            Step::Layout(l) => l.bytes(),
+            Step::Settings(_) => 0,
+        }
+    }
+
+    /// Intercambia lo guardado con el estado actual (deshacer y rehacer son lo mismo). Devuelve la zona que cambio, o
+    /// `None` si el paso ya no se puede aplicar. Un cambio de estructura recompone la textura entera.
+    fn apply_to(&mut self, layers: &mut LayerStack) -> Option<Rect> {
+        match self {
+            Step::Stroke(edit) => apply(edit, layers),
+            Step::Layout(edit) => edit.swap(layers).then(|| {
+                let last = layers.size - 1;
+                (0, 0, last, last)
+            }),
+            Step::Settings(edit) => edit.swap(layers).then(|| {
+                let last = layers.size - 1;
+                (0, 0, last, last)
+            }),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct History {
-    undo: Vec<StrokeEdit>,
-    redo: Vec<StrokeEdit>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     /// Registro del trazo en curso.
     pending: Option<StrokeEdit>,
     /// Baldosas ya guardadas en el trazo en curso.
     saved: HashSet<(u32, u32)>,
+    /// Hay un arrastre (de un deslizador, por ejemplo) en curso que esta cambiando ajustes: sus cambios se unen en un solo
+    /// paso (ver `record_settings`).
+    settings_open: bool,
 }
 
 /// Rectangulo de texeles de una baldosa (recortado al borde de la textura).
@@ -136,7 +178,7 @@ impl History {
     pub fn end(&mut self) {
         if let Some(edit) = self.pending.take() {
             if !edit.tiles.is_empty() {
-                self.undo.push(edit);
+                self.undo.push(Step::Stroke(edit));
                 self.redo.clear();
                 self.trim();
             }
@@ -144,10 +186,45 @@ impl History {
         self.saved.clear();
     }
 
+    /// Un cambio de estructura de la pila de capas (los recoge `main` con `LayerStack::take_layout_log`) entra al
+    /// historial y se vacia la pila de rehacer. Hay que meterlos ANTES de empezar un trazo o de deshacer, para que
+    /// queden en el orden en que ocurrieron.
+    pub fn push_layout(&mut self, edit: StackEdit) {
+        self.undo.push(Step::Layout(edit));
+        self.redo.clear();
+        self.settings_open = false;
+        self.trim();
+    }
+
+    /// Un cambio de ajustes de capas (`layers::settings_diff`, o `None` si en este cuadro no cambio nada) entra al
+    /// historial. `drag` dice que el boton del raton sigue apretado: los cambios seguidos de un mismo arrastre sobre las
+    /// mismas capas (un deslizador de opacidad, por ejemplo) se unen en un solo paso en vez de uno por cuadro. El paso
+    /// guarda como estaba todo al empezar, asi que unir es simplemente no anadir otro.
+    pub fn record_settings(&mut self, edit: Option<SettingsEdit>, drag: bool) {
+        match edit {
+            Some(e) => {
+                let merge = drag
+                    && self.settings_open
+                    && matches!(self.undo.last(), Some(Step::Settings(last)) if last.same_layers(&e));
+                if !merge {
+                    self.undo.push(Step::Settings(e));
+                    self.redo.clear();
+                    self.trim();
+                }
+                self.settings_open = drag;
+            }
+            None => {
+                if !drag {
+                    self.settings_open = false;
+                }
+            }
+        }
+    }
+
     fn trim(&mut self) {
         while !self.undo.is_empty()
             && (self.undo.len() > MAX_STEPS
-                || self.undo.iter().map(StrokeEdit::bytes).sum::<usize>() > MAX_BYTES)
+                || self.undo.iter().map(Step::bytes).sum::<usize>() > MAX_BYTES)
         {
             self.undo.remove(0);
         }
@@ -155,10 +232,11 @@ impl History {
 
     /// Deshace el ultimo paso aplicable. Devuelve el rectangulo cambiado (hay que recomponerlo y subirlo).
     pub fn undo(&mut self, layers: &mut LayerStack) -> Option<Rect> {
-        while let Some(mut edit) = self.undo.pop() {
+        self.settings_open = false;
+        while let Some(mut step) = self.undo.pop() {
             // Un paso cuya capa ya no existe se descarta y se prueba con el anterior.
-            if let Some(r) = apply(&mut edit, layers) {
-                self.redo.push(edit);
+            if let Some(r) = step.apply_to(layers) {
+                self.redo.push(step);
                 return Some(r);
             }
         }
@@ -166,9 +244,10 @@ impl History {
     }
 
     pub fn redo(&mut self, layers: &mut LayerStack) -> Option<Rect> {
-        while let Some(mut edit) = self.redo.pop() {
-            if let Some(r) = apply(&mut edit, layers) {
-                self.undo.push(edit);
+        self.settings_open = false;
+        while let Some(mut step) = self.redo.pop() {
+            if let Some(r) = step.apply_to(layers) {
+                self.undo.push(step);
                 return Some(r);
             }
         }
@@ -548,6 +627,395 @@ mod tests {
         layers.remove_mask();
         layers.remove_mask();
         assert!(h.undo(&mut layers).is_none());
+    }
+
+    /// Pasa al historial los cambios de estructura que hizo la pila (lo que en la app hace `main`).
+    fn registrar(h: &mut History, layers: &mut LayerStack) {
+        for e in layers.take_layout_log() {
+            h.push_layout(e);
+        }
+    }
+
+    fn ids(layers: &LayerStack) -> Vec<u32> {
+        layers.layers.iter().map(|l| l.id).collect()
+    }
+
+    #[test]
+    fn crear_una_capa_se_deshace_y_se_rehace_con_su_pintura() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        assert!(layers.add_layer());
+        registrar(&mut h, &mut layers);
+        let nueva = layers.layers[1].id;
+        layers.layers[1].pixels[0..4].copy_from_slice(&[9, 8, 7, 255]);
+        assert_eq!(layers.layers.len(), 2);
+        assert_eq!(h.undo(&mut layers), Some((0, 0, 63, 63)));
+        assert_eq!(layers.layers.len(), 1);
+        assert_eq!(layers.selected, 0);
+        assert!(h.redo(&mut layers).is_some());
+        assert_eq!(layers.layers.len(), 2);
+        assert_eq!(layers.layers[1].id, nueva);
+        assert_eq!(layers.selected, 1);
+        // La pintura de la capa no se perdio al deshacer y rehacer.
+        assert_eq!(&layers.layers[1].pixels[0..4], &[9, 8, 7, 255]);
+    }
+
+    #[test]
+    fn borrar_una_capa_se_deshace_y_trae_su_pintura() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        layers.add_layer();
+        registrar(&mut h, &mut layers);
+        let id1 = layers.layers[1].id;
+        // Un trazo en la capa 1 (pasa a ser un paso anterior al borrado).
+        let i = ((5 * 64 + 5) * 4) as usize;
+        h.begin(id1, PaintTarget::Layer);
+        h.save_tiles(&layers.layers[1].pixels, 64, (5, 5, 5, 5));
+        layers.layers[1].pixels[i..i + 4].copy_from_slice(&[1, 2, 3, 255]);
+        h.end();
+        assert!(layers.remove_layer());
+        registrar(&mut h, &mut layers);
+        assert_eq!(layers.layers.len(), 1);
+        // Deshacer el borrado: vuelve la capa con su pintura y vuelve a estar elegida.
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(ids(&layers).len(), 2);
+        assert_eq!(layers.layers[1].id, id1);
+        assert_eq!(layers.selected, 1);
+        assert_eq!(&layers.layers[1].pixels[i..i + 4], &[1, 2, 3, 255]);
+        // Deshacer otra vez: el trazo, que ahora si encuentra su capa.
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(&layers.layers[1].pixels[i..i + 4], &[0, 0, 0, 0]);
+        // Rehacer dos veces y la capa vuelve a estar borrada.
+        assert!(h.redo(&mut layers).is_some());
+        assert!(h.redo(&mut layers).is_some());
+        assert_eq!(layers.layers.len(), 1);
+    }
+
+    #[test]
+    fn borrar_una_carpeta_trae_de_vuelta_todas_sus_capas() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        layers.add_layer();
+        assert!(layers.add_folder()); // la capa 2 queda dentro de una carpeta nueva
+        registrar(&mut h, &mut layers);
+        let antes = ids(&layers);
+        let parents: Vec<_> = layers.layers.iter().map(|l| l.parent).collect();
+        assert!(layers.layers[layers.selected].is_group());
+        assert!(layers.remove_layer());
+        registrar(&mut h, &mut layers);
+        assert_eq!(layers.layers.len(), 1);
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(ids(&layers), antes);
+        assert_eq!(
+            layers.layers.iter().map(|l| l.parent).collect::<Vec<_>>(),
+            parents
+        );
+    }
+
+    #[test]
+    fn mover_una_capa_se_deshace_y_se_rehace() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        layers.add_layer();
+        layers.add_layer();
+        registrar(&mut h, &mut layers);
+        let [a, b, c] = [layers.layers[0].id, layers.layers[1].id, layers.layers[2].id];
+        layers.selected = 0;
+        assert!(layers.move_up());
+        registrar(&mut h, &mut layers);
+        assert_eq!(ids(&layers), vec![b, a, c]);
+        assert_eq!(layers.selected, 1);
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(ids(&layers), vec![a, b, c]);
+        // La capa que se movio vuelve a ser la elegida.
+        assert_eq!(layers.selected, 0);
+        assert!(h.redo(&mut layers).is_some());
+        assert_eq!(ids(&layers), vec![b, a, c]);
+        assert_eq!(layers.selected, 1);
+    }
+
+    #[test]
+    fn meter_y_sacar_de_una_carpeta_se_deshacen() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        layers.add_layer();
+        assert!(layers.add_folder()); // la capa de arriba queda dentro de una carpeta
+        layers.selected = 0; // la capa 0 va suelta, debajo de la carpeta
+        registrar(&mut h, &mut layers);
+        let dentro = layers.layers[1].id;
+        assert!(layers.layers[1].parent.is_some());
+        // Sacar la de dentro de su carpeta.
+        layers.selected = 1;
+        assert!(layers.leave_folder());
+        registrar(&mut h, &mut layers);
+        let id_sacada = layers.layers[layers.selected].id;
+        assert_eq!(id_sacada, dentro);
+        assert!(layers.layers[layers.selected].parent.is_none());
+        assert!(h.undo(&mut layers).is_some());
+        let i = layers.index_of(dentro).unwrap();
+        assert!(layers.layers[i].parent.is_some());
+        assert_eq!(layers.selected, i);
+        assert!(h.redo(&mut layers).is_some());
+        assert!(layers.layers[layers.index_of(dentro).unwrap()].parent.is_none());
+    }
+
+    #[test]
+    fn duplicar_una_capa_se_deshace_y_se_rehace() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        layers.layers[0].pixels[0..4].copy_from_slice(&[4, 5, 6, 255]);
+        assert!(layers.duplicate_layer());
+        registrar(&mut h, &mut layers);
+        let copia = layers.layers[1].id;
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(layers.layers.len(), 1);
+        assert!(h.redo(&mut layers).is_some());
+        assert_eq!(layers.layers[1].id, copia);
+        assert_eq!(&layers.layers[1].pixels[0..4], &[4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn los_pasos_de_estructura_y_de_trazo_se_deshacen_en_su_orden() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        stroke(&mut h, &mut layers, 3, 3, [255, 0, 0, 255]);
+        layers.add_layer();
+        registrar(&mut h, &mut layers);
+        // Dos pasos atras: sin capa nueva y sin trazo.
+        assert!(h.undo(&mut layers).is_some());
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(layers.layers.len(), 1);
+        assert_eq!(px(&layers, 3, 3), [0, 0, 0, 0]);
+        assert!(h.undo(&mut layers).is_none());
+        // Y los dos de vuelta.
+        assert!(h.redo(&mut layers).is_some());
+        assert!(h.redo(&mut layers).is_some());
+        assert_eq!(layers.layers.len(), 2);
+        assert_eq!(px(&layers, 3, 3), [255, 0, 0, 255]);
+        // Un paso de estructura nuevo vacia el rehacer.
+        h.undo(&mut layers);
+        layers.add_layer();
+        registrar(&mut h, &mut layers);
+        assert!(h.redo(&mut layers).is_none());
+    }
+
+    #[test]
+    fn un_paso_que_pide_una_capa_que_ya_no_existe_se_descarta_sin_fallar() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        layers.add_layer();
+        layers.add_layer();
+        registrar(&mut h, &mut layers);
+        // "Combinar hacia abajo" no se deshace: la de arriba desaparece y la de abajo cambia de id.
+        assert!(layers.merge_down());
+        assert_eq!(layers.layers.len(), 2);
+        // El paso de la segunda capa pide una que ya no existe y se salta; el de la primera si se puede.
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(layers.layers.len(), 1);
+        assert_eq!(layers.layers[0].id, 0);
+        assert!(h.undo(&mut layers).is_none());
+    }
+
+    /// Lo que hace `main` en cada cuadro: compara los ajustes con los del cuadro anterior (`seen`), registra el cambio y
+    /// deja los de ahora como los vistos.
+    fn cuadro(
+        h: &mut History,
+        layers: &LayerStack,
+        seen: &mut Vec<crate::layers::LayerSettings>,
+        drag: bool,
+    ) {
+        let now = layers.settings_snapshot();
+        h.record_settings(crate::layers::settings_diff(seen, &now), drag);
+        *seen = now;
+    }
+
+    #[test]
+    fn los_ajustes_de_una_capa_se_deshacen_y_se_rehacen() {
+        use crate::blend::BlendMode;
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        let mut seen = layers.settings_snapshot();
+        let l = &mut layers.layers[0];
+        l.opacity = 40;
+        l.blend = BlendMode::Multiply;
+        l.name = "piel".to_string();
+        l.visible = false;
+        l.locked = true;
+        l.alpha_lock = true;
+        l.clip_to_below = true;
+        cuadro(&mut h, &layers, &mut seen, false);
+        assert_eq!(h.undo(&mut layers), Some((0, 0, 63, 63)));
+        let l = &layers.layers[0];
+        assert_eq!((l.opacity, l.blend, l.name.as_str()), (100, BlendMode::Normal, "1"));
+        assert!(l.visible && !l.locked && !l.alpha_lock && !l.clip_to_below);
+        assert!(h.redo(&mut layers).is_some());
+        let l = &layers.layers[0];
+        assert_eq!((l.opacity, l.blend, l.name.as_str()), (40, BlendMode::Multiply, "piel"));
+        assert!(!l.visible && l.locked && l.alpha_lock && l.clip_to_below);
+    }
+
+    #[test]
+    fn un_arrastre_de_deslizador_es_un_solo_paso() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        let mut seen = layers.settings_snapshot();
+        // Primer arrastre: 100 -> 90 -> 80 -> 70 con el boton apretado, y al soltar un cuadro sin cambios.
+        for v in [90, 80, 70] {
+            layers.layers[0].opacity = v;
+            cuadro(&mut h, &layers, &mut seen, true);
+        }
+        cuadro(&mut h, &layers, &mut seen, false);
+        // Segundo arrastre: 70 -> 50.
+        for v in [60, 50] {
+            layers.layers[0].opacity = v;
+            cuadro(&mut h, &layers, &mut seen, true);
+        }
+        cuadro(&mut h, &layers, &mut seen, false);
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(layers.layers[0].opacity, 70);
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(layers.layers[0].opacity, 100);
+        assert!(h.undo(&mut layers).is_none());
+        assert!(h.redo(&mut layers).is_some());
+        assert_eq!(layers.layers[0].opacity, 70);
+        assert!(h.redo(&mut layers).is_some());
+        assert_eq!(layers.layers[0].opacity, 50);
+    }
+
+    #[test]
+    fn dos_clics_seguidos_son_dos_pasos() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        let mut seen = layers.settings_snapshot();
+        layers.layers[0].visible = false;
+        cuadro(&mut h, &layers, &mut seen, false);
+        layers.layers[0].locked = true;
+        cuadro(&mut h, &layers, &mut seen, false);
+        assert!(h.undo(&mut layers).is_some());
+        assert!(!layers.layers[0].locked && !layers.layers[0].visible);
+        assert!(h.undo(&mut layers).is_some());
+        assert!(layers.layers[0].visible);
+        assert!(h.undo(&mut layers).is_none());
+    }
+
+    #[test]
+    fn un_ajuste_nuevo_vacia_el_rehacer() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        let mut seen = layers.settings_snapshot();
+        layers.layers[0].opacity = 30;
+        cuadro(&mut h, &layers, &mut seen, false);
+        assert!(h.undo(&mut layers).is_some());
+        seen = layers.settings_snapshot();
+        layers.layers[0].locked = true;
+        cuadro(&mut h, &layers, &mut seen, false);
+        assert!(h.redo(&mut layers).is_none());
+        assert_eq!(layers.layers[0].opacity, 100);
+    }
+
+    #[test]
+    fn el_color_de_una_capa_lisa_y_el_estado_de_su_mascara_se_deshacen() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        assert!(layers.add_solid_layer([10, 20, 30]));
+        let i = layers.selected;
+        let mut seen = layers.settings_snapshot();
+        assert!(layers.set_solid_color([200, 100, 50]));
+        assert!(layers.toggle_mask_enabled());
+        assert!(layers.invert_mask());
+        cuadro(&mut h, &layers, &mut seen, false);
+        assert!(h.undo(&mut layers).is_some());
+        let l = &layers.layers[i];
+        assert_eq!(l.source, crate::layers::LayerSource::Solid([10, 20, 30]));
+        let m = l.mask().unwrap();
+        assert!(m.enabled && !m.invert);
+        assert!(h.redo(&mut layers).is_some());
+        let l = &layers.layers[i];
+        assert_eq!(l.source, crate::layers::LayerSource::Solid([200, 100, 50]));
+        let m = l.mask().unwrap();
+        assert!(!m.enabled && m.invert);
+    }
+
+    #[test]
+    fn si_cambian_las_capas_o_las_mascaras_no_se_registra_un_paso_de_ajustes() {
+        let mut layers = LayerStack::new(64);
+        let antes = layers.settings_snapshot();
+        layers.add_layer();
+        assert!(crate::layers::settings_diff(&antes, &layers.settings_snapshot()).is_none());
+        let antes = layers.settings_snapshot();
+        layers.add_mask();
+        assert!(crate::layers::settings_diff(&antes, &layers.settings_snapshot()).is_none());
+    }
+
+    #[test]
+    fn un_paso_de_ajustes_de_una_capa_borrada_se_descarta_sin_fallar() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        layers.add_layer();
+        registrar(&mut h, &mut layers);
+        let mut seen = layers.settings_snapshot();
+        layers.layers[1].opacity = 10;
+        cuadro(&mut h, &layers, &mut seen, false);
+        // "Combinar hacia abajo" quita la capa 1 y no se deshace: el paso de ajustes ya no tiene capa.
+        assert!(layers.merge_down());
+        // El paso de ajustes pide una capa que ya no existe: se salta. Lo que importa es que no falle ni toque la capa 0.
+        let antes = layers.layers[0].opacity;
+        let _ = h.undo(&mut layers);
+        let _ = h.undo(&mut layers);
+        assert_eq!(layers.layers[0].opacity, antes);
+        assert!(h.undo(&mut layers).is_none());
+    }
+
+    #[test]
+    fn anadir_y_quitar_una_mascara_se_deshace_con_su_pintura() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        assert!(layers.add_mask());
+        registrar(&mut h, &mut layers);
+        let i = ((3 * 64 + 3) * 4) as usize;
+        layers.layers[0].mask_mut().unwrap().pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+        // Deshacer: la mascara se va y se vuelve a pintar la capa.
+        assert_eq!(h.undo(&mut layers), Some((0, 0, 63, 63)));
+        assert!(layers.layers[0].masks.is_empty());
+        assert!(!layers.layers[0].editing_mask);
+        // Rehacer: vuelve la misma mascara, con lo que se le pinto, y se pinta en ella.
+        assert!(h.redo(&mut layers).is_some());
+        assert_eq!(layers.layers[0].masks.len(), 1);
+        assert_eq!(&layers.layers[0].mask().unwrap().pixels[i..i + 4], &[0, 0, 0, 255]);
+        assert!(layers.layers[0].editing_mask);
+        // Quitarla tambien se deshace y trae su pintura.
+        assert!(layers.remove_mask());
+        registrar(&mut h, &mut layers);
+        assert!(layers.layers[0].masks.is_empty());
+        assert!(h.undo(&mut layers).is_some());
+        assert_eq!(layers.layers[0].masks.len(), 1);
+        assert_eq!(&layers.layers[0].mask().unwrap().pixels[i..i + 4], &[0, 0, 0, 255]);
+        assert!(layers.layers[0].editing_mask);
+        assert!(h.redo(&mut layers).is_some());
+        assert!(layers.layers[0].masks.is_empty());
+    }
+
+    #[test]
+    fn quitar_una_de_varias_mascaras_la_devuelve_a_su_lugar() {
+        let mut layers = LayerStack::new(64);
+        let mut h = History::default();
+        for _ in 0..3 {
+            layers.add_mask();
+        }
+        registrar(&mut h, &mut layers);
+        // Marca cada mascara con un gris distinto en el texel 0 para reconocerlas.
+        for (k, g) in [10u8, 20, 30].into_iter().enumerate() {
+            layers.layers[0].masks[k].pixels[0..4].copy_from_slice(&[g, g, g, 255]);
+        }
+        layers.layers[0].mask_sel = 1;
+        assert!(layers.remove_mask()); // quita la del medio (gris 20)
+        registrar(&mut h, &mut layers);
+        let grises: Vec<u8> = layers.layers[0].masks.iter().map(|m| m.pixels[0]).collect();
+        assert_eq!(grises, vec![10, 30]);
+        assert!(h.undo(&mut layers).is_some());
+        let grises: Vec<u8> = layers.layers[0].masks.iter().map(|m| m.pixels[0]).collect();
+        assert_eq!(grises, vec![10, 20, 30]);
+        assert_eq!(layers.layers[0].mask_sel, 1);
     }
 
     #[test]

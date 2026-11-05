@@ -3,8 +3,9 @@
 use super::*;
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Panel de capas (como el de Ibis Paint): titulo "Capa", lista con la capa de seleccion fija arriba, tira de botones a
-// cada lado, fila "Fondo", caja de recorte / bloqueo alfa / modo de mezcla y barra de opacidad.
+// Panel de capas (como el de Ibis Paint): titulo "Capa", lista de capas, tira de botones a cada lado, fila "Fondo", caja
+// de recorte / bloqueo alfa / modo de mezcla y barra de opacidad. (La "capa de seleccion" de Ibis Paint se quito: no hacia
+// nada. Volvera con la mascara rapida.)
 // ---------------------------------------------------------------------------------------------------------------------
 
 /// Medidas del panel (en puntos de egui): ancho del recuadro negro, margen del marco, alto del titulo, alto del
@@ -18,7 +19,7 @@ pub(super) const LP_LEFT_W: f32 = 40.0;
 pub(super) const LP_RIGHT_W: f32 = 34.0;
 pub(super) const LP_BG_H: f32 = 31.0;
 pub(super) const LP_ROW_H: f32 = 70.0;
-/// Miniatura de cada capa (tambien la de la capa de seleccion): vertical, como en Ibis Paint.
+/// Miniatura de cada capa: vertical, como en Ibis Paint.
 pub(super) const LP_THUMB_W: f32 = 48.0;
 pub(super) const LP_THUMB_H: f32 = 58.0;
 /// Lado de la miniatura de la mascara (cuadrada, junto a la de la capa).
@@ -349,7 +350,7 @@ pub(super) fn layers_panel(
                         recompose |= stack.add_folder();
                     }
 
-                    // Tira derecha (de arriba abajo): cuadricula, circulo, combinar, borrar y mas. Todavia sin funcion.
+                    // Tira derecha (de arriba abajo): limpiar capa, invertir colores, combinar, borrar y mas opciones.
                     let rx = right.center().x;
                     let ry = |k: f32| bx.bottom() - 15.0 - 27.0 * k;
                     let hit_r = vec2(LP_RIGHT_W, 26.0);
@@ -411,8 +412,8 @@ pub(super) fn layers_panel(
                         armed,
                     );
                     let hint = match (armed, is_folder) {
-                        (true, true) => "Toca otra vez para borrar la carpeta y sus capas (no se puede deshacer)",
-                        (true, false) => "Toca otra vez para borrar la capa (no se puede deshacer)",
+                        (true, true) => "Toca otra vez para borrar la carpeta y sus capas (Ctrl+Z lo deshace)",
+                        (true, false) => "Toca otra vez para borrar la capa (Ctrl+Z lo deshace)",
                         (false, true) => "Borrar carpeta y las capas de dentro",
                         (false, false) => "Borrar capa",
                     };
@@ -445,18 +446,18 @@ pub(super) fn layers_panel(
                     }
 
                     // Fila "Fondo" (abajo de la lista) y zona de la lista. Como en Ibis Paint, si todo cabe la pila de filas
-                    // (capa de seleccion, capas y "Fondo") se pega abajo y arriba queda el fondo oscuro vacio; si no cabe,
-                    // la capa de seleccion queda fija arriba y las capas se desplazan entre ella y "Fondo".
+                    // (capas y "Fondo") se pega abajo y arriba queda el fondo oscuro vacio; si no cabe, las capas se
+                    // desplazan desde arriba hasta "Fondo".
                     let bg_row = Rect::from_min_max(
                         egui::pos2(list.left(), list.bottom() - LP_BG_H),
                         list.max,
                     );
                     let layers_h = stack.layers.len() as f32 * LP_ROW_H;
-                    let fits = LP_ROW_H + layers_h + LP_BG_H <= list.height();
-                    let (sel_top, area_top) = if fits {
-                        (bg_row.top() - layers_h - LP_ROW_H, bg_row.top() - layers_h)
+                    let fits = layers_h + LP_BG_H <= list.height();
+                    let area_top = if fits {
+                        bg_row.top() - layers_h
                     } else {
-                        (list.top(), list.top() + LP_ROW_H)
+                        list.top()
                     };
                     let area = Rect::from_min_max(
                         egui::pos2(list.left(), area_top),
@@ -464,67 +465,9 @@ pub(super) fn layers_panel(
                     );
                     // Fondo claro solo donde hay filas.
                     p.rect_filled(
-                        Rect::from_min_max(egui::pos2(list.left(), sel_top), list.max),
+                        Rect::from_min_max(egui::pos2(list.left(), area_top), list.max),
                         CornerRadius::same(0),
                         MENU_FILL,
-                    );
-
-                    // Capa de seleccion: arriba de las capas, todavia sin funcion (siempre "No seleccionado").
-                    let sel_row = Rect::from_min_size(
-                        egui::pos2(list.left(), sel_top),
-                        vec2(list.width(), LP_ROW_H),
-                    );
-                    let th = Rect::from_min_size(
-                        egui::pos2(sel_row.left() + 6.0, sel_row.center().y - LP_THUMB_H * 0.5),
-                        vec2(LP_THUMB_W, LP_THUMB_H),
-                    );
-                    paint_checker(
-                        &p,
-                        th,
-                        6.0,
-                        Color32::from_rgb(255, 205, 210),
-                        Color32::from_rgb(246, 176, 186),
-                    );
-                    p.rect_stroke(
-                        th,
-                        CornerRadius::same(2),
-                        Stroke::new(1.0, Color32::from_gray(170)),
-                        StrokeKind::Inside,
-                    );
-                    let tx = th.right() + 8.0;
-                    p.text(
-                        egui::pos2(tx, sel_row.top() + 13.0),
-                        Align2::LEFT_CENTER,
-                        "Capa de selección",
-                        FontId::proportional(14.0),
-                        MENU_TEXT,
-                    );
-                    let dash =
-                        Rect::from_min_size(egui::pos2(tx, sel_row.top() + 27.0), vec2(20.0, 15.0));
-                    let pts = [
-                        dash.left_top(),
-                        dash.right_top(),
-                        dash.right_bottom(),
-                        dash.left_bottom(),
-                        dash.left_top(),
-                    ];
-                    p.extend(egui::Shape::dashed_line(
-                        &pts,
-                        Stroke::new(1.0, Color32::from_gray(70)),
-                        2.0,
-                        2.0,
-                    ));
-                    p.text(
-                        egui::pos2(tx, sel_row.top() + LP_ROW_H - 13.0),
-                        Align2::LEFT_CENTER,
-                        "No seleccionado",
-                        FontId::proportional(13.0),
-                        MENU_TEXT,
-                    );
-                    p.hline(
-                        sel_row.x_range(),
-                        sel_row.bottom() - 0.5,
-                        Stroke::new(1.0, MENU_LINE),
                     );
 
                     // Lista de capas: la de mas arriba primero. La rueda la desplaza.

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640" width="640" height="640">
+  <title>degradado</title>
+  <rect x="96" y="96" width="448" height="448" rx="40" ry="40" fill="none" stroke="#FFFFFF" stroke-width="32"/>
+  <rect x="136" y="136" width="64" height="368" fill="#FFFFFF" fill-opacity="1"/>
+  <rect x="200" y="136" width="64" height="368" fill="#FFFFFF" fill-opacity="0.8"/>
+  <rect x="264" y="136" width="64" height="368" fill="#FFFFFF" fill-opacity="0.6"/>
+  <rect x="328" y="136" width="64" height="368" fill="#FFFFFF" fill-opacity="0.45"/>
+  <rect x="392" y="136" width="64" height="368" fill="#FFFFFF" fill-opacity="0.3"/>
+  <rect x="456" y="136" width="48" height="368" fill="#FFFFFF" fill-opacity="0.15"/>
+</svg>

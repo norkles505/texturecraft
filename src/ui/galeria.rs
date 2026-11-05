@@ -120,7 +120,13 @@ pub(super) struct GalleryState {
     /// Proyecto guardado (su id) al que se le hizo clic en la galeria, a la espera de que `UiLayer::take_open_project`
     /// lo entregue (una sola vez).
     pub(super) pending_open: Option<String>,
+    /// Lado (en pixeles) de la textura de los proyectos NUEVOS (uno de `TEXTURE_SIZES`). Cada proyecto guarda el suyo y
+    /// no se cambia despues; `UiLayer::new_texture_size` lo entrega a `main.rs`.
+    pub(super) texture_size: u32,
 }
+
+/// Tamanos de textura que se pueden elegir para un proyecto nuevo.
+pub(super) const TEXTURE_SIZES: [u32; 3] = [512, 1024, 2048];
 
 impl Default for GalleryState {
     fn default() -> Self {
@@ -132,6 +138,7 @@ impl Default for GalleryState {
             pick: None,
             pending_import: None,
             pending_open: None,
+            texture_size: crate::paint::TEX_SIZE,
         }
     }
 }
@@ -402,6 +409,42 @@ pub(super) fn gallery_screen(ctx: &egui::Context, state: &mut GalleryState) {
                 Color32::from_gray(120),
             );
 
+            // ---- Tamano de la textura de los proyectos NUEVOS: tres botones (512, 1024, 2048) ----
+            let size_y = row_y + 30.0;
+            p.text(
+                egui::pos2(cx - 6.0, size_y),
+                Align2::RIGHT_CENTER,
+                "Tamaño de textura (proyecto nuevo)",
+                FontId::proportional(GAL_FONT),
+                GAL_TEXT,
+            );
+            for (k, side) in TEXTURE_SIZES.into_iter().enumerate() {
+                let pill = Rect::from_min_size(
+                    egui::pos2(cx + 6.0 + k as f32 * 64.0, size_y - 12.0),
+                    vec2(58.0, 24.0),
+                );
+                let r = ui.interact(pill, ui.id().with(("gal_size", side)), Sense::click());
+                let on = state.texture_size == side;
+                let fill = if on {
+                    ACCENT
+                } else if r.hovered() {
+                    Color32::from_gray(215)
+                } else {
+                    Color32::from_gray(228)
+                };
+                p.rect_filled(pill, CornerRadius::same(12), fill);
+                p.text(
+                    pill.center(),
+                    Align2::CENTER_CENTER,
+                    side.to_string(),
+                    FontId::proportional(13.0),
+                    if on { Color32::WHITE } else { GAL_TEXT },
+                );
+                if r.clicked() {
+                    state.texture_size = side;
+                }
+            }
+
             // ---- Cuerpo: sin proyectos, un mensaje en el centro; con proyectos, la cuadricula de tarjetas ----
             if state.cards.is_empty() {
                 let mid = egui::pos2(cx, (bar.bottom() + screen.bottom()) / 2.0);
@@ -422,7 +465,7 @@ pub(super) fn gallery_screen(ctx: &egui::Context, state: &mut GalleryState) {
             } else {
                 // Tarjetas en filas que se ajustan al ancho de la ventana, con barra de desplazamiento si no caben.
                 let body = Rect::from_min_max(
-                    egui::pos2(screen.left() + CARD_GAP, row_y + 28.0),
+                    egui::pos2(screen.left() + CARD_GAP, row_y + 58.0),
                     egui::pos2(screen.right() - CARD_GAP, screen.bottom()),
                 );
                 let mut clicked: Option<String> = None;

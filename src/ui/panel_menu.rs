@@ -1,6 +1,7 @@
 //! Panel del menu de la flecha (Como utilizar, Ajustes, Guardar imagen...).
 
 use super::*;
+use crate::export::EnginePreset;
 
 /// Una fila del menu: nombre e icono (`None` = todavia sin icono; el hueco se deja igual). Para ponerle icono basta
 /// con `icon: Some(egui::include_image!("../../assets/icons/archivo.svg"))`.
@@ -42,7 +43,7 @@ pub(super) fn menu_panel(ctx: &egui::Context, options: &mut OptionsPanel, button
     let mut close = false;
     let mut open_settings = false;
     let mut open_gallery = false;
-    let mut save_image = false;
+    let mut open_export = false;
     let out = egui::Area::new(id)
         .pivot(Align2::RIGHT_BOTTOM)
         .fixed_pos(egui::pos2(button.right(), button.top() - 10.0))
@@ -116,7 +117,7 @@ pub(super) fn menu_panel(ctx: &egui::Context, options: &mut OptionsPanel, button
                                         open_gallery = true;
                                     }
                                     if item.label == "Guardar imagen" {
-                                        save_image = true;
+                                        open_export = true;
                                     }
                                 }
                             }
@@ -138,8 +139,8 @@ pub(super) fn menu_panel(ctx: &egui::Context, options: &mut OptionsPanel, button
     if open_gallery {
         options.open_gallery = true;
     }
-    if save_image {
-        options.save_image = true;
+    if open_export {
+        options.export_open = true;
     }
 }
 
@@ -234,5 +235,120 @@ pub(super) fn settings_panel(ctx: &egui::Context, options: &mut OptionsPanel) {
         });
     if close || modal.should_close() {
         options.settings_open = false;
+    }
+}
+
+/// Alto de cada fila de la ventana de Exportar.
+const EXPORT_ROW_H: f32 = 62.0;
+
+/// Ventana de Exportar (la abre la fila "Guardar imagen" del menu): una fila para el PNG de siempre y una por cada motor
+/// (Unreal, Unity, Godot, Blender), cada una con lo que crea. Al elegir una se deja en `options.save_choice` (la atiende
+/// `main.rs`) y la ventana se cierra. Tambien se cierra con Esc o con un clic en el fondo oscurecido.
+pub(super) fn export_panel(ctx: &egui::Context, options: &mut OptionsPanel) {
+    if !options.export_open {
+        return;
+    }
+    let screen = ctx.content_rect();
+    let w = 340.0_f32.min(screen.width() - 24.0);
+    let content_w = w - SET_MARGIN * 2.0;
+    let mut close = false;
+    let mut choice: Option<SaveKind> = None;
+    let modal = egui::Modal::new(egui::Id::new("export_panel"))
+        .backdrop_color(Color32::from_black_alpha(90))
+        .frame(
+            Frame::new()
+                .fill(bar_fill())
+                .corner_radius(CornerRadius::same(18))
+                .inner_margin(Margin::same(SET_MARGIN as i8)),
+        )
+        .show(ctx, |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            ui.set_width(content_w);
+            // Cabecera: titulo (doble pasada para parecer negrita) y una X para cerrar.
+            let (head, _) = ui.allocate_exact_size(vec2(content_w, SET_HEADER_H), Sense::hover());
+            let title_pos = egui::pos2(head.left() + 10.0, head.center().y);
+            for dx in [0.0, 0.6] {
+                ui.painter().text(
+                    title_pos + vec2(dx, 0.0),
+                    Align2::LEFT_CENTER,
+                    "Exportar",
+                    FontId::proportional(19.0),
+                    Color32::WHITE,
+                );
+            }
+            let x_rect = Rect::from_center_size(
+                egui::pos2(head.right() - 22.0, head.center().y),
+                vec2(34.0, 34.0),
+            );
+            let x_resp = ui.interact(x_rect, ui.id().with("export_x"), Sense::click());
+            let x_color = if x_resp.hovered() {
+                Color32::WHITE
+            } else {
+                Color32::from_gray(225)
+            };
+            let c = x_rect.center();
+            for (a, b) in [
+                (vec2(-5.0, -5.0), vec2(5.0, 5.0)),
+                (vec2(-5.0, 5.0), vec2(5.0, -5.0)),
+            ] {
+                ui.painter()
+                    .line_segment([c + a, c + b], Stroke::new(2.0, x_color));
+            }
+            if x_resp.clicked() {
+                close = true;
+            }
+            // Cuerpo: la fila del PNG y una por motor.
+            Frame::new()
+                .fill(Color32::from_black_alpha(50))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::same(6))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                    let row_w = content_w - 12.0;
+                    let mut rows: Vec<(&str, &str, SaveKind)> = vec![(
+                        "Imagen PNG",
+                        "La textura y los canales pintados, como siempre",
+                        SaveKind::Png,
+                    )];
+                    for p in EnginePreset::ALL {
+                        rows.push((p.label(), p.detail(), SaveKind::Engine(p)));
+                    }
+                    for (label, detail, kind) in rows {
+                        let (rect, resp) =
+                            ui.allocate_exact_size(vec2(row_w, EXPORT_ROW_H), Sense::click());
+                        let p = ui.painter();
+                        if resp.hovered() {
+                            p.rect_filled(rect, CornerRadius::same(8), Color32::from_white_alpha(22));
+                        }
+                        p.text(
+                            egui::pos2(rect.left() + 10.0, rect.top() + 18.0),
+                            Align2::LEFT_CENTER,
+                            label,
+                            FontId::proportional(15.0),
+                            Color32::WHITE,
+                        );
+                        let galley = p.layout(
+                            detail.to_string(),
+                            FontId::proportional(12.0),
+                            Color32::from_gray(180),
+                            row_w - 20.0,
+                        );
+                        p.galley(
+                            egui::pos2(rect.left() + 10.0, rect.top() + 32.0),
+                            galley,
+                            Color32::from_gray(180),
+                        );
+                        if resp.clicked() {
+                            choice = Some(kind);
+                        }
+                    }
+                });
+        });
+    if let Some(k) = choice {
+        options.save_choice = Some(k);
+        close = true;
+    }
+    if close || modal.should_close() {
+        options.export_open = false;
     }
 }

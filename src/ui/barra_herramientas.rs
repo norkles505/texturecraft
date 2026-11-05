@@ -27,7 +27,7 @@ pub(super) struct ToolButton {
 }
 
 /// Botones de la barra, de arriba abajo. Para agregar uno: un `Tool` nuevo, su SVG y una linea aqui.
-pub(super) fn tool_buttons() -> [ToolButton; 7] {
+pub(super) fn tool_buttons() -> [ToolButton; 8] {
     [
         ToolButton {
             tool: Tool::Brush,
@@ -46,6 +46,12 @@ pub(super) fn tool_buttons() -> [ToolButton; 7] {
             label: "Relleno",
             key: "F",
             icon: egui::include_image!("../../assets/icons/bucket.svg"),
+        },
+        ToolButton {
+            tool: Tool::Gradient,
+            label: "Degradado",
+            key: "R",
+            icon: egui::include_image!("../../assets/icons/gradient.svg"),
         },
         ToolButton {
             tool: Tool::Eyedropper,

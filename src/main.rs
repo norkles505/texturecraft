@@ -9,8 +9,8 @@
 //! mallas o apoyando el pincel sobre ella.
 //! Capas (pruebas, hasta tener panel): N = capa nueva, [ ] = bajar/subir de capa, B / Mayus+B = modo de mezcla
 //! siguiente/anterior, + - = opacidad, V = ojo, C = recorte, L = bloqueo, A = bloqueo alfa, K = cambiar color.
-//! Herramientas (boton izquierdo): P = pincel, G = borrador (goma), F = relleno (balde), I = cuentagotas (toma el color
-//! de lo que ves), D = difuminar, U = borrosidad (estas dos por ahora solo el boton), H = mano (el boton izquierdo mueve la vista en vez de pintar).
+//! Herramientas (boton izquierdo): P = pincel, G = borrador (goma), F = relleno (balde), R = degradado (arrastrar de un punto a otro del modelo), I = cuentagotas (toma el color
+//! de lo que ves), D = difuminar (arrastra el color del trazo), U = borrosidad (mezcla cada punto con sus vecinos), H = mano (el boton izquierdo mueve la vista en vez de pintar).
 //! Exportar PNG a la carpeta actual: E = textura con fondo, Mayus+E = transparente, X = solo la capa elegida.
 
 mod blend;
@@ -47,6 +47,7 @@ use blend::BlendMode;
 use brush::{BUILD_UP_INTERVAL, Brush};
 use bvh::TriBvh;
 use camera::{Camera, ViewAxis};
+use export::{EnginePreset, SaveKind};
 use face_edit::FaceEdit;
 use glam::Vec3;
 use layers::{ChannelKind, LayerOp, LayerStack, NORMAL_STRENGTH, PaintTarget};
@@ -54,7 +55,9 @@ use obj::{
     MeshPart, ObjMesh, load_obj, part_of_triangle, piece_ranges, triangle_visibility,
     visible_ranges,
 };
-use paint::{DabOptions, Rect, StrokeState, SurfTri, TEX_SIZE, surface_rect};
+use paint::{
+    DabOptions, FilterMode, GradientSpec, Rect, StrokeState, SurfTri, TEX_SIZE, surface_rect,
+};
 use ui::{BrushRing, UiLayer, UiOutput};
 use undo::History;
 use uvmap::UvMaps;
@@ -82,6 +85,9 @@ enum Tool {
     Brush,
     Eraser,
     Fill,
+    /// Degradado: arrastrar de un punto del modelo a otro pinta del color del pincel a transparente (en una mascara,
+    /// del gris del pincel a su opuesto).
+    Gradient,
     Eyedropper,
     Smudge,
     Blur,
@@ -95,6 +101,7 @@ impl Tool {
             Tool::Brush => "pincel",
             Tool::Eraser => "borrador",
             Tool::Fill => "relleno",
+            Tool::Gradient => "degradado",
             Tool::Eyedropper => "cuentagotas",
             Tool::Smudge => "difuminar",
             Tool::Blur => "borrosidad",
@@ -124,6 +131,8 @@ struct Piece {
     bind_group: wgpu::BindGroup,
     layers: LayerStack,
     history: History,
+    /// Ajustes de las capas en el cuadro anterior (para registrar sus cambios en el historial).
+    settings_seen: Vec<layers::LayerSettings>,
     /// Mapas de islas y cobertura UV de los triangulos de esta pieza (se arman la primera vez que se rellena).
     uv_maps: Option<UvMaps>,
 }
@@ -141,6 +150,32 @@ struct Pick {
     view: Vec3,
 }
 
+/// Desde que distancia (hacia atras del punto espejo) parte el rayo del toque espejo: mas que el tamano del modelo,
+/// para que el rayo empiece siempre fuera de el.
+const MIRROR_BACKOFF: f32 = 4.0 * FIT_SIZE;
+
+/// Medidor de rendimiento (solo escribe algo con la variable de entorno `TEXTURECRAFT_PERF`): cuantos toques se
+/// pintaron y cuantos nanosegundos se fueron en pintar y en recomponer las capas. `stroke_move` los lee antes y
+/// despues de cada movimiento del raton y escribe la diferencia por la salida de errores.
+static PERF_DABS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static PERF_PAINT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PERF_COMP_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn perf_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TEXTURECRAFT_PERF").is_some())
+}
+
+/// `v` reflejado en los planos X, Y y Z marcados en `flips` (el modelo esta centrado en el origen, asi que los planos
+/// de espejo pasan por el).
+fn mirror_vec(v: Vec3, flips: [bool; 3]) -> Vec3 {
+    Vec3::new(
+        if flips[0] { -v.x } else { v.x },
+        if flips[1] { -v.y } else { v.y },
+        if flips[2] { -v.z } else { v.z },
+    )
+}
+
 /// Crea una pieza: textura propia (con el fondo ya compuesto) y el grupo de enlaces que la une a los uniforms.
 fn new_piece(
     device: &wgpu::Device,
@@ -149,15 +184,16 @@ fn new_piece(
     uniform_buffer: &wgpu::Buffer,
     sampler: &wgpu::Sampler,
     (first_vertex, vertex_count): (usize, usize),
+    size: u32,
 ) -> Piece {
-    let layers = LayerStack::new(TEX_SIZE);
+    let layers = LayerStack::new(size);
     let texture = device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("tablero"),
             size: wgpu::Extent3d {
-                width: TEX_SIZE,
-                height: TEX_SIZE,
+                width: size,
+                height: size,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -174,14 +210,14 @@ fn new_piece(
     );
     let tex_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     // Material sin pintar: rugosidad y altura a la mitad, nada de metal (igual que `LayerStack::material_bytes`).
-    let flat = [128u8, 0, 128, 255].repeat((TEX_SIZE * TEX_SIZE) as usize);
+    let flat = [128u8, 0, 128, 255].repeat((size * size) as usize);
     let material = device.create_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("material"),
             size: wgpu::Extent3d {
-                width: TEX_SIZE,
-                height: TEX_SIZE,
+                width: size,
+                height: size,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -223,6 +259,7 @@ fn new_piece(
         texture,
         material,
         bind_group,
+        settings_seen: layers.settings_snapshot(),
         layers,
         history: History::default(),
         uv_maps: None,
@@ -294,6 +331,8 @@ struct Gpu {
     stroke_dabs: Vec<Pick>,
     /// false si el trazo paso por otra pieza (no se repinta: cada pieza lleva su propio registro y estado de trazo).
     stroke_fade_ok: bool,
+    /// Degradado en curso: el punto del modelo donde se apoyo el boton (el inicio del degradado). `None` si no hay.
+    gradient_from: Option<Pick>,
     brush_color: [u8; 3],
     /// Opacidad del pincel (0..1), la barra de opacidad del panel de color.
     brush_opacity: f32,
@@ -333,6 +372,10 @@ struct App {
     right_down: bool,
     /// Ultima posicion de pantalla del trazo en curso.
     last_paint: Option<(f32, f32)>,
+    /// Donde termino el ultimo trazo de pincel o borrador, con la vista de ese momento (`view_key`): Mayus+clic traza
+    /// una recta desde ahi hasta el clic. Solo vale mientras la vista no cambie (si se gira, mueve o acerca, ese punto de
+    /// pantalla ya no es el mismo sitio del modelo).
+    line_anchor: Option<((f32, f32), [f32; 8])>,
     modifiers: ModifiersState,
     /// El cursor esta dentro de la ventana (para mostrar u ocultar el circulo del pincel).
     cursor_in_window: bool,
@@ -736,6 +779,7 @@ impl Gpu {
                     &uniform_buffer,
                     &sampler,
                     r,
+                    TEX_SIZE,
                 )
             })
             .collect();
@@ -768,6 +812,7 @@ impl Gpu {
             stroke_to_next: 0.0,
             stroke_dabs: Vec::new(),
             stroke_fade_ok: true,
+            gradient_from: None,
             brush_color: PALETTE[0],
             brush_opacity: 1.0,
             brush: Brush::default(),
@@ -828,8 +873,10 @@ impl Gpu {
     }
 
     /// Cambia el modelo que se dibuja. `model_name` es el nombre de la malla si el OBJ no trae partes. Las piezas
-    /// nuevas empiezan con una textura y un historial vacios (el historial era de otro modelo).
-    fn set_mesh(&mut self, mesh: &ObjMesh, model_name: &str) {
+    /// nuevas empiezan con una textura y un historial vacios (el historial era de otro modelo). `size` es el lado de la
+    /// textura de cada pieza: el estado del trazo se rehace con ese lado.
+    fn set_mesh(&mut self, mesh: &ObjMesh, model_name: &str, size: u32) {
+        self.stroke = StrokeState::new(size);
         self.vertex_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -853,6 +900,7 @@ impl Gpu {
                     &self.uniform_buffer,
                     &self.sampler,
                     r,
+                    size,
                 )
             })
             .collect();
@@ -935,7 +983,9 @@ impl Gpu {
     fn open_obj(&mut self, path: &Path) {
         match load_mesh(path) {
             Ok(mesh) => {
-                self.set_mesh(&mesh, &file_name(path));
+                // Proyecto nuevo: lleva el tamano de textura que se eligio en la galeria.
+                let size = self.ui.new_texture_size();
+                self.set_mesh(&mesh, &file_name(path), size);
                 self.project_id = None;
                 self.project_name = path
                     .file_stem()
@@ -961,6 +1011,7 @@ impl Gpu {
             name,
             model,
             active,
+            size,
             stacks,
         } = proyecto::load(id, TEX_SIZE)?;
         let (mesh, model_name) = match &model {
@@ -975,7 +1026,7 @@ impl Gpu {
                 stacks.len()
             ));
         }
-        self.set_mesh(&mesh, &model_name);
+        self.set_mesh(&mesh, &model_name, size);
         for (i, stack) in stacks.into_iter().enumerate() {
             let m = stack.size - 1;
             self.pieces[i].layers = stack;
@@ -1210,11 +1261,70 @@ impl Gpu {
         piece.history.begin(id, target);
     }
 
+    /// Un toque en `pick` y, con la simetria encendida (panel de reglas), sus espejos: una copia del toque por cada
+    /// combinacion de los planos X, Y y Z encendidos. Difuminar no se refleja (arrastra desde el toque anterior y los
+    /// saltos de un lado a otro lo romperian) y un espejo que cae en OTRA pieza tampoco (un trazo es de una sola pieza).
+    fn dab_surface_mult(&mut self, pick: Pick, mult: f32, dirty: &mut Option<Rect>) {
+        self.dab_surface_one(pick, mult, dirty, [false; 3]);
+        let sym = self.ui.symmetry();
+        if !sym.iter().any(|s| *s) || self.tool == Tool::Smudge {
+            return;
+        }
+        // Un espejo que cae casi sobre un toque ya pintado (el toque esta sobre un plano de simetria, o junto a el)
+        // no cambiaria nada: se salta. Con tres planos encendidos ahorra muchas copias en la linea central.
+        let cerca = 0.05 * self.brush.radius * WORLD_PER_RADIUS;
+        let mut pintados = vec![pick.pos];
+        for bits in 1u8..8 {
+            let flips = [bits & 1 != 0, bits & 2 != 0, bits & 4 != 0];
+            if (0..3).any(|k| flips[k] && !sym[k]) {
+                continue;
+            }
+            let Some(m) = self.mirror_pick(pick, flips) else {
+                continue;
+            };
+            if self.stroke_piece != Some(m.piece) {
+                continue;
+            }
+            if pintados.iter().any(|q| q.distance(m.pos) < cerca) {
+                continue;
+            }
+            pintados.push(m.pos);
+            self.dab_surface_one(m, mult, dirty, flips);
+        }
+    }
+
+    /// El punto espejo de `pick` sobre el modelo: se refleja el rayo que toco (su punto y su direccion) y se lanza
+    /// contra el modelo; en un modelo simetrico cae justo en el punto simetrico. `None` si el rayo no toca nada.
+    fn mirror_pick(&self, pick: Pick, flips: [bool; 3]) -> Option<Pick> {
+        let dir = mirror_vec(pick.view, flips);
+        let origin = mirror_vec(pick.pos, flips) - dir * MIRROR_BACKOFF;
+        self.bvh.pick(origin, dir).map(|h| {
+            let part = part_of_triangle(&self.parts, h.tri);
+            Pick {
+                piece: self.piece_for_part(part),
+                part,
+                u: h.u,
+                v: h.v,
+                tri: h.tri,
+                pos: origin + dir * h.t,
+                view: dir.normalize_or_zero(),
+            }
+        })
+    }
+
     /// Un toque en el punto de `pick` sobre la capa elegida de su pieza; recompone el rectangulo y lo suma a
     /// `dirty` (que es siempre de la pieza del trazo en curso: al cruzar a otra pieza se sube primero el anterior).
     /// El toque mide en el modelo (ver `paint.rs`): se buscan los triangulos de la pieza que estan cerca del punto
     /// tocado y miran a la camara, y cada texel se mide por su distancia 3D.
-    fn dab_surface_mult(&mut self, pick: Pick, mult: f32, dirty: &mut Option<Rect>) {
+    /// `mirror` dice en que planos esta reflejado este toque (todo `false` = el toque original): un espejo no mueve
+    /// el punto de referencia de la direccion del trazo y usa esa direccion reflejada.
+    fn dab_surface_one(
+        &mut self,
+        pick: Pick,
+        mult: f32,
+        dirty: &mut Option<Rect>,
+        mirror: [bool; 3],
+    ) {
         if self.stroke_piece != Some(pick.piece) {
             if let (Some(old), Some(r)) = (self.stroke_piece, dirty.take()) {
                 self.upload_rect(old, r);
@@ -1271,15 +1381,17 @@ impl Gpu {
         // Direccion del trazo: del ultimo punto de referencia a este. El punto de referencia solo avanza cuando el
         // puntero se movio un poco (un cuarto de punto del tamano), asi la direccion no tiembla con pasos minusculos y
         // con el puntero quieto se conserva la ultima.
-        match self.last_dab_pos {
-            Some(prev) => {
-                let step = pick.pos - prev;
-                if step.length() > 0.25 * WORLD_PER_RADIUS {
-                    self.stroke_dir = step.normalize();
-                    self.last_dab_pos = Some(pick.pos);
+        if mirror == [false; 3] {
+            match self.last_dab_pos {
+                Some(prev) => {
+                    let step = pick.pos - prev;
+                    if step.length() > 0.25 * WORLD_PER_RADIUS {
+                        self.stroke_dir = step.normalize();
+                        self.last_dab_pos = Some(pick.pos);
+                    }
                 }
+                None => self.last_dab_pos = Some(pick.pos),
             }
-            None => self.last_dab_pos = Some(pick.pos),
         }
         // En la mascara se pinta en grises: el color del pincel pasa a su luminosidad y el borrador pinta negro (oculta
         // la capa). Ahi no hay bloqueo alfa ni borrado: la mascara siempre es opaca.
@@ -1314,23 +1426,53 @@ impl Gpu {
             ceiling: self.ui.pass_ceiling(),
             // Flujo del pincel: multiplica la cobertura de cada toque.
             flow: self.brush.flow,
-            // El carboncillo orienta su punta a lo largo del trazo.
-            dir: self.stroke_dir,
+            // El carboncillo orienta su punta a lo largo del trazo (reflejada en un toque espejo).
+            dir: mirror_vec(self.stroke_dir, mirror),
         };
         // Antes de tocar nada: copia de las baldosas que va a cambiar el toque (deshacer). Los pixeles son los de la
         // mascara si se pinta en ella, y si no los de la capa.
         let pixels = layer.target_pixels_mut(target);
         piece.history.save_tiles(pixels, size, area);
-        if let Some(r) = self.stroke.dab_surface(
-            pixels,
-            &tris,
-            pick.pos,
-            radius,
-            color,
-            self.brush_opacity * mult,
-            opts,
-        ) {
+        // Difuminar y Borrosidad no pintan color: cambian lo que ya hay bajo el pincel (`StrokeState::dab_filter`).
+        // Entran al historial igual que un trazo (arriba se guardaron las baldosas), asi Ctrl+Z los deshace.
+        let filter = match self.tool {
+            Tool::Smudge => Some(FilterMode::Smudge),
+            Tool::Blur => Some(FilterMode::Blur),
+            _ => None,
+        };
+        PERF_DABS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let perf_paint = std::time::Instant::now();
+        let touched = match filter {
+            Some(mode) => self.stroke.dab_filter(
+                pixels,
+                &tris,
+                pick.pos,
+                radius,
+                mode,
+                self.brush_opacity * mult * self.brush.flow,
+                alpha_lock,
+            ),
+            None => self.stroke.dab_surface(
+                pixels,
+                &tris,
+                pick.pos,
+                radius,
+                color,
+                self.brush_opacity * mult,
+                opts,
+            ),
+        };
+        PERF_PAINT_NS.fetch_add(
+            perf_paint.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if let Some(r) = touched {
+            let perf_comp = std::time::Instant::now();
             piece.layers.composite_rect(r);
+            PERF_COMP_NS.fetch_add(
+                perf_comp.elapsed().as_nanos() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             *dirty = Some(match *dirty {
                 Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
                 None => r,
@@ -1463,8 +1605,118 @@ impl Gpu {
         true
     }
 
+    /// Degradado (herramienta Degradado), al apoyar el boton: fija el punto de inicio sobre el modelo y abre el registro de
+    /// deshacer de su pieza. No pinta nada hasta que el puntero se mueve (`gradient_move`). Devuelve siempre false.
+    fn gradient_begin(&mut self, camera: &Camera, px: f32, py: f32) -> bool {
+        self.stroke_piece = None;
+        self.gradient_from = None;
+        let Some(pick) = self.pick_uv(camera, px, py) else {
+            return false;
+        };
+        let piece = &self.pieces[pick.piece];
+        let sel = piece.layers.selected;
+        if !piece.layers.layers[sel].accepts(piece.layers.channel) {
+            return false;
+        }
+        self.enter_piece(pick);
+        self.gradient_from = Some(pick);
+        false
+    }
+
+    /// Degradado, al mover el boton apretado: lleva el final del degradado al punto del modelo bajo el puntero y lo vuelve
+    /// a pintar. Si el puntero sale del modelo o pasa a otra pieza se queda el ultimo degradado.
+    fn gradient_move(&mut self, camera: &Camera, to: (f32, f32)) -> bool {
+        let Some(from) = self.gradient_from else {
+            return false;
+        };
+        let Some(end) = self.pick_uv(camera, to.0, to.1) else {
+            return false;
+        };
+        if end.piece != from.piece {
+            return false;
+        }
+        self.gradient_apply(from.piece, from.pos, end.pos)
+    }
+
+    /// Pinta el degradado de `from` a `to` (puntos 3D del modelo) en toda la pieza. Antes devuelve la capa a como estaba
+    /// al apoyar el boton (como `replay_fade`), asi cada movimiento del raton recalcula el degradado entero y todo el
+    /// arrastre entra al historial como un solo paso. En la mascara y en los canales se usa el gris del color del pincel
+    /// (la mascara no lleva bloqueo alfa; en la mascara de una capa de color liso el gris de partida es blanco).
+    fn gradient_apply(&mut self, piece_index: usize, from: Vec3, to: Vec3) -> bool {
+        let brush_color = self.brush_color;
+        let opacity = self.brush_opacity;
+        let bvh = &self.bvh;
+        let piece = &mut self.pieces[piece_index];
+        let sel = piece.layers.selected;
+        let size = piece.layers.size;
+        let channel = piece.layers.channel;
+        let (first_tri, end_tri) = (
+            piece.first_vertex / 3,
+            (piece.first_vertex + piece.vertex_count) / 3,
+        );
+        let layer = &mut piece.layers.layers[sel];
+        if !layer.accepts(channel) {
+            return false;
+        }
+        let target = layer.target(channel);
+        let on_mask = matches!(target, PaintTarget::Mask(_));
+        let (color, alpha_lock) = if target != PaintTarget::Layer {
+            let g = if on_mask && layer.mask_reveals() {
+                255
+            } else {
+                luma(brush_color)
+            };
+            ([g, g, g], layer.alpha_lock && !on_mask)
+        } else {
+            (brush_color, layer.alpha_lock)
+        };
+        let tris: Vec<SurfTri> = (first_tri..end_tri)
+            .map(|t| {
+                let (p, uv) = bvh.tri(t);
+                SurfTri { p: *p, uv: *uv }
+            })
+            .collect();
+        let Some(area) = surface_rect(size, &tris) else {
+            return false;
+        };
+        let pixels = layer.target_pixels_mut(target);
+        // Devuelve la capa a como estaba antes del degradado y guarda las baldosas que falten para deshacer.
+        let restored = piece.history.restore_pending(pixels, size);
+        piece.history.save_tiles(pixels, size, area);
+        let spec = GradientSpec {
+            from,
+            to,
+            color,
+            opacity,
+            alpha_lock,
+            mask: on_mask,
+        };
+        let changed = self.stroke.dab_gradient(pixels, &tris, spec);
+        let rect = match (restored, changed) {
+            (Some(a), Some(b)) => (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)),
+            (Some(r), None) | (None, Some(r)) => r,
+            (None, None) => return false,
+        };
+        piece.layers.composite_rect(rect);
+        self.upload_rect(piece_index, rect);
+        true
+    }
+
+    /// Pasa al historial de cada pieza los cambios de estructura que hicieron las operaciones de su pila de capas (crear,
+    /// duplicar, borrar y mover capas; ver `LayerStack::take_layout_log`). Se llama antes de pintar o de deshacer y despues
+    /// de atender el panel de capas, para que los pasos queden en el orden en que ocurrieron y las capas borradas no
+    /// se acumulen sin que el historial las vea.
+    fn flush_layout_logs(&mut self) {
+        for p in &mut self.pieces {
+            for edit in p.layers.take_layout_log() {
+                p.history.push_layout(edit);
+            }
+        }
+    }
+
     /// Apoyar el boton: empieza un trazo nuevo y pinta el primer toque. Devuelve true si cambio algo.
     fn stroke_begin(&mut self, camera: &Camera, px: f32, py: f32) -> bool {
+        self.flush_layout_logs();
         self.stroke_dabs.clear();
         self.stroke_fade_ok = true;
         // El cuentagotas no pinta ni entra al historial: solo toma el color (tambien al arrastrar).
@@ -1472,12 +1724,16 @@ impl Gpu {
             self.pick_color(camera, px, py);
             return false;
         }
-        // Difuminar y borrosidad: todavia solo estan los botones, no hacen nada al pintar (para no pintar color por error).
-        if self.tool == Tool::Smudge || self.tool == Tool::Blur || self.tool == Tool::Hand {
+        // La mano solo mueve la vista: no pinta.
+        if self.tool == Tool::Hand {
             return false;
         }
         if self.tool == Tool::Fill {
             return self.fill_at(camera, px, py);
+        }
+        // El degradado se fija al apoyar y se pinta al arrastrar (`gradient_move`).
+        if self.tool == Tool::Gradient {
+            return self.gradient_begin(camera, px, py);
         }
         // La pieza donde pinta el trazo se decide con el primer toque que cae sobre el modelo (`enter_piece`).
         self.stroke_piece = None;
@@ -1490,6 +1746,21 @@ impl Gpu {
             self.dab_surface(pick, &mut dirty);
         }
         self.flush(dirty)
+    }
+
+    /// Mayus+clic: empieza un trazo nuevo que recorre la recta de `from` a `to` (pantalla). A diferencia de
+    /// `stroke_begin` no pone un toque en `from`: ahi ya quedo el final del trazo anterior, y repetirlo oscureceria ese
+    /// punto con una opacidad menor que 1. El primer toque cae a un espaciado de `from`, como en cualquier trazo.
+    /// Devuelve true si cambio algo.
+    fn stroke_begin_line(&mut self, camera: &Camera, from: (f32, f32), to: (f32, f32)) -> bool {
+        self.flush_layout_logs();
+        self.stroke_dabs.clear();
+        self.stroke_fade_ok = true;
+        self.stroke_piece = None;
+        self.stroke_dir = Vec3::ZERO;
+        self.last_dab_pos = None;
+        self.stroke_to_next = self.dab_spacing();
+        self.stroke_move(camera, from, to)
     }
 
     /// true si con el boton apretado la herramienta sigue depositando pintura aunque el puntero este quieto: pincel o
@@ -1520,6 +1791,7 @@ impl Gpu {
             self.replay_fade();
         }
         self.stroke_dabs.clear();
+        self.gradient_from = None;
         if let Some(p) = self.stroke_piece.take() {
             self.pieces[p].history.end();
         }
@@ -1548,9 +1820,57 @@ impl Gpu {
         self.window.request_redraw();
     }
 
-    /// "Guardar imagen" del menu: pregunta donde guardar y escribe la textura de la pieza activa como PNG transparente
-    /// (sin el fondo de visualizacion). Devuelve el mensaje a mostrar en el titulo de la ventana.
-    fn save_image(&self) -> String {
+    /// Lo elegido en la ventana de Exportar: el PNG de siempre o los mapas de un motor. Devuelve el mensaje a mostrar en
+    /// el titulo de la ventana.
+    fn save_image(&self, kind: SaveKind) -> String {
+        match kind {
+            SaveKind::Png => self.save_png_image(),
+            SaveKind::Engine(preset) => self.save_engine_maps(preset),
+        }
+    }
+
+    /// Exportar para un motor: pregunta en que carpeta guardar y crea ahi una subcarpeta (`<nombre>_<motor>`, con un
+    /// numero si ya existe, asi no pisa nada) con los mapas de la pieza activa empaquetados como los espera ese motor
+    /// (`export::stack_engine_maps`). Devuelve el mensaje a mostrar en el titulo de la ventana.
+    fn save_engine_maps(&self, preset: EnginePreset) -> String {
+        let stack = &self.pieces[self.active()].layers;
+        let mut base = slug(&self.project_name);
+        if self.pieces.len() > 1 {
+            base.push('_');
+            base.push_str(&slug(
+                &self.parts[self.selected_part.min(self.parts.len() - 1)].name,
+            ));
+        }
+        let Some(parent) = rfd::FileDialog::new()
+            .set_title(format!("Carpeta donde guardar los mapas de {}", preset.label()))
+            .pick_folder()
+        else {
+            return self.status();
+        };
+        let dir = export::free_dir(&parent, &format!("{base}_{}", preset.folder_tag()));
+        let maps = export::stack_engine_maps(preset, stack);
+        match export::write_maps(&dir, &base, stack.size, &maps) {
+            Ok(files) => {
+                for f in &files {
+                    println!("Mapa exportado: {}", f.display());
+                }
+                format!(
+                    "texturecraft - {} mapas para {} en {}",
+                    files.len(),
+                    preset.label(),
+                    dir.display()
+                )
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                format!("texturecraft - no se pudo exportar para {} ({e})", preset.label())
+            }
+        }
+    }
+
+    /// "Imagen PNG" de la ventana de Exportar: pregunta donde guardar y escribe la textura de la pieza activa como PNG
+    /// transparente (sin el fondo de visualizacion). Devuelve el mensaje a mostrar en el titulo de la ventana.
+    fn save_png_image(&self) -> String {
         let stack = &self.pieces[self.active()].layers;
         let mut default = slug(&self.project_name);
         if self.pieces.len() > 1 {
@@ -1679,8 +1999,10 @@ impl Gpu {
         }
     }
 
-    /// Deshacer (`redo = false`) o rehacer el ultimo trazo de la pieza activa. Devuelve true si cambio algo.
+    /// Deshacer (`redo = false`) o rehacer el ultimo paso de la pieza activa: un trazo, una operacion sobre toda la hoja o
+    /// un cambio de estructura de las capas (crear, duplicar, borrar, mover). Devuelve true si cambio algo.
     fn undo_redo(&mut self, redo: bool) -> bool {
+        self.flush_layout_logs();
         let a = self.active();
         let piece = &mut self.pieces[a];
         let rect = if redo {
@@ -1690,8 +2012,13 @@ impl Gpu {
         };
         match rect {
             Some(r) => {
+                // Deshacer o rehacer cambia los ajustes por su cuenta: se toman como los "vistos" para que el
+                // siguiente cuadro no los registre como un cambio nuevo (vaciaria el rehacer).
+                piece.settings_seen = piece.layers.settings_snapshot();
                 piece.layers.composite_rect(r);
                 self.upload_rect(a, r);
+                // Si el paso cambio las capas, la capa elegida (y el titulo con su nombre) pudo cambiar.
+                self.window.set_title(&self.status());
                 self.window.request_redraw();
                 true
             }
@@ -1714,17 +2041,21 @@ impl Gpu {
             self.pick_color(camera, to.0, to.1);
             return false;
         }
-        // El relleno es de un solo toque por apoyo: arrastrar no vuelve a rellenar. Difuminar y borrosidad aun no pintan.
-        if self.tool == Tool::Fill
-            || self.tool == Tool::Smudge
-            || self.tool == Tool::Blur
-            || self.tool == Tool::Hand
-        {
+        // El degradado recalcula su final bajo el puntero (no se pinta por toques).
+        if self.tool == Tool::Gradient {
+            return self.gradient_move(camera, to);
+        }
+        // El relleno es de un solo toque por apoyo: arrastrar no vuelve a rellenar. La mano tampoco pinta.
+        if self.tool == Tool::Fill || self.tool == Tool::Hand {
             return false;
         }
         // Se recorre el tramo de pantalla en pasos chicos y se mide la distancia 3D sobre el modelo entre cada par de
         // puntos; los toques se colocan cada `spacing` unidades arrastrando el sobrante (`dab_points`), asi quedan igual
         // de separados con un trazo rapido o lento (como en photocraft).
+        let perf_t0 = std::time::Instant::now();
+        let perf_d0 = PERF_DABS.load(std::sync::atomic::Ordering::Relaxed);
+        let perf_p0 = PERF_PAINT_NS.load(std::sync::atomic::Ordering::Relaxed);
+        let perf_c0 = PERF_COMP_NS.load(std::sync::atomic::Ordering::Relaxed);
         let spacing = self.dab_spacing();
         let screen = ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt();
         let steps = (screen / WALK_STEP_PX).ceil().max(1.0) as usize;
@@ -1737,7 +2068,20 @@ impl Gpu {
             self.stroke_step(camera, a, ua, b, ub, spacing, &mut dirty);
             (a, ua) = (b, ub);
         }
-        self.flush(dirty)
+        let changed = self.flush(dirty);
+        if perf_on() {
+            let ord = std::sync::atomic::Ordering::Relaxed;
+            eprintln!(
+                "[perf] mover {:.0} px: {} toques, total {:.2} ms (pintar {:.2} ms, recomponer {:.2} ms), simetria {:?}",
+                screen,
+                PERF_DABS.load(ord) - perf_d0,
+                perf_t0.elapsed().as_secs_f64() * 1e3,
+                (PERF_PAINT_NS.load(ord) - perf_p0) as f64 / 1e6,
+                (PERF_COMP_NS.load(ord) - perf_c0) as f64 / 1e6,
+                self.ui.symmetry(),
+            );
+        }
+        changed
     }
 
     /// Distancia entre toques en unidades del modelo (una fraccion del radio del pincel, como en la seccion 7.4).
@@ -1791,6 +2135,7 @@ impl Gpu {
         camera: &Camera,
         mouse: (f32, f32),
         cursor_in_window: bool,
+        dragging: bool,
     ) -> (Duration, Option<ViewAxis>) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
@@ -1889,7 +2234,10 @@ impl Gpu {
         let ring = if cursor_in_window
             && !self.ui.edit_mode()
             && !self.faces.active
-            && matches!(self.tool, Tool::Brush | Tool::Eraser | Tool::Eyedropper)
+            && matches!(
+                self.tool,
+                Tool::Brush | Tool::Eraser | Tool::Eyedropper | Tool::Smudge | Tool::Blur
+            )
         {
             let pin = self.tool == Tool::Eyedropper;
             // Chincheta: el color que hay bajo la punta (el que se tomaria al hacer clic), para mostrarlo dentro del aro.
@@ -1942,6 +2290,18 @@ impl Gpu {
             &mut self.view_locked,
             ring,
         );
+        // El panel de capas pudo crear, duplicar, borrar o mover capas: esos cambios pasan al historial de la pieza
+        // (Ctrl+Z los deshace) antes de cualquier otra cosa que tambien entre a el.
+        self.flush_layout_logs();
+        // Ajustes de capas (opacidad, modo, nombre, ojo, candados, recorte, color liso, mascara encendida o invertida):
+        // se comparan con los del cuadro anterior y el cambio entra al historial (un arrastre de deslizador es un paso).
+        {
+            let p = &mut self.pieces[active];
+            let now = p.layers.settings_snapshot();
+            p.history
+                .record_settings(layers::settings_diff(&p.settings_seen, &now), dragging);
+            p.settings_seen = now;
+        }
         // El panel de capas cambio algo que se ve (ojo, opacidad, modo, recorte, fondo): se recompone y se sube la
         // textura de esa pieza antes de enviar este cuadro.
         if layers_dirty {
@@ -1979,9 +2339,9 @@ impl Gpu {
         if save_project {
             self.save_project();
         }
-        // "Guardar imagen" del menu: diálogo para elegir dónde guardar y exportación de la textura.
-        if save_image {
-            let msg = self.save_image();
+        // Ventana de Exportar: diálogo para elegir dónde guardar y exportación de la textura (PNG o mapas de un motor).
+        if let Some(kind) = save_image {
+            let msg = self.save_image(kind);
             self.window.set_title(&msg);
         }
         // El boton Importar del panel de mallas ya tiene el archivo elegido: se reemplaza el modelo.
@@ -2013,6 +2373,47 @@ impl Gpu {
         self.window.pre_present_notify();
         self.queue.present(frame);
         (repaint_delay, view_axis)
+    }
+}
+
+/// Resumen de la vista (camara y tamano de la ventana): dos resumenes iguales significan que un punto de la pantalla sigue
+/// siendo el mismo sitio del modelo. Lo usa `App::line_anchor` para Mayus+clic.
+fn view_key(camera: &Camera, width: u32, height: u32) -> [f32; 8] {
+    [
+        camera.angle_x,
+        camera.angle_y,
+        camera.distance(),
+        camera.pan_x,
+        camera.pan_z,
+        if camera.orthographic { 1.0 } else { 0.0 },
+        width as f32,
+        height as f32,
+    ]
+}
+
+#[cfg(test)]
+mod view_key_tests {
+    use super::*;
+
+    #[test]
+    fn el_resumen_de_la_vista_cambia_con_cualquier_movimiento_de_camara_o_de_ventana() {
+        let base = Camera::default();
+        let k = view_key(&base, 1280, 720);
+        // La misma vista da el mismo resumen (asi Mayus+clic reconoce que nada se movio).
+        assert_eq!(k, view_key(&Camera::default(), 1280, 720));
+        let mut girada = Camera::default();
+        girada.rotate_by(10.0, 0.0);
+        assert_ne!(k, view_key(&girada, 1280, 720));
+        let mut movida = Camera::default();
+        movida.pan_by(10.0, 10.0);
+        assert_ne!(k, view_key(&movida, 1280, 720));
+        let mut acercada = Camera::default();
+        acercada.zoom(1.0);
+        assert_ne!(k, view_key(&acercada, 1280, 720));
+        let mut ortografica = Camera::default();
+        ortografica.orthographic = true;
+        assert_ne!(k, view_key(&ortografica, 1280, 720));
+        assert_ne!(k, view_key(&base, 1920, 1080));
     }
 }
 
@@ -2159,19 +2560,47 @@ impl ApplicationHandler for App {
                         let was_down = self.left_down;
                         self.left_down = down;
                         if down {
-                            // Con la regla recta, un trazo que empieza cerca de ella queda pegado a su linea.
-                            let start = if matches!(gpu.tool, Tool::Brush | Tool::Eraser) {
-                                gpu.ui.ruler_begin(self.mouse)
+                            // Mayus+clic con pincel o borrador: recta desde donde termino el ultimo trazo hasta el clic
+                            // (solo si la vista sigue como estaba; si no, se pinta un trazo normal).
+                            let line_from = if self.modifiers.shift_key()
+                                && matches!(gpu.tool, Tool::Brush | Tool::Eraser)
+                            {
+                                let key =
+                                    view_key(&self.camera, gpu.config.width, gpu.config.height);
+                                self.line_anchor
+                                    .filter(|(_, k)| *k == key)
+                                    .map(|(p, _)| p)
                             } else {
-                                self.mouse
+                                None
                             };
-                            self.last_paint = Some(start);
-                            self.moved_since_tick = false;
-                            self.next_build_up = None;
-                            if gpu.stroke_begin(&self.camera, start.0, start.1) {
-                                gpu.window.request_redraw();
+                            if let Some(from) = line_from {
+                                self.last_paint = Some(self.mouse);
+                                self.moved_since_tick = false;
+                                self.next_build_up = None;
+                                if gpu.stroke_begin_line(&self.camera, from, self.mouse) {
+                                    gpu.window.request_redraw();
+                                }
+                            } else {
+                                // Con la regla recta, un trazo que empieza cerca de ella queda pegado a su linea.
+                                let start = if matches!(gpu.tool, Tool::Brush | Tool::Eraser) {
+                                    gpu.ui.ruler_begin(self.mouse)
+                                } else {
+                                    self.mouse
+                                };
+                                self.last_paint = Some(start);
+                                self.moved_since_tick = false;
+                                self.next_build_up = None;
+                                if gpu.stroke_begin(&self.camera, start.0, start.1) {
+                                    gpu.window.request_redraw();
+                                }
                             }
                         } else if was_down {
+                            // Donde termina este trazo: desde ahi sale la recta del proximo Mayus+clic.
+                            if matches!(gpu.tool, Tool::Brush | Tool::Eraser) {
+                                let key =
+                                    view_key(&self.camera, gpu.config.width, gpu.config.height);
+                                self.line_anchor = self.last_paint.map(|p| (p, key));
+                            }
                             self.last_paint = None;
                             gpu.ui.ruler_end();
                             gpu.stroke_end();
@@ -2226,7 +2655,10 @@ impl ApplicationHandler for App {
                     gpu.window.request_redraw();
                 }
                 // El cursor propio (circulo del pincel o chincheta del cuentagotas) sigue al raton.
-                if matches!(gpu.tool, Tool::Brush | Tool::Eraser | Tool::Eyedropper) {
+                if matches!(
+                    gpu.tool,
+                    Tool::Brush | Tool::Eraser | Tool::Eyedropper | Tool::Smudge | Tool::Blur
+                ) {
                     gpu.window.request_redraw();
                 }
             }
@@ -2402,6 +2834,10 @@ impl ApplicationHandler for App {
                                 gpu.tool = Tool::Fill;
                                 retitle = true;
                             }
+                            "r" => {
+                                gpu.tool = Tool::Gradient;
+                                retitle = true;
+                            }
                             "i" => {
                                 gpu.tool = Tool::Eyedropper;
                                 retitle = true;
@@ -2445,7 +2881,12 @@ impl ApplicationHandler for App {
                 // redibujando hasta que termine.
                 let animating = self.camera.update_animation();
                 let (delay, view_axis) =
-                    gpu.render(&self.camera, self.mouse, self.cursor_in_window);
+                    gpu.render(
+                        &self.camera,
+                        self.mouse,
+                        self.cursor_in_window,
+                        self.left_down,
+                    );
                 if let Some(axis) = view_axis {
                     if !gpu.view_locked {
                         self.camera.snap_to(axis);
@@ -2476,6 +2917,7 @@ fn main() {
         middle_down: false,
         right_down: false,
         last_paint: None,
+        line_anchor: None,
         modifiers: ModifiersState::default(),
         cursor_in_window: false,
         next_build_up: None,
@@ -2484,4 +2926,21 @@ fn main() {
     event_loop
         .run_app(&mut app)
         .expect("error en el bucle de eventos");
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::*;
+
+    #[test]
+    fn mirror_vec_refleja_solo_los_ejes_marcados() {
+        let v = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(mirror_vec(v, [false; 3]), v);
+        assert_eq!(mirror_vec(v, [true, false, false]), Vec3::new(-1.0, 2.0, 3.0));
+        assert_eq!(mirror_vec(v, [false, true, true]), Vec3::new(1.0, -2.0, -3.0));
+        assert_eq!(mirror_vec(v, [true; 3]), -v);
+        // Reflejar dos veces devuelve el original.
+        let f = [true, false, true];
+        assert_eq!(mirror_vec(mirror_vec(v, f), f), v);
+    }
 }

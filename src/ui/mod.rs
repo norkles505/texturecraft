@@ -32,6 +32,7 @@ use winit::window::Window;
 
 use crate::Tool;
 use crate::blend::BlendMode;
+use crate::export::SaveKind;
 use crate::brush::Brush;
 use crate::camera::{Camera, ViewAxis};
 use crate::layers::{Background, LayerStack};
@@ -74,8 +75,10 @@ struct OptionsPanel {
     settings_open: bool,
     /// La fila "Regresar a mi galería" del menu se pulso: `UiLayer::run` vuelve a mostrar la galeria y la apaga.
     open_gallery: bool,
-    /// La fila "Guardar imagen" del menu se pulso: `UiLayer::run` lo avisa a `main.rs` (`UiOutput::save_image`) y lo apaga.
-    save_image: bool,
+    /// Ventana de Exportar abierta (la abre la fila "Guardar imagen" del menu).
+    export_open: bool,
+    /// Lo que se eligio en la ventana de Exportar: `UiLayer::run` lo avisa a `main.rs` (`UiOutput::save_image`) y lo apaga.
+    save_choice: Option<SaveKind>,
     /// Interruptor "Modo edición" de la ventana de Ajustes (apagado por defecto). Todavia solo se muestra: no cambia
     /// nada del programa.
     edit_mode: bool,
@@ -105,6 +108,9 @@ struct OptionsPanel {
     ruler_circle: Option<(egui::Pos2, egui::Pos2)>,
     ruler_ellipse: Option<RulerEllipse>,
     ruler_snapping: bool,
+    /// Simetria (espejo del trazo) en los planos X, Y y Z del modelo, que esta centrado en el origen. Se enciende en el
+    /// panel de reglas y la lee `main.rs` con `UiLayer::symmetry`.
+    symmetry: [bool; 3],
     /// Mientras el selector de archivos del boton Importar esta abierto: canal por donde llega la ruta elegida
     /// (`None` = cancelado). Cuando llega, queda en `pending_import` hasta que `UiLayer::take_import` la entrega.
     mesh_import: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
@@ -159,8 +165,8 @@ pub struct UiOutput {
     pub parts_dirty: bool,
     /// Se pulso "Regresar a mi galería": hay que guardar el proyecto en curso (capas y miniatura).
     pub save_project: bool,
-    /// Se pulso "Guardar imagen": hay que exportar la textura de la pieza activa como PNG.
-    pub save_image: bool,
+    /// Se eligio algo en la ventana de Exportar: hay que exportar la pieza activa (PNG o mapas de un motor).
+    pub save_image: Option<SaveKind>,
 }
 
 /// Todo lo de egui junto: contexto, entrada de winit y dibujado en wgpu.
@@ -245,6 +251,11 @@ impl UiLayer {
             .or_else(|| self.options.pending_import.take())
     }
 
+    /// Lado (en pixeles) de la textura que se eligio en la galeria para los proyectos nuevos.
+    pub fn new_texture_size(&self) -> u32 {
+        self.gallery.texture_size
+    }
+
     /// Vuelve a mostrar la galeria (por ejemplo si no se pudo abrir el proyecto al que se hizo clic).
     pub fn show_gallery(&mut self) {
         self.gallery.open = true;
@@ -288,7 +299,7 @@ impl UiLayer {
         let mut layers_dirty = false;
         let mut parts_dirty = false;
         let mut save_project = false;
-        let mut save_image = false;
+        let mut save_image = None;
         let mut view_axis = None;
         let panel = &mut self.panel;
         let options = &mut self.options;
@@ -327,8 +338,8 @@ impl UiLayer {
             }
             // La galeria se dibuja encima de todo mientras `gallery.open` sea true.
             galeria::gallery_screen(ui.ctx(), gallery);
-            // "Guardar imagen": la exportacion la hace `main.rs` con la bandera `save_image` de `UiOutput`.
-            save_image = std::mem::take(&mut options.save_image);
+            // Ventana de Exportar: la exportacion la hace `main.rs` con lo elegido (`save_image` de `UiOutput`).
+            save_image = options.save_choice.take();
         });
         // Cursor, portapapeles, enlaces...
         self.state

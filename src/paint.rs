@@ -94,6 +94,9 @@ pub struct StrokeState {
     /// el valor mas alto de la punta que paso por ahi. Se limpia con `stroke_alpha`.
     stroke_depth: Vec<f32>,
     stroke_dab: u32,
+    /// Solo Difuminar: centro (en texeles) del toque anterior del trazo, para saber cuanto se movio el pincel y de donde
+    /// arrastrar la imagen. `None` hasta el primer toque; se vacia al empezar un trazo.
+    smudge_prev: Option<[f32; 2]>,
     /// Rectangulo tocado por el trazo (para limpiar `stroke_alpha` sin recorrer todo).
     touched: Option<Rect>,
 }
@@ -168,7 +171,12 @@ struct Prep {
     a: (f32, f32),
     b: (f32, f32),
     c: (f32, f32),
+    /// Ya no se usa para calcular (los coeficientes `k` lo traen dividido), pero se conserva con el resto de la preparacion.
+    #[allow(dead_code)]
     det: f32,
+    /// Coeficientes baricentricos ya divididos por `det`: `w0 = k[0] * (px - c.0) + k[1] * (py - c.1)` y
+    /// `w1 = k[2] * (px - c.0) + k[3] * (py - c.1)`. Asi cada texel se calcula con multiplicaciones y sumas, sin dividir.
+    k: [f32; 4],
     /// Altura del triangulo (en texeles) desde cada vertice a su lado opuesto: distancia al borde = peso * altura.
     h: [f32; 3],
     bx: Rect,
@@ -180,13 +188,20 @@ struct Prep {
 
 /// Pesos baricentricos `(w0, w1, w2)` del texel `(px, py)` en el triangulo `pr`.
 fn bary(pr: &Prep, px: f32, py: f32) -> (f32, f32, f32) {
-    let w0 = ((pr.b.1 - pr.c.1) * (px - pr.c.0) + (pr.c.0 - pr.b.0) * (py - pr.c.1)) / pr.det;
-    let w1 = ((pr.c.1 - pr.a.1) * (px - pr.c.0) + (pr.a.0 - pr.c.0) * (py - pr.c.1)) / pr.det;
+    let (dx, dy) = (px - pr.c.0, py - pr.c.1);
+    let w0 = pr.k[0] * dx + pr.k[1] * dy;
+    let w1 = pr.k[2] * dx + pr.k[3] * dy;
     (w0, w1, 1.0 - w0 - w1)
 }
 
 /// El texel esta dentro del triangulo (con la misma tolerancia que usa la pasada 0).
 fn inside(pr: &Prep, px: f32, py: f32) -> bool {
+    // El interior del triangulo cabe siempre en su caja (que ademas lleva `PAD_TEXELS` de margen): fuera de ella no
+    // hace falta calcular los pesos.
+    let (x0, y0, x1, y1) = pr.bx;
+    if px < x0 as f32 || px > x1 as f32 || py < y0 as f32 || py > y1 as f32 {
+        return false;
+    }
     let (w0, w1, w2) = bary(pr, px, py);
     w0 >= -INSIDE_EPS && w1 >= -INSIDE_EPS && w2 >= -INSIDE_EPS
 }
@@ -216,6 +231,158 @@ fn row_span(pr: &Prep, y: u32, center: Vec3, limit: f32) -> Option<(u32, u32)> {
     (lo <= hi).then_some((lo as u32, hi as u32))
 }
 
+/// Que hace `StrokeState::dab_filter` con los texeles bajo el pincel (Difuminar y Borrosidad de la barra).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FilterMode {
+    /// Difuminar: arrastra la imagen en la direccion del trazo (cada texel toma lo que habia detras de el, como pasar
+    /// el dedo por pintura fresca).
+    Smudge,
+    /// Borrosidad: mezcla cada texel con sus vecinos.
+    Blur,
+}
+
+/// Mitad del lado (en texeles) de la ventana con que la borrosidad promedia a los vecinos: 3 = ventana de 7x7.
+const BLUR_REACH: i32 = 3;
+
+/// Triangulos listos para recorrer sus texeles (misma preparacion que `StrokeState::dab_surface`).
+fn prep_tris(size: u32, tris: &[SurfTri]) -> Vec<Prep> {
+    let max = (size - 1) as f32;
+    let mut preps: Vec<Prep> = Vec::with_capacity(tris.len());
+    for t in tris {
+        let uv = wrapped_uv(&t.uv);
+        let Some(bx) = tri_box(size, &uv) else {
+            continue;
+        };
+        let a = (uv[0][0] * max, uv[0][1] * max);
+        let b = (uv[1][0] * max, uv[1][1] * max);
+        let c = (uv[2][0] * max, uv[2][1] * max);
+        let det = (b.1 - c.1) * (a.0 - c.0) + (c.0 - b.0) * (a.1 - c.1);
+        if det.abs() < 1e-6 {
+            continue;
+        }
+        let len = |p: (f32, f32), q: (f32, f32)| {
+            ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2)).sqrt().max(1e-6)
+        };
+        let area2 = det.abs();
+        let h = [area2 / len(b, c), area2 / len(c, a), area2 / len(a, b)];
+        let (e0, e1) = (t.p[0] - t.p[2], t.p[1] - t.p[2]);
+        let (k0x, k0y) = ((b.1 - c.1) / det, (c.0 - b.0) / det);
+        let (k1x, k1y) = ((c.1 - a.1) / det, (a.0 - c.0) / det);
+        let (gx, gy) = (e0 * k0x + e1 * k1x, e0 * k0y + e1 * k1y);
+        preps.push(Prep {
+            p: t.p,
+            a,
+            b,
+            c,
+            det,
+            k: [k0x, k0y, k1x, k1y],
+            h,
+            bx,
+            gx,
+            gy,
+        });
+    }
+    preps
+}
+
+/// Pixel RGBA8 del texel `idx` como color premultiplicado en 0..1 (asi promediar no tine de negro lo transparente).
+fn premul(pixels: &[u8], idx: usize) -> [f32; 4] {
+    let i = idx * 4;
+    let a = pixels[i + 3] as f32 / 255.0;
+    [
+        pixels[i] as f32 / 255.0 * a,
+        pixels[i + 1] as f32 / 255.0 * a,
+        pixels[i + 2] as f32 / 255.0 * a,
+        a,
+    ]
+}
+
+/// Promedio (premultiplicado) de la ventana de `(2 * reach + 1)^2` texeles alrededor de `(x, y)`.
+fn window_average(pixels: &[u8], size: u32, x: u32, y: u32, reach: i32) -> [f32; 4] {
+    let mut acc = [0.0f32; 4];
+    let mut n = 0.0f32;
+    for dy in -reach..=reach {
+        let yy = y as i32 + dy;
+        if yy < 0 || yy >= size as i32 {
+            continue;
+        }
+        for dx in -reach..=reach {
+            let xx = x as i32 + dx;
+            if xx < 0 || xx >= size as i32 {
+                continue;
+            }
+            let p = premul(pixels, (yy as u32 * size + xx as u32) as usize);
+            for k in 0..4 {
+                acc[k] += p[k];
+            }
+            n += 1.0;
+        }
+    }
+    acc.map(|v| v / n.max(1.0))
+}
+
+/// Degradado lineal sobre el modelo (herramienta Degradado): el valor de cada texel sale de su posicion 3D proyectada
+/// sobre el eje `from` -> `to` (0 en `from`, 1 en `to`, y constante mas alla de los extremos).
+#[derive(Clone, Copy, Debug)]
+pub struct GradientSpec {
+    pub from: Vec3,
+    pub to: Vec3,
+    /// Color del inicio. En una mascara es el gris desde el que parte el degradado.
+    pub color: [u8; 3],
+    /// Opacidad del pincel (0..1): tope de la opacidad del degradado, o cuanto se mezcla con lo que habia en la mascara.
+    pub opacity: f32,
+    /// Bloqueo alfa de la capa: solo cambia el color de lo que ya tiene algo.
+    pub alpha_lock: bool,
+    /// El destino es una mascara (grises, siempre opaca): el degradado va de `color` al gris opuesto en vez de ir a
+    /// transparente, y el alfa no se toca.
+    pub mask: bool,
+}
+
+/// Pone en el texel `i` (indice en bytes) el degradado en el punto `t` (0..1 sobre el eje). Devuelve true si el pixel
+/// cambio. En una capa el color es el de `g.color` con una opacidad que baja de `g.opacity` a 0 (modo Normal sobre lo
+/// que habia); en una mascara el gris va de `g.color` a su opuesto.
+fn gradient_texel(pixels: &mut [u8], i: usize, t: f32, g: &GradientSpec) -> bool {
+    let old = [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
+    let mut new = old;
+    if g.mask {
+        let g0 = g.color[0] as f32;
+        let target = g0 + ((255.0 - g0) - g0) * t;
+        for k in 0..3 {
+            let o = old[k] as f32;
+            new[k] = (o + (target - o) * g.opacity).round().clamp(0.0, 255.0) as u8;
+        }
+    } else {
+        let da = g.opacity * (1.0 - t);
+        // Por debajo de medio nivel de alfa no cambiaria ni un pixel: no se toca.
+        if da <= 0.002 {
+            return false;
+        }
+        if g.alpha_lock {
+            // Bloqueo alfa: si no habia nada no se hace nada; si no, solo cambia el color.
+            if old[3] == 0 {
+                return false;
+            }
+            for k in 0..3 {
+                let o = old[k] as f32;
+                new[k] = (o + (g.color[k] as f32 - o) * da).round().clamp(0.0, 255.0) as u8;
+            }
+        } else {
+            let keep = (old[3] as f32 / 255.0) * (1.0 - da);
+            let out_a = da + keep;
+            for k in 0..3 {
+                let c = (g.color[k] as f32 * da + old[k] as f32 * keep) / out_a;
+                new[k] = c.round().clamp(0.0, 255.0) as u8;
+            }
+            new[3] = (out_a * 255.0 + 0.5).min(255.0) as u8;
+        }
+    }
+    if new == old {
+        return false;
+    }
+    pixels[i..i + 4].copy_from_slice(&new);
+    true
+}
+
 impl StrokeState {
     pub fn new(size: u32) -> StrokeState {
         let n = (size * size) as usize;
@@ -228,12 +395,14 @@ impl StrokeState {
             stroke_dual: vec![0.0; n],
             stroke_depth: vec![0.0; n],
             stroke_dab: 0,
+            smudge_prev: None,
             touched: None,
         }
     }
 
     /// Al apoyar el boton: limpia el estado del trazo anterior (solo donde se toco).
     pub fn begin_stroke(&mut self) {
+        self.smudge_prev = None;
         if let Some((x0, y0, x1, y1)) = self.touched.take() {
             for y in y0..=y1 {
                 let a = (y * self.size + x0) as usize;
@@ -381,47 +550,12 @@ impl StrokeState {
             Some(d) => d.limit(),
             None => radius + dry.as_ref().map_or(0.0, |(_, d)| d.reach()),
         };
-        let max = (self.size - 1) as f32;
-        // Preparacion: cada triangulo en texeles, con su caja.
-        let mut preps: Vec<Prep> = Vec::with_capacity(tris.len());
-        let mut rect: Option<Rect> = None;
-        for t in tris {
-            let uv = wrapped_uv(&t.uv);
-            let Some(bx) = tri_box(self.size, &uv) else {
-                continue;
-            };
-            let a = (uv[0][0] * max, uv[0][1] * max);
-            let b = (uv[1][0] * max, uv[1][1] * max);
-            let c = (uv[2][0] * max, uv[2][1] * max);
-            let det = (b.1 - c.1) * (a.0 - c.0) + (c.0 - b.0) * (a.1 - c.1);
-            // Triangulos sin area en la textura (por ejemplo, un OBJ sin UVs) no se pueden pintar.
-            if det.abs() < 1e-6 {
-                continue;
-            }
-            let len = |p: (f32, f32), q: (f32, f32)| {
-                ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2)).sqrt().max(1e-6)
-            };
-            let area2 = det.abs();
-            let h = [area2 / len(b, c), area2 / len(c, a), area2 / len(a, b)];
-            rect = Some(union(rect, bx));
-            // Posicion 3D afin en los texeles: p2 + (p0 - p2) * w0 + (p1 - p2) * w1, con w0 y w1 afines en (px, py).
-            let (e0, e1) = (t.p[0] - t.p[2], t.p[1] - t.p[2]);
-            let (k0x, k0y) = ((b.1 - c.1) / det, (c.0 - b.0) / det);
-            let (k1x, k1y) = ((c.1 - a.1) / det, (a.0 - c.0) / det);
-            let (gx, gy) = (e0 * k0x + e1 * k1x, e0 * k0y + e1 * k1y);
-            preps.push(Prep {
-                p: t.p,
-                a,
-                b,
-                c,
-                det,
-                h,
-                bx,
-                gx,
-                gy,
-            });
-        }
-        let rect = rect?;
+        // Preparacion: cada triangulo en texeles, con su caja (la misma de `prep_tris`).
+        let preps = prep_tris(self.size, tris);
+        let rect = preps
+            .iter()
+            .map(|p| p.bx)
+            .fold(None, |acc, b| Some(union(acc, b)))?;
         // Rectangulo de los texeles que de verdad cambiaron (el que hay que recomponer y subir a la GPU).
         let mut changed: Option<Rect> = None;
         // Pasada 0: los texeles de dentro de cada triangulo. Pasada 1: el relleno alrededor, solo en los texeles que
@@ -539,6 +673,238 @@ impl StrokeState {
         }
         // Para limpiar `stroke_alpha` al acabar el trazo se guarda toda la caja (pudo cambiar aunque no cambie el pixel).
         self.touched = Some(union(self.touched, rect));
+        changed
+    }
+
+    /// Un toque de Difuminar o Borrosidad SOBRE EL MODELO (mismas medidas que `dab_surface`: radio y distancia 3D).
+    /// En vez de pintar un color, cambia los texeles que ya hay bajo el pincel, mas hacia el centro (`strength` 0..1 es
+    /// la fuerza maxima en el centro):
+    /// - `Blur`: cada texel se acerca al promedio de sus vecinos.
+    /// - `Smudge`: cada texel se acerca a lo que habia unos texeles detras de el, segun cuanto se movio el centro del
+    ///   toque desde el toque anterior (asi la imagen se arrastra en la direccion del trazo). El primer toque solo
+    ///   marca el punto de partida, y un salto grande (otra isla, el cursor levantado) no arrastra nada.
+    /// Con `alpha_lock` el alfa no cambia. Lee siempre los pixeles de ANTES del toque. Devuelve el rectangulo de los
+    /// texeles que cambiaron, o `None` si no cambio ninguno.
+    pub fn dab_filter(
+        &mut self,
+        pixels: &mut [u8],
+        tris: &[SurfTri],
+        center: Vec3,
+        radius: f32,
+        mode: FilterMode,
+        strength: f32,
+        alpha_lock: bool,
+    ) -> Option<Rect> {
+        if radius <= 0.0 || strength <= 0.0 {
+            return None;
+        }
+        self.stroke_dab += 1;
+        let size = self.size;
+        let preps = prep_tris(size, tris);
+        // Texeles bajo el pincel: (indice, x, y, peso). Cada texel entra una sola vez (`dab_mark`), aunque lo cubran
+        // dos triangulos o el relleno de una isla.
+        let mut texels: Vec<(usize, u32, u32, f32)> = Vec::new();
+        for pass in 0..2 {
+            for pr in &preps {
+                let (_, y0, _, y1) = pr.bx;
+                for y in y0..=y1 {
+                    let Some((xa, xb)) = row_span(pr, y, center, radius) else {
+                        continue;
+                    };
+                    for x in xa..=xb {
+                        let idx = (y * size + x) as usize;
+                        if self.dab_mark[idx] == self.stroke_dab {
+                            continue;
+                        }
+                        let (px, py) = (x as f32, y as f32);
+                        let (w0, w1, w2) = bary(pr, px, py);
+                        let ok = if pass == 0 {
+                            w0 >= -INSIDE_EPS && w1 >= -INSIDE_EPS && w2 >= -INSIDE_EPS
+                        } else {
+                            w0 * pr.h[0] >= -PAD_TEXELS
+                                && w1 * pr.h[1] >= -PAD_TEXELS
+                                && w2 * pr.h[2] >= -PAD_TEXELS
+                        };
+                        if !ok {
+                            continue;
+                        }
+                        if pass == 1 && preps.iter().any(|q| inside(q, px, py)) {
+                            continue;
+                        }
+                        self.dab_mark[idx] = self.stroke_dab;
+                        let pos = pr.p[0] * w0 + pr.p[1] * w1 + pr.p[2] * w2;
+                        let d = pos.distance(center);
+                        if d >= radius {
+                            continue;
+                        }
+                        // Suave: 1 en el centro, 0 en el borde, sin escalon.
+                        let t = 1.0 - d / radius;
+                        texels.push((idx, x, y, t * t * (3.0 - 2.0 * t)));
+                    }
+                }
+            }
+        }
+        if texels.is_empty() {
+            return None;
+        }
+        // Difuminar: cuanto se movio el centro del toque (en texeles, medido sobre los texeles que el pincel cubre) desde
+        // el toque anterior. `None` = no hay nada que arrastrar: es el primer toque del trazo, o hubo un salto mayor que
+        // el toque mismo (cambio de isla, cursor levantado).
+        let drag: Option<(i64, i64)> = match mode {
+            FilterMode::Blur => None,
+            FilterMode::Smudge => {
+                let (mut sx, mut sy, mut sw) = (0.0f32, 0.0f32, 0.0f32);
+                let (mut lo, mut hi) = ([u32::MAX; 2], [0u32; 2]);
+                for &(_, x, y, w) in &texels {
+                    sx += x as f32 * w;
+                    sy += y as f32 * w;
+                    sw += w;
+                    lo = [lo[0].min(x), lo[1].min(y)];
+                    hi = [hi[0].max(x), hi[1].max(y)];
+                }
+                let now = [sx / sw.max(1e-6), sy / sw.max(1e-6)];
+                let extent = hi[0].saturating_sub(lo[0]).max(hi[1].saturating_sub(lo[1])) as f32 + 1.0;
+                match self.smudge_prev {
+                    // Primer toque del trazo: solo marca el punto de partida.
+                    None => {
+                        self.smudge_prev = Some(now);
+                        None
+                    }
+                    Some(p) => {
+                        let d = [now[0] - p[0], now[1] - p[1]];
+                        if d[0].hypot(d[1]) > extent {
+                            // Salto (otra isla, cursor levantado): no arrastra y el trazo sigue desde aqui.
+                            self.smudge_prev = Some(now);
+                            None
+                        } else {
+                            let r = (d[0].round() as i64, d[1].round() as i64);
+                            if r == (0, 0) {
+                                // Se movio menos de medio texel: el punto de partida NO avanza, asi el movimiento
+                                // pequeno se acumula toque a toque hasta que llega a un texel y arrastra.
+                                None
+                            } else {
+                                self.smudge_prev = Some(now);
+                                Some(r)
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        // Un toque de borrosidad no debe pasarse de largo a toque lleno; el difuminado arrastra con mas fuerza.
+        let gain = match mode {
+            FilterMode::Blur => 0.5,
+            FilterMode::Smudge => 0.6,
+        };
+        let mut out: Vec<(usize, [u8; 4])> = Vec::with_capacity(texels.len());
+        for &(idx, x, y, w) in &texels {
+            let old = premul(pixels, idx);
+            let target = match mode {
+                FilterMode::Blur => window_average(pixels, size, x, y, BLUR_REACH),
+                FilterMode::Smudge => {
+                    let Some((dx, dy)) = drag else { continue };
+                    // Lo que habia detras de este texel; si cae fuera de la textura o fuera de toda isla, no hay nada
+                    // que arrastrar y el texel se queda como esta.
+                    let (sx, sy) = (x as i64 - dx, y as i64 - dy);
+                    let dentro = (0..size as i64).contains(&sx) && (0..size as i64).contains(&sy);
+                    if !dentro || !preps.iter().any(|q| inside(q, sx as f32, sy as f32)) {
+                        continue;
+                    }
+                    premul(pixels, (sy as u32 * size + sx as u32) as usize)
+                }
+            };
+            let f = (w * strength * gain).clamp(0.0, 1.0);
+            let mut v = [0.0f32; 4];
+            for k in 0..4 {
+                v[k] = old[k] + (target[k] - old[k]) * f;
+            }
+            let i = idx * 4;
+            let a = if alpha_lock { old[3] } else { v[3] };
+            let rgba = if a <= 1e-6 {
+                [0, 0, 0, 0]
+            } else {
+                // Con el alfa bloqueado el color se saca del alfa nuevo del promedio, no del que se queda.
+                let da = if alpha_lock { v[3].max(1e-6) } else { a };
+                let col = |c: f32| ((c / da).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                [
+                    col(v[0]),
+                    col(v[1]),
+                    col(v[2]),
+                    (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8,
+                ]
+            };
+            // Bloqueo alfa sobre un texel vacio: no se toca (no hay color que cambiar).
+            if alpha_lock && pixels[i + 3] == 0 {
+                continue;
+            }
+            out.push((idx, rgba));
+        }
+        let mut changed: Option<Rect> = None;
+        for (idx, rgba) in out {
+            let i = idx * 4;
+            if pixels[i..i + 4] != rgba {
+                pixels[i..i + 4].copy_from_slice(&rgba);
+                let (x, y) = ((idx as u32) % size, (idx as u32) / size);
+                changed = Some(union(changed, (x, y, x, y)));
+            }
+        }
+        changed
+    }
+
+    /// Degradado lineal sobre el modelo (ver `GradientSpec`): recorre TODOS los texeles de `tris` (con el relleno de
+    /// costuras de `PAD_TEXELS`, como `dab_surface`) y pone en cada uno el degradado segun su posicion 3D. Quien llama
+    /// guarda antes las baldosas de deshacer (`surface_rect`) y, para recalcularlo mientras se arrastra, devuelve la capa
+    /// a como estaba (`History::restore_pending`). Devuelve el rectangulo de los texeles que cambiaron, o `None` si el
+    /// eje no tiene largo, la opacidad es 0 o no cambio ninguno.
+    pub fn dab_gradient(
+        &mut self,
+        pixels: &mut [u8],
+        tris: &[SurfTri],
+        g: GradientSpec,
+    ) -> Option<Rect> {
+        let axis = g.to - g.from;
+        let len2 = axis.length_squared();
+        if len2 < 1e-12 || g.opacity <= 0.0 {
+            return None;
+        }
+        self.stroke_dab += 1;
+        let size = self.size;
+        let preps = prep_tris(size, tris);
+        let mut changed: Option<Rect> = None;
+        // Pasada 0: el interior de cada triangulo. Pasada 1: el relleno alrededor, solo en los texeles que ningun
+        // triangulo cubrio (asi el relleno de una isla no pisa a la vecina). Como la pasada 0 ya marco el interior de
+        // TODOS los triangulos, `dab_mark` basta para saber si otro triangulo cubre un texel.
+        for pass in 0..2 {
+            for pr in &preps {
+                let (x0, y0, x1, y1) = pr.bx;
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let idx = (y * size + x) as usize;
+                        if self.dab_mark[idx] == self.stroke_dab {
+                            continue;
+                        }
+                        let (w0, w1, w2) = bary(pr, x as f32, y as f32);
+                        let ok = if pass == 0 {
+                            w0 >= -INSIDE_EPS && w1 >= -INSIDE_EPS && w2 >= -INSIDE_EPS
+                        } else {
+                            w0 * pr.h[0] >= -PAD_TEXELS
+                                && w1 * pr.h[1] >= -PAD_TEXELS
+                                && w2 * pr.h[2] >= -PAD_TEXELS
+                        };
+                        if !ok {
+                            continue;
+                        }
+                        self.dab_mark[idx] = self.stroke_dab;
+                        // En el relleno la posicion se extrapola por el plano del triangulo.
+                        let pos = pr.p[0] * w0 + pr.p[1] * w1 + pr.p[2] * w2;
+                        let t = ((pos - g.from).dot(axis) / len2).clamp(0.0, 1.0);
+                        if gradient_texel(pixels, idx * 4, t, &g) {
+                            changed = Some(union(changed, (x, y, x, y)));
+                        }
+                    }
+                }
+            }
+        }
         changed
     }
 
@@ -1101,6 +1467,228 @@ mod tests {
             antes[i] > 0.9 && s.stroke_depth[i] > 0.0 && s.stroke_depth[i] < antes[i] - 0.2
         });
         assert!(baja, "la profundidad no se reinicio en la pasada nueva");
+    }
+
+    /// Degradado rojo de x = 0 a x = 2 por el cuadrado (el texel tx cae en x = (tx / 63 - 0.25) / 0.25 * 2, y la fila 31
+    /// en y ~ 0.97, dentro del cuadrado).
+    fn degradado_rojo() -> GradientSpec {
+        GradientSpec {
+            from: Vec3::new(0.0, 1.0, 0.0),
+            to: Vec3::new(2.0, 1.0, 0.0),
+            color: [255, 0, 0],
+            opacity: 1.0,
+            alpha_lock: false,
+            mask: false,
+        }
+    }
+
+    #[test]
+    fn el_degradado_baja_el_alfa_de_un_extremo_al_otro() {
+        let mut s = StrokeState::new(64);
+        let mut pixels = layer(64, [0, 0, 0, 0]);
+        s.begin_stroke();
+        assert!(
+            s.dab_gradient(&mut pixels, &cuadrado(), degradado_rojo())
+                .is_some()
+        );
+        // Casi opaco junto al inicio, casi transparente junto al final, y sin subir entre los dos.
+        let (ini, fin) = (px(&pixels, 64, 16, 31)[3], px(&pixels, 64, 30, 31)[3]);
+        assert!(ini > 220, "alfa al inicio = {ini}");
+        assert!(fin < 40, "alfa al final = {fin}");
+        for tx in 16..30u32 {
+            assert!(
+                px(&pixels, 64, tx + 1, 31)[3] <= px(&pixels, 64, tx, 31)[3],
+                "el alfa sube en el texel {tx}"
+            );
+        }
+        // El color es el del pincel y fuera del modelo no se pinta nada.
+        assert_eq!(&px(&pixels, 64, 20, 31)[..3], &[255, 0, 0]);
+        assert_eq!(px(&pixels, 64, 2, 2)[3], 0);
+    }
+
+    #[test]
+    fn el_degradado_en_una_mascara_va_del_gris_al_opuesto_sin_tocar_el_alfa() {
+        let mut s = StrokeState::new(64);
+        let mut pixels = layer(64, [255, 255, 255, 255]);
+        s.begin_stroke();
+        let spec = GradientSpec {
+            color: [255, 255, 255],
+            mask: true,
+            ..degradado_rojo()
+        };
+        assert!(s.dab_gradient(&mut pixels, &cuadrado(), spec).is_some());
+        // Blanco junto al inicio, casi negro junto al final, y siempre gris y opaco.
+        assert!(px(&pixels, 64, 16, 31)[0] > 230);
+        assert!(px(&pixels, 64, 30, 31)[0] < 30);
+        let medio = px(&pixels, 64, 23, 31);
+        assert!(medio[0] == medio[1] && medio[1] == medio[2], "{medio:?}");
+        assert!(pixels.chunks(4).all(|p| p[3] == 255));
+    }
+
+    #[test]
+    fn el_degradado_respeta_el_bloqueo_alfa_y_no_hace_nada_sin_eje() {
+        let mut s = StrokeState::new(64);
+        let bloqueado = GradientSpec {
+            alpha_lock: true,
+            ..degradado_rojo()
+        };
+        // Con bloqueo alfa sobre una capa vacia no hay nada que cambiar.
+        let mut vacia = layer(64, [0, 0, 0, 0]);
+        s.begin_stroke();
+        assert!(s.dab_gradient(&mut vacia, &cuadrado(), bloqueado).is_none());
+        assert!(vacia.iter().all(|v| *v == 0));
+        // Con los dos extremos en el mismo punto tampoco.
+        let sin_eje = GradientSpec {
+            to: Vec3::new(0.0, 1.0, 0.0),
+            ..degradado_rojo()
+        };
+        assert!(s.dab_gradient(&mut vacia, &cuadrado(), sin_eje).is_none());
+        // Sobre una capa llena cambia el color y no el alfa.
+        let mut llena = layer(64, [0, 0, 255, 255]);
+        assert!(s.dab_gradient(&mut llena, &cuadrado(), bloqueado).is_some());
+        assert!(px(&llena, 64, 16, 31)[0] > 200);
+        assert!(llena.chunks(4).all(|p| p[3] == 255));
+    }
+
+    /// Capa de 64x64 con `izq` a la izquierda del texel `corte` (sin incluirlo) y `der` desde el.
+    fn capa_partida(corte: u32, izq: [u8; 4], der: [u8; 4]) -> Vec<u8> {
+        let mut p = layer(64, der);
+        for y in 0..64u32 {
+            for x in 0..corte {
+                let i = ((y * 64 + x) * 4) as usize;
+                p[i..i + 4].copy_from_slice(&izq);
+            }
+        }
+        p
+    }
+
+    #[test]
+    fn la_borrosidad_suaviza_un_borde_y_no_toca_lejos() {
+        let mut p = capa_partida(24, [255, 0, 0, 255], [0, 0, 255, 255]);
+        let mut s = StrokeState::new(64);
+        s.begin_stroke();
+        let r = s.dab_filter(
+            &mut p,
+            &cuadrado(),
+            Vec3::new(1.0, 1.0, 0.0),
+            0.8,
+            FilterMode::Blur,
+            1.0,
+            false,
+        );
+        assert!(r.is_some());
+        // A los dos lados del borde el color se mezcla con el del otro lado.
+        assert!(px(&p, 64, 24, 31)[0] > 20, "{:?}", px(&p, 64, 24, 31));
+        assert!(px(&p, 64, 23, 31)[2] > 20, "{:?}", px(&p, 64, 23, 31));
+        // Lejos del pincel todo queda igual.
+        assert_eq!(px(&p, 64, 16, 31), [255, 0, 0, 255]);
+        // Una zona lisa sigue lisa: promediar rojo con rojo da rojo.
+        assert_eq!(px(&p, 64, 20, 31), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn el_difuminado_arrastra_la_imagen_en_la_direccion_del_trazo() {
+        // Rojo hasta el texel 20 y azul despues.
+        let mut p = capa_partida(21, [255, 0, 0, 255], [0, 0, 255, 255]);
+        let mut s = StrokeState::new(64);
+        s.begin_stroke();
+        let tris = cuadrado();
+        let toque = |s: &mut StrokeState, p: &mut Vec<u8>, x: f32| {
+            s.dab_filter(
+                p,
+                &tris,
+                Vec3::new(x, 1.0, 0.0),
+                0.5,
+                FilterMode::Smudge,
+                1.0,
+                false,
+            )
+        };
+        // El primer toque solo marca el punto de partida: no cambia nada.
+        assert!(toque(&mut s, &mut p, 0.3).is_none());
+        // Los siguientes avanzan hacia el azul y arrastran el rojo con ellos.
+        for x in [0.5, 0.7, 0.9, 1.1, 1.3] {
+            toque(&mut s, &mut p, x);
+        }
+        let c = px(&p, 64, 23, 31);
+        assert!(c[0] > 30, "no arrastro el rojo: {c:?}");
+        // Lejos del trazo (a la derecha del ultimo toque) sigue azul puro.
+        assert_eq!(px(&p, 64, 31, 31), [0, 0, 255, 255]);
+        // Un trazo nuevo empieza sin punto de partida.
+        s.begin_stroke();
+        assert!(s.smudge_prev.is_none());
+    }
+
+    #[test]
+    fn el_difuminado_no_arrastra_con_un_salto_mas_grande_que_el_toque() {
+        let mut p = capa_partida(21, [255, 0, 0, 255], [0, 0, 255, 255]);
+        let antes = p.clone();
+        let mut s = StrokeState::new(64);
+        s.begin_stroke();
+        let tris = cuadrado();
+        let mut toque = |y: f32| {
+            s.dab_filter(
+                &mut p,
+                &tris,
+                Vec3::new(1.0, y, 0.0),
+                0.4,
+                FilterMode::Smudge,
+                1.0,
+                false,
+            )
+        };
+        assert!(toque(0.4).is_none());
+        // Del primer toque al segundo hay mas de lo que mide el pincel: no se arrastra nada.
+        assert!(toque(1.8).is_none());
+        assert_eq!(p, antes);
+    }
+
+    #[test]
+    fn el_difuminado_acumula_el_movimiento_menor_de_un_texel() {
+        // Pasos de 0.03 unidades = ~0.24 texeles: ninguno solo llega a medio texel, pero juntos si arrastran.
+        // El borde rojo/azul cae en el texel 26 (x = 1.3 del modelo) y el trazo lo cruza (de x = 1.0 a 1.57).
+        let mut p = capa_partida(26, [255, 0, 0, 255], [0, 0, 255, 255]);
+        let antes = p.clone();
+        let mut s = StrokeState::new(64);
+        s.begin_stroke();
+        let tris = cuadrado();
+        for i in 0..20 {
+            s.dab_filter(
+                &mut p,
+                &tris,
+                Vec3::new(1.0 + i as f32 * 0.03, 1.0, 0.0),
+                0.5,
+                FilterMode::Smudge,
+                1.0,
+                false,
+            );
+        }
+        assert_ne!(p, antes, "el movimiento pequeno se perdio y no arrastro nada");
+        // El texel 26 era azul puro y ahora lleva algo del rojo de su izquierda.
+        assert!(px(&p, 64, 26, 31)[0] > 10, "{:?}", px(&p, 64, 26, 31));
+    }
+
+    #[test]
+    fn con_bloqueo_alfa_el_difuminado_y_la_borrosidad_no_cambian_el_alfa() {
+        let antes = capa_partida(24, [255, 0, 0, 255], [0, 0, 255, 0]);
+        for modo in [FilterMode::Blur, FilterMode::Smudge] {
+            let mut p = antes.clone();
+            let mut s = StrokeState::new(64);
+            s.begin_stroke();
+            for c in [0.6f32, 1.0, 1.4] {
+                s.dab_filter(
+                    &mut p,
+                    &cuadrado(),
+                    Vec3::new(c, 1.0, 0.0),
+                    0.8,
+                    modo,
+                    1.0,
+                    true,
+                );
+            }
+            let alfas = |v: &[u8]| v.chunks(4).map(|q| q[3]).collect::<Vec<_>>();
+            assert_eq!(alfas(&p), alfas(&antes), "{modo:?} cambio el alfa");
+        }
     }
 
     /// Radio con el que el texel (37, 32), a 5 texeles del centro (32, 32), queda a `t` = 1 - 5 / (40 / 7) = 0.125 y el
